@@ -1,0 +1,33 @@
+# systemd service file for Prompt Provision Tool
+# Place this file in /etc/systemd/system/prompt-tool.service
+
+[Unit]
+Description=Prompt Provision Tool FastAPI Application
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/prompt-provision-tool/backend
+Environment="PATH=/opt/prompt-provision-tool/venv/bin"
+ExecStart=/opt/prompt-provision-tool/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 4
+
+# 再起動設定
+Restart=always
+RestartSec=10
+
+# ログ設定
+StandardOutput=append:/var/log/prompt-tool/app.log
+StandardError=append:/var/log/prompt-tool/error.log
+
+# セキュリティ設定
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/prompt-provision-tool
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ユーザーログイン - Prompt Provision Tool</title>
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <div class="login-container">
+        <h1>🔑 ユーザーログイン</h1>
+        <div id="alert-container"></div>
+        <form id="login-form">
+            <div class="form-group">
+                <label for="username">ユーザー名</label>
+                <input type="text" id="username" name="username" required>
+            </div>
+            <div class="form-group">
+                <label for="password">パスワード</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+            <button type="submit" class="btn btn-primary">ログイン</button>
+        </form>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            
+            try {
+                const formData = new FormData();
+                formData.append('username', username);
+                formData.append('password', password);
+                
+                const response = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                // レスポンスのContent-Typeをチェック
+                const contentType = response.headers.get('content-type');
+                let data;
+                
+                if (contentType && contentType.includes('application/json')) {
+                    data = await response.json();
+                } else {
+                    // JSONでない場合はテキストとして取得
+                    const text = await response.text();
+                    console.error('Non-JSON response:', text);
+                    throw new Error(`サーバーエラー (${response.status}): JSONレスポンスが期待されましたが、テキストが返されました`);
+                }
+                
+                if (response.ok) {
+                    // トークンを保存
+                    localStorage.setItem('token', data.access_token);
+                    localStorage.setItem('username', username);
+                    
+                    // ダッシュボードへリダイレクト
+                    window.location.href = 'dashboard.html';
+                } else {
+                    showAlert(data.detail || 'ログインに失敗しました', 'error');
+                }
+            } catch (error) {
+                showAlert(`サーバーとの通信に失敗しました: ${error.message}`, 'error');
+                console.error('Login error:', error);
+            }
+        });
+
+        function showAlert(message, type) {
+            const alertContainer = document.getElementById('alert-container');
+            alertContainer.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+        }
+    </script>
+</body>
+</html>
+

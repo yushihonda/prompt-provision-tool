@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>アカウント管理 - Prompt Provision Tool</title>
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>👥 アカウント管理</h1>
+            <div class="user-info">
+                <span id="username-display">-</span>
+                <button class="btn-logout" onclick="logout()">ログアウト</button>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="nav">
+                <button class="nav-item" onclick="location.href='dashboard.html'">ダッシュボード</button>
+                <button class="nav-item" onclick="location.href='prompts.html'">プロンプト管理</button>
+                <button class="nav-item active" onclick="location.href='accounts.html'">アカウント管理</button>
+                <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
+            </div>
+
+            <div id="alert-container"></div>
+
+            <button class="btn btn-success" onclick="showCreateModal()">新しいアカウントを作成</button>
+
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>ユーザー名</th>
+                        <th>メールアドレス</th>
+                        <th>ステータス</th>
+                        <th>プロンプト数</th>
+                        <th>実行回数</th>
+                        <th>アクション</th>
+                    </tr>
+                </thead>
+                <tbody id="accounts-tbody">
+                    <tr>
+                        <td colspan="7" style="text-align: center;">読み込み中...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- アカウント作成モーダル -->
+    <div id="account-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>新しいアカウント</h2>
+                <button class="close-modal" onclick="hideModal('account-modal')">&times;</button>
+            </div>
+            <form id="account-form">
+                <div class="form-group">
+                    <label for="account-username">ユーザー名 *</label>
+                    <input type="text" id="account-username" required>
+                </div>
+                <div class="form-group">
+                    <label for="account-email">メールアドレス *</label>
+                    <input type="email" id="account-email" required>
+                </div>
+                <div class="form-group">
+                    <label for="account-password">パスワード *</label>
+                    <input type="password" id="account-password" required>
+                </div>
+                <div class="form-group">
+                    <label for="account-type">アカウントタイプ *</label>
+                    <select id="account-type" required>
+                        <option value="child" selected>子アカウント（ユーザー）</option>
+                        <option value="parent">親アカウント（管理者）</option>
+                    </select>
+                </div>
+                <div class="actions">
+                    <button type="submit" class="btn btn-primary">作成</button>
+                    <button type="button" class="btn btn-secondary" onclick="hideModal('account-modal')">キャンセル</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- プロンプト割り当てモーダル -->
+    <div id="assign-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>プロンプト割り当て</h2>
+                <button class="close-modal" onclick="hideModal('assign-modal')">&times;</button>
+            </div>
+            <input type="hidden" id="assign-account-id">
+            <h3 id="assign-account-name"></h3>
+            
+            <h4>割り当て可能なプロンプト</h4>
+            <div id="available-prompts" style="max-height: 300px; overflow-y: auto;">
+                <p>読み込み中...</p>
+            </div>
+            
+            <h4 style="margin-top: 20px;">割り当て済みプロンプト</h4>
+            <div id="assigned-prompts" style="max-height: 300px; overflow-y: auto;">
+                <p>読み込み中...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/admin-common.js"></script>
+    <script>
+        let accounts = [];
+        let allPrompts = [];
+
+        async function loadAccounts() {
+            try {
+                accounts = await apiRequest('/api/admin/accounts');
+                renderAccounts();
+            } catch (error) {
+                showAlert('アカウントの読み込みに失敗しました', 'error');
+                console.error('Load accounts error:', error);
+            }
+        }
+
+        async function loadAllPrompts() {
+            try {
+                allPrompts = await apiRequest('/api/admin/prompts');
+            } catch (error) {
+                console.error('Load prompts error:', error);
+            }
+        }
+
+        function renderAccounts() {
+            const tbody = document.getElementById('accounts-tbody');
+            
+            if (accounts.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #6c757d;">アカウントがまだ登録されていません</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = accounts.map(account => `
+                <tr>
+                    <td>${account.id}</td>
+                    <td>${account.username}</td>
+                    <td>${account.email}</td>
+                    <td>${account.is_active ? '有効' : '無効'}</td>
+                    <td>${account.prompt_count}</td>
+                    <td>${account.execution_count}</td>
+                    <td>
+                        <button class="btn btn-sm btn-primary" onclick="showAssignModal(${account.id})">プロンプト割り当て</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteAccount(${account.id})">削除</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function showCreateModal() {
+            document.getElementById('account-form').reset();
+            showModal('account-modal');
+        }
+
+        async function deleteAccount(id) {
+            if (!confirmAction('本当にこのアカウントを削除しますか？')) return;
+            
+            try {
+                await apiRequest(`/api/admin/accounts/${id}`, {
+                    method: 'DELETE'
+                });
+                showAlert('アカウントを削除しました', 'success');
+                loadAccounts();
+            } catch (error) {
+                showAlert('アカウントの削除に失敗しました', 'error');
+                console.error('Delete account error:', error);
+            }
+        }
+
+        async function showAssignModal(accountId) {
+            const account = accounts.find(a => a.id === accountId);
+            if (!account) return;
+            
+            document.getElementById('assign-account-id').value = accountId;
+            document.getElementById('assign-account-name').textContent = `${account.username} (${account.email})`;
+            
+            // 割り当て済みプロンプトを取得
+            try {
+                const assignedPrompts = await apiRequest(`/api/admin/accounts/${accountId}/prompts`);
+                const assignedIds = assignedPrompts.map(p => p.id);
+                
+                // 割り当て可能なプロンプト
+                const availablePrompts = allPrompts.filter(p => !assignedIds.includes(p.id));
+                document.getElementById('available-prompts').innerHTML = availablePrompts.length > 0
+                    ? availablePrompts.map(p => `
+                        <div class="card" style="padding: 10px; margin-bottom: 10px;">
+                            <strong>${p.name}</strong>
+                            <button class="btn btn-sm btn-success" onclick="assignPrompt(${accountId}, ${p.id})">割り当て</button>
+                        </div>
+                    `).join('')
+                    : '<p>割り当て可能なプロンプトがありません</p>';
+                
+                // 割り当て済みプロンプト
+                document.getElementById('assigned-prompts').innerHTML = assignedPrompts.length > 0
+                    ? assignedPrompts.map(p => `
+                        <div class="card" style="padding: 10px; margin-bottom: 10px;">
+                            <strong>${p.name}</strong>
+                            <button class="btn btn-sm btn-danger" onclick="unassignPrompt(${accountId}, ${p.id})">解除</button>
+                        </div>
+                    `).join('')
+                    : '<p>割り当てられているプロンプトがありません</p>';
+                
+                showModal('assign-modal');
+            } catch (error) {
+                showAlert('プロンプト情報の読み込みに失敗しました', 'error');
+                console.error('Load assigned prompts error:', error);
+            }
+        }
+
+        async function assignPrompt(accountId, promptId) {
+            try {
+                await apiRequest('/api/admin/assign-prompt', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        account_id: accountId,
+                        prompt_id: promptId
+                    })
+                });
+                showAlert('プロンプトを割り当てました', 'success');
+                showAssignModal(accountId); // リロード
+                loadAccounts(); // アカウント一覧も更新
+            } catch (error) {
+                showAlert('プロンプトの割り当てに失敗しました', 'error');
+                console.error('Assign prompt error:', error);
+            }
+        }
+
+        async function unassignPrompt(accountId, promptId) {
+            // assignment_idを取得する必要があるため、一時的な実装
+            // 実際には割り当て情報からassignment_idを取得する必要がある
+            showAlert('この機能は未実装です', 'info');
+        }
+
+        document.getElementById('account-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const username = document.getElementById('account-username').value;
+            const email = document.getElementById('account-email').value;
+            const password = document.getElementById('account-password').value;
+            const accountType = document.getElementById('account-type').value;
+            
+            try {
+                await apiRequest('/api/admin/accounts', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        username,
+                        email,
+                        password,
+                        account_type: accountType
+                    })
+                });
+                
+                showAlert('アカウントを作成しました', 'success');
+                hideModal('account-modal');
+                loadAccounts();
+            } catch (error) {
+                showAlert('アカウントの作成に失敗しました', 'error');
+                console.error('Create account error:', error);
+            }
+        });
+
+        // ページ読み込み時に実行
+        checkAuth();
+        loadAccounts();
+        loadAllPrompts();
+    </script>
+</body>
+</html>
+

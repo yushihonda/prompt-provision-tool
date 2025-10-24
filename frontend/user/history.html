@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>実行履歴 - Prompt Provision Tool</title>
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📋 実行履歴</h1>
+            <div class="user-info">
+                <span id="username-display">-</span>
+                <button class="btn-logout" onclick="logout()">ログアウト</button>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="nav">
+                <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト一覧</button>
+                <button class="nav-item active" onclick="location.href='history.html'">実行履歴</button>
+            </div>
+
+            <div id="alert-container"></div>
+
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>実行日時</th>
+                        <th>プロンプト</th>
+                        <th>モデル</th>
+                        <th>実行時間</th>
+                        <th>トークン数</th>
+                        <th>ステータス</th>
+                        <th>アクション</th>
+                    </tr>
+                </thead>
+                <tbody id="history-tbody">
+                    <tr>
+                        <td colspan="7" style="text-align: center;">読み込み中...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 実行詳細モーダル -->
+    <div id="detail-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>実行詳細</h2>
+                <button class="close-modal" onclick="hideModal('detail-modal')">&times;</button>
+            </div>
+            <div id="execution-detail"></div>
+        </div>
+    </div>
+
+    <script src="js/user-common.js"></script>
+    <script>
+        let executions = [];
+
+        async function loadHistory() {
+            try {
+                executions = await apiRequest('/api/user/executions?limit=50');
+                renderHistory();
+            } catch (error) {
+                showAlert('実行履歴の読み込みに失敗しました', 'error');
+                console.error('Load history error:', error);
+            }
+        }
+
+        function renderHistory() {
+            const tbody = document.getElementById('history-tbody');
+            
+            if (executions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #6c757d;">実行履歴がありません</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = executions.map(execution => `
+                <tr>
+                    <td>${formatDate(execution.executed_at)}</td>
+                    <td>${execution.prompt_name || '-'}</td>
+                    <td>${execution.model_used}</td>
+                    <td>${execution.execution_time}ms</td>
+                    <td>${execution.tokens_used || '-'}</td>
+                    <td><span style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</span></td>
+                    <td>
+                        <button class="btn btn-sm btn-primary" onclick="showDetail(${execution.id})">詳細</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function showDetail(id) {
+            try {
+                const execution = await apiRequest(`/api/user/executions/${id}`);
+                
+                const detailHTML = `
+                    <div class="form-group">
+                        <label><strong>実行日時:</strong></label>
+                        <p>${formatDate(execution.executed_at)}</p>
+                    </div>
+                    <div class="form-group">
+                        <label><strong>プロンプト:</strong></label>
+                        <p>${execution.prompt_name || '-'}</p>
+                    </div>
+                    <div class="form-group">
+                        <label><strong>使用モデル:</strong></label>
+                        <p>${execution.model_used}</p>
+                    </div>
+                    <div class="form-group">
+                        <label><strong>入力データ:</strong></label>
+                        <div class="json-display">${execution.input_data}</div>
+                    </div>
+                    <div class="form-group">
+                        <label><strong>出力データ:</strong></label>
+                        <div class="output-box">${execution.output_data}</div>
+                    </div>
+                    <div class="form-group">
+                        <label><strong>実行時間:</strong></label>
+                        <p>${execution.execution_time}ms</p>
+                    </div>
+                    <div class="form-group">
+                        <label><strong>使用トークン数:</strong></label>
+                        <p>${execution.tokens_used || '-'}</p>
+                    </div>
+                    <div class="form-group">
+                        <label><strong>ステータス:</strong></label>
+                        <p style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</p>
+                    </div>
+                    ${execution.error_message ? `
+                    <div class="form-group">
+                        <label><strong>エラーメッセージ:</strong></label>
+                        <div class="alert alert-error">${execution.error_message}</div>
+                    </div>
+                    ` : ''}
+                `;
+                
+                document.getElementById('execution-detail').innerHTML = detailHTML;
+                showModal('detail-modal');
+            } catch (error) {
+                showAlert('詳細情報の読み込みに失敗しました', 'error');
+                console.error('Load detail error:', error);
+            }
+        }
+
+        function hideModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.classList.remove('show');
+            }
+        }
+
+        function showModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.classList.add('show');
+            }
+        }
+
+        // ページ読み込み時に実行
+        checkAuth();
+        loadHistory();
+    </script>
+</body>
+</html>
+

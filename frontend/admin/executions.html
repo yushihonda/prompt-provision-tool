@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>実行ログ - Prompt Provision Tool</title>
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 実行ログ</h1>
+            <div class="user-info">
+                <span id="username-display">-</span>
+                <button class="btn-logout" onclick="logout()">ログアウト</button>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="nav">
+                <button class="nav-item" onclick="location.href='dashboard.html'">ダッシュボード</button>
+                <button class="nav-item" onclick="location.href='prompts.html'">プロンプト管理</button>
+                <button class="nav-item" onclick="location.href='accounts.html'">アカウント管理</button>
+                <button class="nav-item active" onclick="location.href='executions.html'">実行ログ</button>
+            </div>
+
+            <div id="alert-container"></div>
+
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>日時</th>
+                        <th>アカウントID</th>
+                        <th>プロンプト</th>
+                        <th>モデル</th>
+                        <th>実行時間</th>
+                        <th>トークン数</th>
+                        <th>ステータス</th>
+                        <th>アクション</th>
+                    </tr>
+                </thead>
+                <tbody id="executions-tbody">
+                    <tr>
+                        <td colspan="9" style="text-align: center;">読み込み中...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 実行詳細モーダル -->
+    <div id="detail-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>実行詳細</h2>
+                <button class="close-modal" onclick="hideModal('detail-modal')">&times;</button>
+            </div>
+            <div id="execution-detail"></div>
+        </div>
+    </div>
+
+    <script src="js/admin-common.js"></script>
+    <script>
+        let executions = [];
+
+        async function loadExecutions() {
+            try {
+                executions = await apiRequest('/api/admin/executions?limit=100');
+                renderExecutions();
+            } catch (error) {
+                showAlert('実行ログの読み込みに失敗しました', 'error');
+                console.error('Load executions error:', error);
+            }
+        }
+
+        function renderExecutions() {
+            const tbody = document.getElementById('executions-tbody');
+            
+            if (executions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: #6c757d;">実行ログがありません</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = executions.map(execution => `
+                <tr>
+                    <td>${execution.id}</td>
+                    <td>${formatDate(execution.executed_at)}</td>
+                    <td>${execution.account_id}</td>
+                    <td>${execution.prompt_name || '-'}</td>
+                    <td>${execution.model_used}</td>
+                    <td>${execution.execution_time}ms</td>
+                    <td>${execution.tokens_used || '-'}</td>
+                    <td><span style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</span></td>
+                    <td>
+                        <button class="btn btn-sm btn-primary" onclick="showDetail(${execution.id})">詳細</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function showDetail(id) {
+            const execution = executions.find(e => e.id === id);
+            if (!execution) return;
+            
+            const detailHTML = `
+                <div class="form-group">
+                    <label><strong>実行日時:</strong></label>
+                    <p>${formatDate(execution.executed_at)}</p>
+                </div>
+                <div class="form-group">
+                    <label><strong>アカウントID:</strong></label>
+                    <p>${execution.account_id}</p>
+                </div>
+                <div class="form-group">
+                    <label><strong>プロンプト:</strong></label>
+                    <p>${execution.prompt_name || '-'}</p>
+                </div>
+                <div class="form-group">
+                    <label><strong>使用モデル:</strong></label>
+                    <p>${execution.model_used}</p>
+                </div>
+                <div class="form-group">
+                    <label><strong>入力データ:</strong></label>
+                    <div class="json-display">${execution.input_data}</div>
+                </div>
+                <div class="form-group">
+                    <label><strong>出力データ:</strong></label>
+                    <div class="output-box">${execution.output_data}</div>
+                </div>
+                <div class="form-group">
+                    <label><strong>実行時間:</strong></label>
+                    <p>${execution.execution_time}ms</p>
+                </div>
+                <div class="form-group">
+                    <label><strong>使用トークン数:</strong></label>
+                    <p>${execution.tokens_used || '-'}</p>
+                </div>
+                <div class="form-group">
+                    <label><strong>ステータス:</strong></label>
+                    <p style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</p>
+                </div>
+                ${execution.error_message ? `
+                <div class="form-group">
+                    <label><strong>エラーメッセージ:</strong></label>
+                    <div class="alert alert-error">${execution.error_message}</div>
+                </div>
+                ` : ''}
+            `;
+            
+            document.getElementById('execution-detail').innerHTML = detailHTML;
+            showModal('detail-modal');
+        }
+
+        // ページ読み込み時に実行
+        checkAuth();
+        loadExecutions();
+    </script>
+</body>
+</html>
+

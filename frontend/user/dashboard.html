@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ユーザーダッシュボード - Prompt Provision Tool</title>
+    <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 プロンプト実行</h1>
+            <div class="user-info">
+                <span id="username-display">-</span>
+                <button class="btn-logout" onclick="logout()">ログアウト</button>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="nav">
+                <button class="nav-item active" onclick="location.href='dashboard.html'">プロンプト一覧</button>
+                <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
+            </div>
+
+            <div id="alert-container"></div>
+
+            <h2>利用可能なプロンプト</h2>
+            <div id="prompts-container">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>読み込み中...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/user-common.js"></script>
+    <script>
+        let prompts = [];
+
+        async function loadPrompts() {
+            try {
+                prompts = await apiRequest('/api/user/prompts');
+                renderPrompts();
+            } catch (error) {
+                showAlert('プロンプトの読み込みに失敗しました', 'error');
+                console.error('Load prompts error:', error);
+            }
+        }
+
+        function renderPrompts() {
+            const container = document.getElementById('prompts-container');
+            
+            if (prompts.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #6c757d;">利用可能なプロンプトがありません</p>';
+                return;
+            }
+            
+            container.innerHTML = prompts.map(prompt => `
+                <div class="card">
+                    <h3>${prompt.name}</h3>
+                    <p>${prompt.description || '説明なし'}</p>
+                    <p><strong>モデル:</strong> ${prompt.model_type}</p>
+                    <div class="actions">
+                        <button class="btn btn-primary" onclick="location.href='execute.html?id=${prompt.id}'">実行</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // ページ読み込み時に実行
+        checkAuth();
+        loadPrompts();
+    </script>
+</body>
+</html>
+
