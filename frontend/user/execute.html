@@ -35,12 +35,27 @@
                     <!-- 動的に生成される入力フィールド -->
                 </div>
 
+                <div id="file-output-container" style="display: none;">
+                    <div class="form-group">
+                        <label for="output-format">出力形式</label>
+                        <select id="output-format">
+                            <option value="txt">テキスト (TXT)</option>
+                            <option value="csv">CSV</option>
+                            <option value="pdf">PDF</option>
+                            <option value="docx">Word (DOCX)</option>
+                            <option value="md">Markdown (MD)</option>
+                        </select>
+                        <small style="color: #6c757d;">実行結果を指定した形式でファイルとして出力できます</small>
+                    </div>
+                </div>
+
                 <button type="submit" class="btn btn-primary" id="execute-btn">実行</button>
             </form>
 
             <div id="result-container" style="display: none;">
                 <h3>実行結果</h3>
                 <div class="output-box" id="output-content"></div>
+                <div id="file-output-result" style="display: none;"></div>
                 <div class="stats">
                     <div class="stat-item">
                         <label>使用モデル</label>
@@ -73,12 +88,20 @@
 
             try {
                 promptDetail = await apiRequest(`/api/user/prompts/${promptId}`);
-                
+
                 // プロンプト情報を表示
                 document.getElementById('prompt-name').textContent = promptDetail.name;
                 document.getElementById('prompt-description').textContent = promptDetail.description || '説明なし';
                 document.getElementById('prompt-model').textContent = promptDetail.model_type;
-                
+
+                // ファイル出力オプションの表示/非表示
+                const fileOutputContainer = document.getElementById('file-output-container');
+                if (promptDetail.allows_file_output) {
+                    fileOutputContainer.style.display = 'block';
+                } else {
+                    fileOutputContainer.style.display = 'none';
+                }
+
                 // 入力フィールドを生成
                 generateInputFields(promptDetail.input_schema);
             } catch (error) {
@@ -89,7 +112,7 @@
 
         function generateInputFields(inputSchema) {
             const container = document.getElementById('input-fields-container');
-            
+
             if (!inputSchema || !inputSchema.properties || Object.keys(inputSchema.properties).length === 0) {
                 // スキーマがない場合はシンプルなテキストエリア
                 container.innerHTML = `
@@ -100,18 +123,18 @@
                 `;
                 return;
             }
-            
+
             // スキーマに基づいて入力フィールドを生成
             const properties = inputSchema.properties;
             const requiredFields = inputSchema.required || [];
-            
+
             const fieldsHTML = Object.entries(properties).map(([fieldName, fieldConfig]) => {
                 const label = fieldConfig.title || fieldName;
                 const description = fieldConfig.description || '';
                 const required = requiredFields.includes(fieldName) ? 'required' : '';
                 const type = fieldConfig.type || 'string';
                 const placeholder = description ? `placeholder="${description}"` : '';
-                
+
                 if (type === 'string' && description.includes('長文')) {
                     return `
                         <div class="form-group">
@@ -146,41 +169,70 @@
                     `;
                 }
             }).join('');
-            
+
             container.innerHTML = fieldsHTML;
         }
 
         document.getElementById('execute-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
+
             const executeBtn = document.getElementById('execute-btn');
             executeBtn.disabled = true;
             executeBtn.textContent = '実行中...';
-            
+
             // 入力データを収集
             const formData = new FormData(e.target);
             const inputData = {};
             for (const [key, value] of formData.entries()) {
                 inputData[key] = value;
             }
-            
+
+            // 出力形式を取得（ファイル出力が許可されている場合）
+            const outputFormat = document.getElementById('file-output-container').style.display === 'block' 
+                ? document.getElementById('output-format').value 
+                : 'txt';
+
             try {
                 const result = await apiRequest('/api/execute', {
                     method: 'POST',
                     body: JSON.stringify({
                         prompt_id: parseInt(promptId),
-                        input_data: inputData
+                        input_data: inputData,
+                        output_format: outputFormat !== 'txt' ? outputFormat : undefined
                     })
                 });
-                
+
                 // 結果を表示
                 document.getElementById('output-content').textContent = result.output;
                 document.getElementById('stat-model').textContent = result.model_used;
                 document.getElementById('stat-time').textContent = `${result.execution_time}ms`;
                 document.getElementById('stat-tokens').textContent = result.tokens_used || '-';
-                
+
+                // ファイル出力結果の表示
+                const fileOutputDiv = document.getElementById('file-output-result');
+                if (result.file_output) {
+                    const fileOutput = result.file_output;
+                    const downloadLink = document.createElement('a');
+                    downloadLink.href = `data:application/octet-stream;base64,${fileOutput.content}`;
+                    downloadLink.download = fileOutput.filename;
+                    downloadLink.className = 'btn btn-success';
+                    downloadLink.textContent = `📥 ${fileOutput.filename} をダウンロード (${(fileOutput.size / 1024).toFixed(2)} KB)`;
+                    downloadLink.style.marginTop = '10px';
+                    downloadLink.style.display = 'inline-block';
+                    
+                    if (fileOutputDiv) {
+                        fileOutputDiv.innerHTML = '';
+                        fileOutputDiv.appendChild(downloadLink);
+                        fileOutputDiv.style.display = 'block';
+                    }
+                } else {
+                    if (fileOutputDiv) {
+                        fileOutputDiv.style.display = 'none';
+                    }
+                }
+
                 document.getElementById('result-container').style.display = 'block';
-                
+
                 showAlert('実行が完了しました', 'success');
             } catch (error) {
                 showAlert('実行に失敗しました: ' + error.message, 'error');

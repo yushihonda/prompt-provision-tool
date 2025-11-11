@@ -17,7 +17,7 @@ async def list_available_prompts(
 ):
     """
     現在のユーザーが利用可能なプロンプト一覧を取得
-    
+
     注意: プロンプトの内容は含まれない（セキュリティ）
     """
     prompts = db.query(Prompt).join(
@@ -26,7 +26,7 @@ async def list_available_prompts(
         AccountPrompt.account_id == current_user.id,
         Prompt.is_active == True
     ).all()
-    
+
     # input_schemaをJSON形式にパース
     result = []
     for prompt in prompts:
@@ -35,9 +35,10 @@ async def list_available_prompts(
             "name": prompt.name,
             "description": prompt.description,
             "model_type": prompt.model_type,
+            "allows_file_output": prompt.allows_file_output
         }
         result.append(prompt_dict)
-    
+
     return result
 
 
@@ -49,7 +50,7 @@ async def get_prompt_detail(
 ):
     """
     特定のプロンプトの詳細情報を取得
-    
+
     注意: プロンプトの内容は含まれない（セキュリティ）
     input_schemaのみ返す（入力フォームの構築用）
     """
@@ -60,19 +61,19 @@ async def get_prompt_detail(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="プロンプトが見つかりません"
         )
-    
+
     # アクセス権限の確認
     assignment = db.query(AccountPrompt).filter(
         AccountPrompt.account_id == current_user.id,
         AccountPrompt.prompt_id == prompt_id
     ).first()
-    
+
     if not assignment:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="このプロンプトへのアクセス権限がありません"
         )
-    
+
     # input_schemaをパース
     input_schema = None
     if prompt.input_schema:
@@ -80,13 +81,14 @@ async def get_prompt_detail(
             input_schema = json.loads(prompt.input_schema)
         except:
             input_schema = None
-    
+
     return {
         "id": prompt.id,
         "name": prompt.name,
         "description": prompt.description,
         "model_type": prompt.model_type,
-        "input_schema": input_schema
+        "input_schema": input_schema,
+        "allows_file_output": prompt.allows_file_output
     }
 
 
@@ -130,15 +132,15 @@ async def get_execution_detail(
         Execution.id == execution_id,
         Execution.account_id == current_user.id
     ).first()
-    
+
     if not execution:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="実行履歴が見つかりません"
         )
-    
+
     prompt_name = execution.prompt.name if execution.prompt else None
-    
+
     return {
         **execution.__dict__,
         "prompt_name": prompt_name

@@ -41,7 +41,7 @@ class AccountResponse(AccountBase):
     id: int
     is_active: bool
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -52,6 +52,7 @@ class PromptBase(BaseModel):
     description: Optional[str] = None
     model_type: str
     input_schema: Optional[Dict[str, Any]] = None
+    allows_file_output: bool = False  # ファイル出力を許可するか
 
 
 class PromptCreate(PromptBase):
@@ -65,6 +66,7 @@ class PromptUpdate(BaseModel):
     model_type: Optional[str] = None
     input_schema: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
+    allows_file_output: Optional[bool] = None  # ファイル出力を許可するか
 
 
 class PromptResponse(PromptBase):
@@ -74,7 +76,7 @@ class PromptResponse(PromptBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     # 注意: encrypted_contentは含めない（セキュリティ）
-    
+
     class Config:
         from_attributes = True
 
@@ -84,7 +86,8 @@ class PromptListResponse(BaseModel):
     name: str
     description: Optional[str] = None
     model_type: str
-    
+    allows_file_output: bool = False  # ファイル出力を許可するか
+
     class Config:
         from_attributes = True
 
@@ -100,15 +103,23 @@ class AccountPromptResponse(BaseModel):
     account_id: int
     prompt_id: int
     assigned_at: datetime
-    
+
     class Config:
         from_attributes = True
 
 
 # ==================== プロンプト実行 ====================
+class AttachmentFile(BaseModel):
+    """添付ファイル"""
+    filename: str
+    content: str  # Base64エンコードされたファイル内容、またはテキスト内容
+
+
 class ExecutePromptRequest(BaseModel):
     prompt_id: int
     input_data: Dict[str, Any]  # プロンプトのinput_schemaに従った入力
+    output_format: Optional[str] = "txt"  # 出力形式: csv, pdf, docx, md, txt
+    attachments: Optional[List[AttachmentFile]] = None  # 添付ファイル（オプション）
 
 
 class ExecutePromptResponse(BaseModel):
@@ -117,6 +128,7 @@ class ExecutePromptResponse(BaseModel):
     tokens_used: Optional[int] = None
     execution_time: int  # ミリ秒
     status: str
+    file_output: Optional[Dict[str, Any]] = None  # ファイル出力情報（output_formatが指定された場合）
 
 
 # ==================== 実行ログ ====================
@@ -133,7 +145,7 @@ class ExecutionResponse(BaseModel):
     status: str
     error_message: Optional[str] = None
     executed_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -165,7 +177,7 @@ class APIConfigResponse(APIConfigBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     # 注意: APIキーは含めない（セキュリティ）
-    
+
     class Config:
         from_attributes = True
 
@@ -187,7 +199,7 @@ class AccountWithPromptCount(BaseModel):
     is_active: bool
     prompt_count: int
     execution_count: int
-    
+
     class Config:
         from_attributes = True
 

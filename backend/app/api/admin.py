@@ -27,16 +27,16 @@ async def get_dashboard_stats(
     total_accounts = db.query(Account).filter(Account.account_type == AccountType.CHILD).count()
     total_prompts = db.query(Prompt).count()
     total_executions = db.query(Execution).count()
-    
+
     # 今日の実行数
     from datetime import datetime, timedelta
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     executions_today = db.query(Execution).filter(Execution.executed_at >= today_start).count()
-    
+
     # 今月の実行数
     month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     executions_this_month = db.query(Execution).filter(Execution.executed_at >= month_start).count()
-    
+
     return {
         "total_accounts": total_accounts,
         "total_prompts": total_prompts,
@@ -61,7 +61,7 @@ async def create_account(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="このユーザー名は既に使用されています"
         )
-    
+
     # メールアドレスの重複チェック
     existing_email = db.query(Account).filter(Account.email == account.email).first()
     if existing_email:
@@ -69,7 +69,7 @@ async def create_account(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="このメールアドレスは既に使用されています"
         )
-    
+
     # アカウント作成
     db_account = Account(
         username=account.username,
@@ -80,13 +80,13 @@ async def create_account(
     db.add(db_account)
     db.commit()
     db.refresh(db_account)
-    
+
     # 子アカウントの場合、API設定も作成
-    if account.account_type == AccountType.CHILD:
+    if str(account.account_type) == AccountType.CHILD:
         api_config = APIConfig(account_id=db_account.id)
         db.add(api_config)
         db.commit()
-    
+
     return db_account
 
 
@@ -107,7 +107,7 @@ async def list_accounts(
     ).filter(
         Account.account_type == AccountType.CHILD
     ).group_by(Account.id).all()
-    
+
     return [
         {
             "id": acc.id,
@@ -152,7 +152,7 @@ async def update_account(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="アカウントが見つかりません"
         )
-    
+
     # 更新
     if account_update.email:
         account.email = account_update.email
@@ -160,7 +160,7 @@ async def update_account(
         account.hashed_password = get_password_hash(account_update.password)
     if account_update.is_active is not None:
         account.is_active = account_update.is_active
-    
+
     db.commit()
     db.refresh(account)
     return account
@@ -179,14 +179,14 @@ async def delete_account(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="アカウントが見つかりません"
         )
-    
+
     # 親アカウントは削除できない
-    if account.account_type == AccountType.PARENT:
+    if str(account.account_type) == AccountType.PARENT:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="親アカウントは削除できません"
         )
-    
+
     db.delete(account)
     db.commit()
 
@@ -201,22 +201,23 @@ async def create_prompt(
     """新しいプロンプトを作成"""
     # プロンプトを暗号化
     encrypted_content = encryption_service.encrypt(prompt.content)
-    
+
     # input_schemaをJSON文字列に変換
     input_schema_str = json.dumps(prompt.input_schema) if prompt.input_schema else None
-    
+
     db_prompt = Prompt(
         name=prompt.name,
         description=prompt.description,
         encrypted_content=encrypted_content,
         model_type=prompt.model_type,
         input_schema=input_schema_str,
+        allows_file_output=prompt.allows_file_output,
         created_by=current_user.id
     )
     db.add(db_prompt)
     db.commit()
     db.refresh(db_prompt)
-    
+
     # input_schemaをJSON文字列からdictに変換
     prompt_dict = db_prompt.__dict__.copy()
     if db_prompt.input_schema:
@@ -224,7 +225,7 @@ async def create_prompt(
             prompt_dict['input_schema'] = json.loads(db_prompt.input_schema)
         except:
             prompt_dict['input_schema'] = None
-    
+
     return prompt_dict
 
 
@@ -235,7 +236,7 @@ async def list_prompts(
 ):
     """全プロンプトを取得"""
     prompts = db.query(Prompt).all()
-    
+
     # input_schemaをJSON文字列からdictに変換
     result = []
     for prompt in prompts:
@@ -246,7 +247,7 @@ async def list_prompts(
             except:
                 prompt_dict['input_schema'] = None
         result.append(prompt_dict)
-    
+
     return result
 
 
@@ -263,7 +264,7 @@ async def get_prompt(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="プロンプトが見つかりません"
         )
-    
+
     # input_schemaをJSON文字列からdictに変換
     prompt_dict = prompt.__dict__.copy()
     if prompt.input_schema:
@@ -271,7 +272,7 @@ async def get_prompt(
             prompt_dict['input_schema'] = json.loads(prompt.input_schema)
         except:
             prompt_dict['input_schema'] = None
-    
+
     return prompt_dict
 
 
@@ -288,7 +289,7 @@ async def get_prompt_content(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="プロンプトが見つかりません"
         )
-    
+
     # 復号化
     decrypted_content = encryption_service.decrypt(prompt.encrypted_content)
     return {"content": decrypted_content}
@@ -308,7 +309,7 @@ async def update_prompt(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="プロンプトが見つかりません"
         )
-    
+
     # 更新
     if prompt_update.name:
         prompt.name = prompt_update.name
@@ -322,10 +323,12 @@ async def update_prompt(
         prompt.input_schema = json.dumps(prompt_update.input_schema)
     if prompt_update.is_active is not None:
         prompt.is_active = prompt_update.is_active
-    
+    if prompt_update.allows_file_output is not None:
+        prompt.allows_file_output = prompt_update.allows_file_output
+
     db.commit()
     db.refresh(prompt)
-    
+
     # input_schemaをJSON文字列からdictに変換
     prompt_dict = prompt.__dict__.copy()
     if prompt.input_schema:
@@ -333,7 +336,7 @@ async def update_prompt(
             prompt_dict['input_schema'] = json.loads(prompt.input_schema)
         except:
             prompt_dict['input_schema'] = None
-    
+
     return prompt_dict
 
 
@@ -350,7 +353,7 @@ async def delete_prompt(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="プロンプトが見つかりません"
         )
-    
+
     db.delete(prompt)
     db.commit()
 
@@ -370,7 +373,7 @@ async def assign_prompt_to_account(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="アカウントが見つかりません"
         )
-    
+
     # プロンプトの存在確認
     prompt = db.query(Prompt).filter(Prompt.id == assignment.prompt_id).first()
     if not prompt:
@@ -378,19 +381,19 @@ async def assign_prompt_to_account(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="プロンプトが見つかりません"
         )
-    
+
     # 既に割り当てられているかチェック
     existing = db.query(AccountPrompt).filter(
         AccountPrompt.account_id == assignment.account_id,
         AccountPrompt.prompt_id == assignment.prompt_id
     ).first()
-    
+
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="このプロンプトは既に割り当てられています"
         )
-    
+
     # 割り当て
     account_prompt = AccountPrompt(
         account_id=assignment.account_id,
@@ -399,7 +402,7 @@ async def assign_prompt_to_account(
     db.add(account_prompt)
     db.commit()
     db.refresh(account_prompt)
-    
+
     return account_prompt
 
 
@@ -416,7 +419,7 @@ async def unassign_prompt_from_account(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="割り当てが見つかりません"
         )
-    
+
     db.delete(assignment)
     db.commit()
 
@@ -433,7 +436,7 @@ async def get_account_prompts(
     ).filter(
         AccountPrompt.account_id == account_id
     ).all()
-    
+
     # input_schemaをJSON文字列からdictに変換
     result = []
     for prompt in prompts:
@@ -444,7 +447,7 @@ async def get_account_prompts(
             except:
                 prompt_dict['input_schema'] = None
         result.append(prompt_dict)
-    
+
     return result
 
 
@@ -460,7 +463,7 @@ async def list_executions(
     executions = db.query(Execution).order_by(
         Execution.executed_at.desc()
     ).offset(skip).limit(limit).all()
-    
+
     result = []
     for execution in executions:
         prompt_name = execution.prompt.name if execution.prompt else None
@@ -468,6 +471,6 @@ async def list_executions(
             **execution.__dict__,
             "prompt_name": prompt_name
         })
-    
+
     return result
 
