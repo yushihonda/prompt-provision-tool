@@ -50,12 +50,12 @@
 
         function renderPrompts() {
             const container = document.getElementById('prompts-container');
-            
+
             if (prompts.length === 0) {
                 container.innerHTML = '<p style="text-align: center; color: #6c757d;">利用可能なプロンプトがありません</p>';
                 return;
             }
-            
+
             container.innerHTML = prompts.map(prompt => `
                 <div class="card">
                     <h3>${prompt.name}</h3>

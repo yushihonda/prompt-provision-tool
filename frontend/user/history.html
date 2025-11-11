@@ -72,12 +72,12 @@
 
         function renderHistory() {
             const tbody = document.getElementById('history-tbody');
-            
+
             if (executions.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #6c757d;">実行履歴がありません</td></tr>';
                 return;
             }
-            
+
             tbody.innerHTML = executions.map(execution => `
                 <tr>
                     <td>${formatDate(execution.executed_at)}</td>
@@ -96,7 +96,7 @@
         async function showDetail(id) {
             try {
                 const execution = await apiRequest(`/api/user/executions/${id}`);
-                
+
                 const detailHTML = `
                     <div class="form-group">
                         <label><strong>実行日時:</strong></label>
@@ -137,7 +137,7 @@
                     </div>
                     ` : ''}
                 `;
-                
+
                 document.getElementById('execution-detail').innerHTML = detailHTML;
                 showModal('detail-modal');
             } catch (error) {

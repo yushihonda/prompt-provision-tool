@@ -7,18 +7,36 @@ from app.config import settings
 from app.api import auth, admin, user, execute
 import logging
 
-# ログ設定
+# ログ設定（環境に応じてログレベルを変更）
+log_level = logging.DEBUG if settings.is_debug_mode else logging.INFO
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# FastAPIアプリケーションの作成
-app = FastAPI(
-    title="Prompt Provision Tool",
-    description="GPT及びGeminiのプロンプトを外部に漏らさず、実行機能のみを提供するツール",
-    version="1.0.0"
-)
+# 本番環境では詳細なログを抑制
+if settings.is_production:
+    # SQLAlchemyのログを抑制
+    logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
+    # その他の詳細ログを抑制
+    logging.getLogger('uvicorn.access').setLevel(logging.WARNING)
+
+# FastAPIアプリケーションの作成（本番はドキュメント無効化）
+if settings.ENVIRONMENT == "production":
+    app = FastAPI(
+        title="Prompt Provision Tool",
+        description="GPT及びGeminiのプロンプトを外部に漏らさず、実行機能のみを提供するツール",
+        version="1.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+else:
+    app = FastAPI(
+        title="Prompt Provision Tool",
+        description="GPT及びGeminiのプロンプトを外部に漏らさず、実行機能のみを提供するツール",
+        version="1.0.0"
+    )
 
 # CORS設定
 app.add_middleware(
@@ -111,12 +129,17 @@ async def root():
             <div class="links">
                 <a href="/static/admin/login.html" class="link-button admin">管理者ログイン</a>
                 <a href="/static/user/login.html" class="link-button">ユーザーログイン</a>
-                <a href="/docs" class="link-button docs">API ドキュメント</a>
+
+                <!-- 本番ではAPIドキュメントを非表示 -->
+                %s
             </div>
         </div>
     </body>
     </html>
-    """
+    """ % (
+        '<a href="/docs" class="link-button docs">API ドキュメント</a>'
+        if settings.ENVIRONMENT != "production" else ""
+    )
 
 
 @app.get("/health")

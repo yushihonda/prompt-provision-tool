@@ -131,12 +131,12 @@
 
         function renderAccounts() {
             const tbody = document.getElementById('accounts-tbody');
-            
+
             if (accounts.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #6c757d;">アカウントがまだ登録されていません</td></tr>';
                 return;
             }
-            
+
             tbody.innerHTML = accounts.map(account => `
                 <tr>
                     <td>${account.id}</td>
@@ -160,7 +160,7 @@
 
         async function deleteAccount(id) {
             if (!confirmAction('本当にこのアカウントを削除しますか？')) return;
-            
+
             try {
                 await apiRequest(`/api/admin/accounts/${id}`, {
                     method: 'DELETE'
@@ -176,15 +176,15 @@
         async function showAssignModal(accountId) {
             const account = accounts.find(a => a.id === accountId);
             if (!account) return;
-            
+
             document.getElementById('assign-account-id').value = accountId;
             document.getElementById('assign-account-name').textContent = `${account.username} (${account.email})`;
-            
+
             // 割り当て済みプロンプトを取得
             try {
                 const assignedPrompts = await apiRequest(`/api/admin/accounts/${accountId}/prompts`);
                 const assignedIds = assignedPrompts.map(p => p.id);
-                
+
                 // 割り当て可能なプロンプト
                 const availablePrompts = allPrompts.filter(p => !assignedIds.includes(p.id));
                 document.getElementById('available-prompts').innerHTML = availablePrompts.length > 0
@@ -195,7 +195,7 @@
                         </div>
                     `).join('')
                     : '<p>割り当て可能なプロンプトがありません</p>';
-                
+
                 // 割り当て済みプロンプト
                 document.getElementById('assigned-prompts').innerHTML = assignedPrompts.length > 0
                     ? assignedPrompts.map(p => `
@@ -205,7 +205,7 @@
                         </div>
                     `).join('')
                     : '<p>割り当てられているプロンプトがありません</p>';
-                
+
                 showModal('assign-modal');
             } catch (error) {
                 showAlert('プロンプト情報の読み込みに失敗しました', 'error');
@@ -239,12 +239,12 @@
 
         document.getElementById('account-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
+
             const username = document.getElementById('account-username').value;
             const email = document.getElementById('account-email').value;
             const password = document.getElementById('account-password').value;
             const accountType = document.getElementById('account-type').value;
-            
+
             try {
                 await apiRequest('/api/admin/accounts', {
                     method: 'POST',
@@ -255,7 +255,7 @@
                         account_type: accountType
                     })
                 });
-                
+
                 showAlert('アカウントを作成しました', 'success');
                 hideModal('account-modal');
                 loadAccounts();

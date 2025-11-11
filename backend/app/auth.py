@@ -30,21 +30,21 @@ def get_password_hash(password: str) -> str:
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """
     JWTアクセストークンの作成
-    
+
     Args:
         data: トークンに含めるデータ
         expires_delta: 有効期限
-        
+
     Returns:
         JWTトークン
     """
     to_encode = data.copy()
-    
+
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    
+
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
@@ -53,26 +53,26 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 def authenticate_user(db: Session, username: str, password: str) -> Optional[Account]:
     """
     ユーザー認証
-    
+
     Args:
         db: データベースセッション
         username: ユーザー名
         password: パスワード
-        
+
     Returns:
         認証成功時はAccountオブジェクト、失敗時はNone
     """
     account = db.query(Account).filter(Account.username == username).first()
-    
+
     if not account:
         return None
-    
+
     if not verify_password(password, account.hashed_password):
         return None
-    
+
     if not account.is_active:
         return None
-    
+
     return account
 
 
@@ -82,14 +82,14 @@ async def get_current_user(
 ) -> Account:
     """
     現在のユーザーを取得（JWT検証）
-    
+
     Args:
         token: JWTトークン
         db: データベースセッション
-        
+
     Returns:
         Accountオブジェクト
-        
+
     Raises:
         HTTPException: 認証失敗時
     """
@@ -98,29 +98,29 @@ async def get_current_user(
         detail="認証情報を確認できませんでした",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
+
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         username: str = payload.get("sub")
-        
+
         if username is None:
             raise credentials_exception
-        
+
         token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    
+
     account = db.query(Account).filter(Account.username == token_data.username).first()
-    
+
     if account is None:
         raise credentials_exception
-    
+
     if not account.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="アカウントが無効化されています"
         )
-    
+
     return account
 
 
@@ -129,22 +129,22 @@ async def get_current_active_parent(
 ) -> Account:
     """
     現在のユーザーが親アカウント（管理者）であることを確認
-    
+
     Args:
         current_user: 現在のユーザー
-        
+
     Returns:
         Accountオブジェクト
-        
+
     Raises:
         HTTPException: 親アカウントでない場合
     """
-    if current_user.account_type != AccountType.PARENT:
+    if str(current_user.account_type) != AccountType.PARENT:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="管理者権限が必要です"
         )
-    
+
     return current_user
 
 
@@ -153,21 +153,21 @@ async def get_current_active_child(
 ) -> Account:
     """
     現在のユーザーが子アカウントであることを確認
-    
+
     Args:
         current_user: 現在のユーザー
-        
+
     Returns:
         Accountオブジェクト
-        
+
     Raises:
         HTTPException: 子アカウントでない場合
     """
-    if current_user.account_type != AccountType.CHILD:
+    if str(current_user.account_type) != AccountType.CHILD:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="この機能は子アカウント専用です"
         )
-    
+
     return current_user
 

@@ -28,24 +28,24 @@
 
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
+
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
-            
+
             try {
                 const formData = new FormData();
                 formData.append('username', username);
                 formData.append('password', password);
-                
+
                 const response = await fetch(`${API_BASE}/api/auth/login`, {
                     method: 'POST',
                     body: formData
                 });
-                
+
                 // レスポンスのContent-Typeをチェック
                 const contentType = response.headers.get('content-type');
                 let data;
-                
+
                 if (contentType && contentType.includes('application/json')) {
                     data = await response.json();
                 } else {
@@ -54,12 +54,12 @@
                     console.error('Non-JSON response:', text);
                     throw new Error(`サーバーエラー (${response.status}): JSONレスポンスが期待されましたが、テキストが返されました`);
                 }
-                
+
                 if (response.ok) {
                     // トークンを保存
                     localStorage.setItem('token', data.access_token);
                     localStorage.setItem('username', username);
-                    
+
                     // ダッシュボードへリダイレクト
                     window.location.href = 'dashboard.html';
                 } else {

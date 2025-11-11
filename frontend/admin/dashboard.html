@@ -62,7 +62,7 @@
         async function loadDashboardStats() {
             try {
                 const stats = await apiRequest('/api/admin/dashboard');
-                
+
                 document.getElementById('total-accounts').textContent = stats.total_accounts;
                 document.getElementById('total-prompts').textContent = stats.total_prompts;
                 document.getElementById('total-executions').textContent = stats.total_executions;

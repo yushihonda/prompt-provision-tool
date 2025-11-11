@@ -21,14 +21,14 @@ async def login(
 ):
     """
     ログイン
-    
+
     ユーザー名とパスワードで認証し、JWTトークンを返す
     """
     try:
         logger.info(f"Login attempt for user: {form_data.username}")
-        
+
         account = authenticate_user(db, form_data.username, form_data.password)
-        
+
         if not account:
             logger.warning(f"Failed login attempt for user: {form_data.username}")
             raise HTTPException(
@@ -36,16 +36,16 @@ async def login(
                 detail="ユーザー名またはパスワードが正しくありません",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": account.username, "type": account.account_type.value},
+            data={"sub": account.username, "type": str(account.account_type)},
             expires_delta=access_token_expires
         )
-        
+
         logger.info(f"Successful login for user: {form_data.username}")
         return {"access_token": access_token, "token_type": "bearer"}
-    
+
     except HTTPException:
         # HTTPExceptionはそのまま再送出
         raise

@@ -6,12 +6,12 @@ const API_BASE = window.location.origin;
 function checkAuth() {
     const token = localStorage.getItem('token');
     const username = localStorage.getItem('username');
-    
+
     if (!token) {
         window.location.href = 'login.html';
         return;
     }
-    
+
     // ユーザー名を表示
     const usernameDisplay = document.getElementById('username-display');
     if (usernameDisplay && username) {
@@ -29,14 +29,14 @@ function logout() {
 // API リクエスト
 async function apiRequest(endpoint, options = {}) {
     const token = localStorage.getItem('token');
-    
+
     const defaultOptions = {
         headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json'
         }
     };
-    
+
     const mergedOptions = {
         ...defaultOptions,
         ...options,
@@ -45,21 +45,21 @@ async function apiRequest(endpoint, options = {}) {
             ...options.headers
         }
     };
-    
+
     try {
         const response = await fetch(`${API_BASE}${endpoint}`, mergedOptions);
-        
+
         // 認証エラーの場合はログイン画面へ
         if (response.status === 401) {
             localStorage.removeItem('token');
             window.location.href = 'login.html';
             return;
         }
-        
+
         // レスポンスのContent-Typeをチェック
         const contentType = response.headers.get('content-type');
         let data;
-        
+
         if (contentType && contentType.includes('application/json')) {
             data = await response.json();
         } else {
@@ -68,11 +68,11 @@ async function apiRequest(endpoint, options = {}) {
             console.error('Non-JSON response:', text);
             throw new Error(`サーバーエラー (${response.status}): 予期しないレスポンス形式`);
         }
-        
+
         if (!response.ok) {
             throw new Error(data.detail || 'リクエストに失敗しました');
         }
-        
+
         return data;
     } catch (error) {
         console.error('API request error:', error);
@@ -84,14 +84,14 @@ async function apiRequest(endpoint, options = {}) {
 function showAlert(message, type = 'info') {
     const alertContainer = document.getElementById('alert-container');
     if (!alertContainer) return;
-    
+
     const alert = document.createElement('div');
     alert.className = `alert alert-${type}`;
     alert.textContent = message;
-    
+
     alertContainer.innerHTML = '';
     alertContainer.appendChild(alert);
-    
+
     // 5秒後に自動削除
     setTimeout(() => {
         alert.remove();

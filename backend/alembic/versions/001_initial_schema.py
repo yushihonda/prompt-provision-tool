@@ -1,7 +1,7 @@
 """initial schema
 
 Revision ID: 001
-Revises: 
+Revises:
 Create Date: 2024-10-22 00:00:00.000000
 
 """
@@ -33,7 +33,7 @@ def upgrade() -> None:
     op.create_index('ix_accounts_username', 'accounts', ['username'], unique=True)
     op.create_index('ix_accounts_email', 'accounts', ['email'], unique=True)
     op.create_index('ix_accounts_id', 'accounts', ['id'], unique=False)
-    
+
     # prompts テーブル
     op.create_table(
         'prompts',
@@ -52,7 +52,7 @@ def upgrade() -> None:
     )
     op.create_index('ix_prompts_name', 'prompts', ['name'], unique=False)
     op.create_index('ix_prompts_id', 'prompts', ['id'], unique=False)
-    
+
     # account_prompts テーブル
     op.create_table(
         'account_prompts',
@@ -64,7 +64,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['prompt_id'], ['prompts.id'], ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('id')
     )
-    
+
     # executions テーブル
     op.create_table(
         'executions',
@@ -83,7 +83,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['prompt_id'], ['prompts.id'], ondelete='SET NULL'),
         sa.PrimaryKeyConstraint('id')
     )
-    
+
     # api_configs テーブル
     op.create_table(
         'api_configs',
