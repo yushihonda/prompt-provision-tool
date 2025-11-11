@@ -11,6 +11,8 @@ User=www-data
 Group=www-data
 WorkingDirectory=/opt/prompt-provision-tool/backend
 Environment="PATH=/opt/prompt-provision-tool/venv/bin"
+Environment="OPENAI_API_KEY=replace-with-any-string"
+Environment="GEMINI_API_KEY=replace-with-any-string"
 ExecStart=/opt/prompt-provision-tool/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 4
 
 # 再起動設定
