@@ -97,3 +97,12 @@ frontend/uploads/
 
 backend/.env
 backend/.env.local
+
+# Docker (ローカル開発環境用)
+# 注意: docker-compose.local.yml はリポジトリに含めますが、本番環境では使用しません
+.env.local
+# docker-compose.local.yml はリポジトリに含める（ローカル開発環境構築用）
+
+# ローカル開発用スクリプト
+# 注意: seed_test_data.py はローカル開発用ですが、リポジトリに含めます
+# （使用方法をドキュメント化するため）
