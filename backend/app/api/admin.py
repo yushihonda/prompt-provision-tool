@@ -90,26 +90,32 @@ async def create_account(
     return db_account
 
 
-@router.get("/accounts", response_model=List[AccountWithPromptCount])
+@router.get("/accounts")
 async def list_accounts(
+    skip: int = 0,
+    limit: int = 20,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """全アカウントを取得（子アカウントのみ）"""
-    accounts = db.query(
-        Account,
-        func.count(AccountPrompt.id).label('prompt_count'),
-        func.count(Execution.id).label('execution_count')
-    ).outerjoin(
-        AccountPrompt, Account.id == AccountPrompt.account_id
-    ).outerjoin(
-        Execution, Account.id == Execution.account_id
-    ).filter(
-        Account.account_type == AccountType.CHILD
-    ).group_by(Account.id).all()
+    """全アカウントを取得（ページネーション対応）"""
+    # 総件数を取得
+    total = db.query(Account).count()
+    
+    # アカウント一覧を取得
+    accounts = db.query(Account).order_by(Account.id.desc()).offset(skip).limit(limit).all()
 
-    return [
-        {
+    # 各アカウントのプロンプト数と実行回数を個別に取得
+    items = []
+    for acc in accounts:
+        prompt_count = db.query(func.count(AccountPrompt.id)).filter(
+            AccountPrompt.account_id == acc.id
+        ).scalar() or 0
+        
+        execution_count = db.query(func.count(Execution.id)).filter(
+            Execution.account_id == acc.id
+        ).scalar() or 0
+        
+        items.append({
             "id": acc.id,
             "username": acc.username,
             "email": acc.email,
@@ -117,9 +123,14 @@ async def list_accounts(
             "is_active": acc.is_active,
             "prompt_count": prompt_count,
             "execution_count": execution_count
-        }
-        for acc, prompt_count, execution_count in accounts
-    ]
+        })
+    
+    return {
+        "items": items,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 
 @router.get("/accounts/{account_id}", response_model=AccountResponse)
@@ -229,16 +240,21 @@ async def create_prompt(
     return prompt_dict
 
 
-@router.get("/prompts", response_model=List[PromptResponse])
+@router.get("/prompts")
 async def list_prompts(
+    skip: int = 0,
+    limit: int = 6,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """全プロンプトを取得"""
-    prompts = db.query(Prompt).all()
+    """全プロンプトを取得（ページネーション対応）"""
+    # 総件数を取得
+    total = db.query(Prompt).count()
+    
+    prompts = db.query(Prompt).order_by(Prompt.created_at.desc()).offset(skip).limit(limit).all()
 
     # input_schemaをJSON文字列からdictに変換
-    result = []
+    items = []
     for prompt in prompts:
         prompt_dict = prompt.__dict__.copy()
         if prompt.input_schema:
@@ -246,9 +262,14 @@ async def list_prompts(
                 prompt_dict['input_schema'] = json.loads(prompt.input_schema)
             except:
                 prompt_dict['input_schema'] = None
-        result.append(prompt_dict)
+        items.append(prompt_dict)
 
-    return result
+    return {
+        "items": items,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 
 @router.get("/prompts/{prompt_id}", response_model=PromptResponse)
@@ -424,35 +445,52 @@ async def unassign_prompt_from_account(
     db.commit()
 
 
-@router.get("/accounts/{account_id}/prompts", response_model=List[PromptResponse])
+@router.get("/accounts/{account_id}/prompts")
 async def get_account_prompts(
     account_id: int,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """特定のアカウントに割り当てられたプロンプト一覧を取得"""
-    prompts = db.query(Prompt).join(
-        AccountPrompt, Prompt.id == AccountPrompt.prompt_id
-    ).filter(
+    """特定のアカウントに割り当てられたプロンプト一覧を取得（assignment_idを含む）"""
+    assignments = db.query(AccountPrompt).filter(
         AccountPrompt.account_id == account_id
     ).all()
 
     # input_schemaをJSON文字列からdictに変換
     result = []
-    for prompt in prompts:
-        prompt_dict = prompt.__dict__.copy()
+    for assignment in assignments:
+        prompt = assignment.prompt
+        assignment_id = assignment.id  # assignment_idを先に取得
+        
+        # 必要なフィールドのみを明示的に取得
+        prompt_dict = {
+            'id': prompt.id,
+            'name': prompt.name,
+            'description': prompt.description,
+            'model_type': prompt.model_type,
+            'is_active': prompt.is_active,
+            'allows_file_output': prompt.allows_file_output,
+            'created_by': prompt.created_by,
+            'created_at': prompt.created_at.isoformat() if prompt.created_at else None,
+            'updated_at': prompt.updated_at.isoformat() if prompt.updated_at else None,
+            'assignment_id': assignment_id  # assignment_idを追加
+        }
+        # input_schemaをJSON文字列からdictに変換
         if prompt.input_schema:
             try:
                 prompt_dict['input_schema'] = json.loads(prompt.input_schema)
             except:
                 prompt_dict['input_schema'] = None
+        else:
+            prompt_dict['input_schema'] = None
+        
         result.append(prompt_dict)
 
     return result
 
 
 # ==================== 実行ログ ====================
-@router.get("/executions", response_model=List[ExecutionResponse])
+@router.get("/executions")
 async def list_executions(
     skip: int = 0,
     limit: int = 100,
@@ -460,17 +498,25 @@ async def list_executions(
     current_user: Account = Depends(get_current_active_parent)
 ):
     """全実行ログを取得"""
+    # 総件数を取得
+    total = db.query(Execution).count()
+    
     executions = db.query(Execution).order_by(
         Execution.executed_at.desc()
     ).offset(skip).limit(limit).all()
 
-    result = []
+    items = []
     for execution in executions:
         prompt_name = execution.prompt.name if execution.prompt else None
-        result.append({
+        items.append({
             **execution.__dict__,
             "prompt_name": prompt_name
         })
 
-    return result
+    return {
+        "items": items,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
