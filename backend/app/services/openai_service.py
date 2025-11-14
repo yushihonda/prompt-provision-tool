@@ -13,8 +13,7 @@ class OpenAIService:
 
     # 推論モデル（Responses APIを使用）
     REASONING_MODELS = {
-        "gpt-5-thinking",
-        "gpt-5-pro",  # Responses APIのみサポート
+        "gpt-5-pro",  # 最上位モデル（Responses APIのみサポート）
     }
 
     # temperatureをサポートしないモデル
@@ -223,7 +222,7 @@ class OpenAIService:
                             if text:
                                 chunks.append(text)
                 output_text = "".join(chunks)
-        
+
         # 長文レスポンスの処理（output_textがまだ空の場合）
         if not output_text:
             # その他の方法でレスポンスを取得
@@ -245,7 +244,7 @@ class OpenAIService:
 
         if not output_text:
             raise Exception("Responses APIの出力が空です")
-        
+
         # 長文レスポンスのログ出力
         if len(output_text) > 10000:
             logger.info(f"  長文レスポンスを取得しました（{len(output_text)}文字）")

@@ -5,24 +5,63 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>プロンプト実行 - Prompt Provision Tool</title>
     <link rel="stylesheet" href="../css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
-<body>
+<body class="user-theme">
     <div class="container">
         <div class="header">
-            <h1>⚡ プロンプト実行</h1>
+            <span class="tool-name">Prompt Provision Tool</span>
             <div class="user-info">
                 <span id="username-display">-</span>
                 <button class="btn-logout" onclick="logout()">ログアウト</button>
             </div>
+            <button class="hamburger-menu" onclick="toggleMobileMenu()">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+
+        <!-- モバイルメニュー -->
+        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
+        <div class="mobile-menu" id="mobile-menu">
+            <div class="mobile-menu-header">
+                <span class="tool-name">Prompt Provision Tool</span>
+                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+            </div>
+            <div class="mobile-menu-content">
+                <div class="nav">
+                    <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト一覧</button>
+                    <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
+                </div>
+                <div class="user-info">
+                    <span id="mobile-username-display">-</span>
+                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
+                </div>
+            </div>
         </div>
 
         <div class="content">
-            <div class="nav">
-                <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト一覧</button>
-                <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
+            <div class="page-title-container">
+                <h1 class="page-title">プロンプト実行</h1>
+                <button class="btn btn-secondary mobile-back-button" onclick="location.href='dashboard.html'">
+                    ← 戻る
+                </button>
+            </div>
+            <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; gap: 10px;">
+                    <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト一覧</button>
+                    <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
+                </div>
+                <button class="btn btn-secondary" onclick="location.href='dashboard.html'" style="display: inline-flex; align-items: center; gap: 5px; padding: 10px 20px;">
+                    ← プロンプト一覧に戻る
+                </button>
             </div>
 
-            <div id="alert-container"></div>
 
             <div class="card">
                 <h2 id="prompt-name">-</h2>
@@ -30,54 +69,85 @@
                 <p><strong>モデル:</strong> <span id="prompt-model">-</span></p>
             </div>
 
-            <form id="execute-form">
-                <div id="input-fields-container">
-                    <!-- 動的に生成される入力フィールド -->
+            <div class="execute-layout">
+                <div class="execute-input-panel">
+                    <h3>入力</h3>
+                    <form id="execute-form">
+                        <div id="input-fields-container">
+                            <!-- 動的に生成される入力フィールド -->
+                        </div>
+
+                        <div id="file-output-container" style="display: none;">
+                            <div class="form-group">
+                                <label for="output-format">出力形式</label>
+                                <select id="output-format">
+                                    <option value="txt">テキスト (TXT)</option>
+                                    <option value="csv">CSV</option>
+                                    <option value="pdf">PDF</option>
+                                    <option value="docx">Word (DOCX)</option>
+                                    <option value="md">Markdown (MD)</option>
+                                </select>
+                                <small style="color: rgba(255, 255, 255, 0.6);">実行結果を指定した形式でファイルとして出力できます</small>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" id="execute-btn" style="display: flex; align-items: center; justify-content: center; gap: 10px;">
+                            <span id="execute-btn-text">実行</span>
+                            <span id="execute-btn-spinner" style="display: none;">
+                                <div class="spinner" style="display: inline-block; width: 16px; height: 16px; border-width: 2px; vertical-align: middle;"></div>
+                            </span>
+                        </button>
+                    </form>
                 </div>
 
-                <div id="file-output-container" style="display: none;">
-                    <div class="form-group">
-                        <label for="output-format">出力形式</label>
-                        <select id="output-format">
-                            <option value="txt">テキスト (TXT)</option>
-                            <option value="csv">CSV</option>
-                            <option value="pdf">PDF</option>
-                            <option value="docx">Word (DOCX)</option>
-                            <option value="md">Markdown (MD)</option>
-                        </select>
-                        <small style="color: #6c757d;">実行結果を指定した形式でファイルとして出力できます</small>
+                <div class="execute-output-panel">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
+                        <h3 style="margin: 0;">出力</h3>
+                        <button onclick="copyOutput()" title="出力をコピー" class="icon-btn" id="copy-output-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; opacity: 0.5;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" style="width: 20px; height: 20px; fill: rgba(255, 255, 255, 0.7); transition: fill 0.2s ease, transform 0.2s ease;"><path d="M16 10c3.469 0 2 4 2 4s4-1.594 4 2v6h-10v-12h4zm.827-2h-6.827v16h14v-8.842c0-2.392-4.011-7.158-7.173-7.158zm-8.827 12h-6v-16h4l2.102 2h3.898l2-2h4v2.145c.656.143 1.327.391 2 .754v-4.899h-3c-1.229 0-2.18-1.084-3-2h-8c-.82.916-1.771 2-3 2h-3v20h8v-2zm2-18c.553 0 1 .448 1 1s-.447 1-1 1-1-.448-1-1 .447-1 1-1zm4 18h6v-1h-6v1zm0-2h6v-1h-6v1zm0-2h6v-1h-6v1z"/></svg>
+                        </button>
+                    </div>
+                    <div id="result-container">
+                        <div class="output-box" id="output-content">実行ボタンを押すと結果がここに表示されます</div>
+                        <div id="file-output-result" style="display: none;"></div>
+                        <div class="stats">
+                            <div class="stat-item">
+                                <label>使用モデル</label>
+                                <value id="stat-model">-</value>
+                            </div>
+                            <div class="stat-item">
+                                <label>実行時間</label>
+                                <value id="stat-time">-</value>
+                            </div>
+                            <div class="stat-item">
+                                <label>トークン数</label>
+                                <value id="stat-tokens">-</value>
+                            </div>
+                        </div>
                     </div>
                 </div>
+            </div>
 
-                <button type="submit" class="btn btn-primary" id="execute-btn">実行</button>
-            </form>
-
-            <div id="result-container" style="display: none;">
-                <h3>実行結果</h3>
-                <div class="output-box" id="output-content"></div>
-                <div id="file-output-result" style="display: none;"></div>
-                <div class="stats">
-                    <div class="stat-item">
-                        <label>使用モデル</label>
-                        <value id="stat-model">-</value>
-                    </div>
-                    <div class="stat-item">
-                        <label>実行時間</label>
-                        <value id="stat-time">-</value>
-                    </div>
-                    <div class="stat-item">
-                        <label>トークン数</label>
-                        <value id="stat-tokens">-</value>
+            <div class="history-section card" style="margin-top: 30px;">
+                <h3>実行履歴</h3>
+                <div id="history-container">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>読み込み中...</p>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
+
     <script src="js/user-common.js"></script>
     <script>
         let promptId = null;
         let promptDetail = null;
+        let executions = [];
+        let allExecutions = []; // 全ての実行履歴
+        let displayedHistoryCount = 3; // 表示する履歴の件数
 
         async function loadPromptDetail() {
             promptId = getQueryParam('id');
@@ -104,9 +174,192 @@
 
                 // 入力フィールドを生成
                 generateInputFields(promptDetail.input_schema);
+
+                // 実行履歴を読み込む
+                loadHistory();
             } catch (error) {
                 showAlert('プロンプト情報の読み込みに失敗しました', 'error');
                 console.error('Load prompt detail error:', error);
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const response = await apiRequest('/api/user/executions?limit=100');
+                const responseExecutions = response.items || response;
+                // 現在のプロンプトIDでフィルタリング
+                allExecutions = responseExecutions.filter(exec => exec.prompt_id === parseInt(promptId));
+                displayedHistoryCount = 3; // リセット
+                renderHistory();
+            } catch (error) {
+                showAlert('実行履歴の読み込みに失敗しました', 'error');
+                console.error('Load history error:', error);
+            }
+        }
+
+        function renderHistory() {
+            const container = document.getElementById('history-container');
+
+            if (allExecutions.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">このプロンプトの実行履歴がありません</p>';
+                return;
+            }
+
+            // 表示する履歴を取得（最新から順に）
+            const displayedExecutions = allExecutions.slice(0, displayedHistoryCount);
+            const hasMore = allExecutions.length > displayedHistoryCount;
+
+            container.innerHTML = `
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>実行日時</th>
+                            <th>モデル</th>
+                            <th>実行時間</th>
+                            <th>トークン数</th>
+                            <th>ステータス</th>
+                            <th>アクション</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${displayedExecutions.map(execution => `
+                            <tr>
+                                <td>${formatDate(execution.executed_at)}</td>
+                                <td>${execution.model_used}</td>
+                                <td>${execution.execution_time}ms</td>
+                                <td>${execution.tokens_used || '-'}</td>
+                                <td><span style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</span></td>
+                                <td>
+                                    <div class="actions">
+                                        <button onclick="editExecution(${execution.id})" title="編集" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
+                                            <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #28a745; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m11.239 15.533c-1.045 3.004-1.238 3.451-1.238 3.84 0 .441.385.627.627.627.272 0 1.108-.301 3.829-1.249zm.888-.888 3.22 3.22 6.408-6.401c.163-.163.245-.376.245-.591 0-.213-.082-.427-.245-.591-.58-.579-1.458-1.457-2.039-2.036-.163-.163-.377-.245-.591-.245-.213 0-.428.082-.592.245zm-3.127-.895c0-.402-.356-.75-.75-.75-2.561 0-2.939 0-5.5 0-.394 0-.75.348-.75.75s.356.75.75.75h5.5c.394 0 .75-.348.75-.75zm5-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75z" fill-rule="nonzero"/></svg>
+                                        </button>
+                                        <button onclick="showHistoryDetail(${execution.id})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
+                                            <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #17a2b8; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+                ${hasMore ? `
+                    <div style="text-align: center; margin-top: 15px;">
+                        <button class="btn btn-secondary" onclick="loadMoreHistory()">もっと見る</button>
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        function loadMoreHistory() {
+            displayedHistoryCount += 3;
+            renderHistory();
+        }
+
+        function formatJSON(json) {
+            try {
+                if (typeof json === 'string') {
+                    json = JSON.parse(json);
+                }
+                return JSON.stringify(json, null, 2);
+            } catch {
+                return json;
+            }
+        }
+
+
+        async function showHistoryDetail(id) {
+            try {
+                const execution = await apiRequest(`/api/user/executions/${id}`);
+                const detailHTML = `
+                    <div style="text-align: left; max-height: 70vh; overflow-y: auto;">
+                        <div style="margin-bottom: 15px;">
+                            <strong>実行日時:</strong><br>
+                            <span>${formatDate(execution.executed_at)}</span>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <strong>使用モデル:</strong><br>
+                            <span>${execution.model_used}</span>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <strong>入力データ:</strong><br>
+                            <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-top: 5px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word; color: rgba(255, 255, 255, 0.9);">${formatJSON(execution.input_data)}</div>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <strong>出力データ:</strong><br>
+                            <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-top: 5px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; color: rgba(255, 255, 255, 0.9);">${execution.output_data || '-'}</div>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <strong>実行時間:</strong><br>
+                            <span>${execution.execution_time}ms</span>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <strong>使用トークン数:</strong><br>
+                            <span>${execution.tokens_used || '-'}</span>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <strong>ステータス:</strong><br>
+                            <span style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</span>
+                        </div>
+                        ${execution.error_message ? `
+                        <div style="margin-bottom: 15px;">
+                            <strong>エラーメッセージ:</strong><br>
+                            <div style="background: rgba(220, 53, 69, 0.2); border: 1px solid rgba(220, 53, 69, 0.4); color: rgba(255, 107, 107, 0.9); padding: 10px; border-radius: 8px; margin-top: 5px;">${execution.error_message}</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                `;
+
+                await Swal.fire({
+                    title: '実行履歴詳細',
+                    html: detailHTML,
+                    width: '800px',
+                    confirmButtonText: '閉じる',
+                    confirmButtonColor: '#6c757d',
+                    customClass: {
+                        popup: 'swal-wide'
+                    }
+                });
+            } catch (error) {
+                await showAlert('実行履歴の詳細取得に失敗しました', 'error');
+                console.error('Show history detail error:', error);
+            }
+        }
+
+        async function editExecution(id) {
+            try {
+                const execution = await apiRequest(`/api/user/executions/${id}`);
+
+                // 入力データを入力フィールドに設定
+                if (execution.input_data) {
+                    let inputData;
+                    try {
+                        // input_dataが文字列の場合はJSONパース
+                        if (typeof execution.input_data === 'string') {
+                            inputData = JSON.parse(execution.input_data);
+                        } else {
+                            inputData = execution.input_data;
+                        }
+
+                        // 各入力フィールドに値を設定
+                        Object.entries(inputData).forEach(([key, value]) => {
+                            const inputElement = document.querySelector(`#${key}, [name="${key}"]`);
+                            if (inputElement) {
+                                inputElement.value = value || '';
+                            }
+                        });
+                    } catch (e) {
+                        console.error('Failed to parse input data:', e);
+                    }
+                }
+
+                // 入力パネルにスクロール
+                document.querySelector('.execute-input-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+                showAlert('入力データを読み込みました。必要に応じて編集してから実行ボタンを押してください。', 'success');
+            } catch (error) {
+                showAlert('実行履歴の読み込みに失敗しました', 'error');
+                console.error('Edit execution error:', error);
             }
         }
 
@@ -139,7 +392,7 @@
                     return `
                         <div class="form-group">
                             <label for="${fieldName}">${label}</label>
-                            ${description ? `<small style="color: #666;">${description}</small>` : ''}
+                            ${description ? `<small style="color: rgba(255, 255, 255, 0.6);">${description}</small>` : ''}
                             <textarea id="${fieldName}" name="${fieldName}" rows="10" ${required} ${placeholder}></textarea>
                         </div>
                     `;
@@ -147,7 +400,7 @@
                     return `
                         <div class="form-group">
                             <label for="${fieldName}">${label}</label>
-                            ${description ? `<small style="color: #666;">${description}</small>` : ''}
+                            ${description ? `<small style="color: rgba(255, 255, 255, 0.6);">${description}</small>` : ''}
                             <textarea id="${fieldName}" name="${fieldName}" rows="5" ${required} ${placeholder}></textarea>
                         </div>
                     `;
@@ -155,7 +408,7 @@
                     return `
                         <div class="form-group">
                             <label for="${fieldName}">${label}</label>
-                            ${description ? `<small style="color: #666;">${description}</small>` : ''}
+                            ${description ? `<small style="color: rgba(255, 255, 255, 0.6);">${description}</small>` : ''}
                             <input type="number" id="${fieldName}" name="${fieldName}" ${required} ${placeholder}>
                         </div>
                     `;
@@ -163,7 +416,7 @@
                     return `
                         <div class="form-group">
                             <label for="${fieldName}">${label}</label>
-                            ${description ? `<small style="color: #666;">${description}</small>` : ''}
+                            ${description ? `<small style="color: rgba(255, 255, 255, 0.6);">${description}</small>` : ''}
                             <input type="text" id="${fieldName}" name="${fieldName}" ${required} ${placeholder}>
                         </div>
                     `;
@@ -177,19 +430,37 @@
             e.preventDefault();
 
             const executeBtn = document.getElementById('execute-btn');
-            executeBtn.disabled = true;
-            executeBtn.textContent = '実行中...';
+            const executeBtnText = document.getElementById('execute-btn-text');
+            const executeBtnSpinner = document.getElementById('execute-btn-spinner');
+            const form = e.target;
 
-            // 入力データを収集
+            // 入力データを収集（フィールドを無効化する前に収集する必要がある）
             const formData = new FormData(e.target);
             const inputData = {};
             for (const [key, value] of formData.entries()) {
                 inputData[key] = value;
             }
 
+            // 実行ボタンを無効化
+            executeBtn.disabled = true;
+            executeBtnText.textContent = '実行中...';
+
+            // スピナーを表示
+            if (executeBtnSpinner) {
+                executeBtnSpinner.style.display = 'inline';
+            }
+
+            // 全ての入力フィールドを無効化
+            const inputFields = form.querySelectorAll('input, textarea, select, button');
+            inputFields.forEach(field => {
+                if (field !== executeBtn) {
+                    field.disabled = true;
+                }
+            });
+
             // 出力形式を取得（ファイル出力が許可されている場合）
-            const outputFormat = document.getElementById('file-output-container').style.display === 'block' 
-                ? document.getElementById('output-format').value 
+            const outputFormat = document.getElementById('file-output-container').style.display === 'block'
+                ? document.getElementById('output-format').value
                 : 'txt';
 
             try {
@@ -202,11 +473,17 @@
                     })
                 });
 
-                // 結果を表示
+                // 結果を表示（中身だけを更新）
                 document.getElementById('output-content').textContent = result.output;
                 document.getElementById('stat-model').textContent = result.model_used;
                 document.getElementById('stat-time').textContent = `${result.execution_time}ms`;
                 document.getElementById('stat-tokens').textContent = result.tokens_used || '-';
+                
+                // コピーボタンを有効化
+                const copyBtn = document.getElementById('copy-output-btn');
+                if (copyBtn) {
+                    copyBtn.style.opacity = '1';
+                }
 
                 // ファイル出力結果の表示
                 const fileOutputDiv = document.getElementById('file-output-result');
@@ -216,10 +493,10 @@
                     downloadLink.href = `data:application/octet-stream;base64,${fileOutput.content}`;
                     downloadLink.download = fileOutput.filename;
                     downloadLink.className = 'btn btn-success';
-                    downloadLink.textContent = `📥 ${fileOutput.filename} をダウンロード (${(fileOutput.size / 1024).toFixed(2)} KB)`;
+                    downloadLink.textContent = `${fileOutput.filename} をダウンロード (${(fileOutput.size / 1024).toFixed(2)} KB)`;
                     downloadLink.style.marginTop = '10px';
                     downloadLink.style.display = 'inline-block';
-                    
+
                     if (fileOutputDiv) {
                         fileOutputDiv.innerHTML = '';
                         fileOutputDiv.appendChild(downloadLink);
@@ -231,21 +508,86 @@
                     }
                 }
 
-                document.getElementById('result-container').style.display = 'block';
+                await Swal.fire({
+                    title: '実行完了',
+                    text: '実行が完了しました',
+                    icon: 'success',
+                    confirmButtonText: 'OK'
+                });
 
-                showAlert('実行が完了しました', 'success');
+                // 実行履歴を再読み込み
+                loadHistory();
             } catch (error) {
-                showAlert('実行に失敗しました: ' + error.message, 'error');
+                await Swal.fire({
+                    title: '実行エラー',
+                    text: '実行に失敗しました: ' + error.message,
+                    icon: 'error',
+                    confirmButtonText: 'OK'
+                });
                 console.error('Execute error:', error);
             } finally {
+                // 実行ボタンを再有効化
                 executeBtn.disabled = false;
-                executeBtn.textContent = '実行';
+                executeBtnText.textContent = '実行';
+
+                // スピナーを非表示
+                if (executeBtnSpinner) {
+                    executeBtnSpinner.style.display = 'none';
+                }
+
+                // 全ての入力フィールドを再有効化
+                inputFields.forEach(field => {
+                    if (field !== executeBtn) {
+                        field.disabled = false;
+                    }
+                });
             }
         });
 
+        // 出力をコピーする関数
+        async function copyOutput() {
+            const outputContent = document.getElementById('output-content');
+            const text = outputContent.textContent || outputContent.innerText;
+            
+            if (!text || text === '実行ボタンを押すと結果がここに表示されます') {
+                showAlert('コピーする内容がありません', 'warning');
+                return;
+            }
+
+            try {
+                await navigator.clipboard.writeText(text);
+                showAlert('出力をクリップボードにコピーしました', 'success');
+                
+                // ボタンの視覚的フィードバック
+                const copyBtn = document.getElementById('copy-output-btn');
+                const originalOpacity = copyBtn.style.opacity;
+                copyBtn.style.opacity = '1';
+                setTimeout(() => {
+                    copyBtn.style.opacity = originalOpacity;
+                }, 500);
+            } catch (error) {
+                // フォールバック: テキストエリアを使用
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    showAlert('出力をクリップボードにコピーしました', 'success');
+                } catch (err) {
+                    showAlert('コピーに失敗しました', 'error');
+                }
+                document.body.removeChild(textarea);
+            }
+        }
+
         // ページ読み込み時に実行
-        checkAuth();
-        loadPromptDetail();
+        (async () => {
+            await checkAuth();
+            loadPromptDetail();
+        })();
     </script>
 </body>
 </html>

@@ -191,6 +191,13 @@ class DashboardStats(BaseModel):
     executions_this_month: int
 
 
+class UserDashboardStats(BaseModel):
+    available_prompts: int  # 利用可能なプロンプト数
+    total_executions: int  # 総実行回数
+    executions_today: int  # 今日の実行回数
+    executions_this_month: int  # 今月の実行回数
+
+
 class AccountWithPromptCount(BaseModel):
     id: int
     username: str
@@ -202,4 +209,13 @@ class AccountWithPromptCount(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ==================== ページネーション ====================
+class PaginatedResponse(BaseModel):
+    """ページネーション用のレスポンスモデル"""
+    items: List[Any]
+    total: int
+    skip: int
+    limit: int
 

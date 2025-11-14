@@ -1,22 +1,33 @@
-"""initial schema
+"""初回セットアップ用統合マイグレーション
 
-Revision ID: 001
-Revises:
-Create Date: 2024-10-22 00:00:00.000000
+本番環境・開発環境の初回セットアップ時に使用する統合マイグレーションファイル
+以下の変更をすべて含む：
+- 初期スキーマ作成（accounts, prompts, account_prompts, executions, api_configs）
+- モデルタイプとアカウントタイプを文字列型で作成（ENUM型を使用しない）
+- ファイル出力機能（allows_file_output）を含む
 
+注意: このファイルは新規環境の初回セットアップ専用です。
+既存環境で使用する場合は、個別のマイグレーションファイル（001-005）を使用してください。
+
+Revision ID: 000
+Revises: None
+Create Date: 2025-11-15 00:00:00.000000
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
-revision = '001'
+revision = '000'
 down_revision = None
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
+    """
+    初回セットアップ: すべてのテーブルを最新の状態で作成
+    """
     # accounts テーブル
     op.create_table(
         'accounts',
@@ -24,7 +35,7 @@ def upgrade() -> None:
         sa.Column('username', sa.String(length=100), nullable=False),
         sa.Column('email', sa.String(length=255), nullable=False),
         sa.Column('hashed_password', sa.String(length=255), nullable=False),
-        sa.Column('account_type', sa.Enum('parent', 'child', name='accounttype'), nullable=False),
+        sa.Column('account_type', sa.String(length=20), nullable=False),  # ENUMではなく文字列型
         sa.Column('is_active', sa.Boolean(), nullable=False, server_default='1'),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime(timezone=True), onupdate=sa.text('CURRENT_TIMESTAMP')),
@@ -41,9 +52,10 @@ def upgrade() -> None:
         sa.Column('name', sa.String(length=255), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
         sa.Column('encrypted_content', sa.Text(), nullable=False),
-        sa.Column('model_type', sa.Enum('gpt-4', 'gpt-4-turbo-preview', 'gpt-5-pro', 'gemini-pro', 'gemini-2.5-pro', 'gemini-2.5-pro-deep-think', name='modeltype'), nullable=False),
+        sa.Column('model_type', sa.String(length=100), nullable=False),  # ENUMではなく文字列型
         sa.Column('input_schema', sa.Text(), nullable=True),
         sa.Column('is_active', sa.Boolean(), nullable=False, server_default='1'),
+        sa.Column('allows_file_output', sa.Boolean(), nullable=False, server_default='0'),  # ファイル出力機能を含む
         sa.Column('created_by', sa.Integer(), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime(timezone=True), onupdate=sa.text('CURRENT_TIMESTAMP')),
@@ -103,6 +115,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """
+    すべてのテーブルを削除
+    """
     op.drop_table('api_configs')
     op.drop_table('executions')
     op.drop_table('account_prompts')

@@ -15,11 +15,10 @@ class ModelType(str, enum.Enum):
     """AIモデルタイプ"""
     GPT4 = "gpt-4"
     GPT4_TURBO = "gpt-4-turbo-preview"
-    GPT5_PRO = "gpt-5-pro"  # 将来対応
-    GPT5_THINKING = "gpt-5-thinking"
+    GPT5_PRO = "gpt-5-pro"  # 最上位モデル
+    GPT5 = "gpt-5"
     GEMINI_PRO = "gemini-pro"
     GEMINI_2_5_PRO = "gemini-2.5-pro"
-    GEMINI_DEEP_THINK = "gemini-2.5-pro-deep-think"
 
 
 class Account(Base):
