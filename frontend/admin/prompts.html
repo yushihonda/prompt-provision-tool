@@ -5,115 +5,106 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>プロンプト管理 - Prompt Provision Tool</title>
     <link rel="stylesheet" href="../css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
-<body>
+<body class="admin-theme">
     <div class="container">
         <div class="header">
-            <h1>📝 プロンプト管理</h1>
+            <span class="tool-name">Prompt Provision Tool</span>
             <div class="user-info">
                 <span id="username-display">-</span>
                 <button class="btn-logout" onclick="logout()">ログアウト</button>
             </div>
+            <button class="hamburger-menu" onclick="toggleMobileMenu()">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+
+        <!-- モバイルメニュー -->
+        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
+        <div class="mobile-menu" id="mobile-menu">
+            <div class="mobile-menu-header">
+                <span class="tool-name">Prompt Provision Tool</span>
+                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+            </div>
+            <div class="mobile-menu-content">
+                <div class="nav">
+                    <button class="nav-item" onclick="location.href='dashboard.html'">ダッシュボード</button>
+                    <button class="nav-item active" onclick="location.href='prompts.html'">プロンプト管理</button>
+                    <button class="nav-item" onclick="location.href='accounts.html'">アカウント管理</button>
+                    <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
+                </div>
+                <div class="user-info">
+                    <span id="mobile-username-display">-</span>
+                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
+                </div>
+            </div>
         </div>
 
         <div class="content">
-            <div class="nav">
-                <button class="nav-item" onclick="location.href='dashboard.html'">ダッシュボード</button>
-                <button class="nav-item active" onclick="location.href='prompts.html'">プロンプト管理</button>
-                <button class="nav-item" onclick="location.href='accounts.html'">アカウント管理</button>
-                <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
+            <h1 class="page-title">プロンプト管理</h1>
+            <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; gap: 10px;">
+                    <button class="nav-item" onclick="location.href='dashboard.html'">ダッシュボード</button>
+                    <button class="nav-item active" onclick="location.href='prompts.html'">プロンプト管理</button>
+                    <button class="nav-item" onclick="location.href='accounts.html'">アカウント管理</button>
+                    <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
+                </div>
+                <button class="btn btn-purple" onclick="showCreateModal()" style="white-space: nowrap; display: inline-flex; align-items: center; gap: 8px;">
+                    <img src="../img/iconmonstr-text-plus-lined.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">
+                    プロンプト作成
+                </button>
             </div>
 
-            <div id="alert-container"></div>
 
-            <button class="btn btn-success" onclick="showCreateModal()">新しいプロンプトを作成</button>
-
-            <div id="prompts-container">
-                <div class="loading">
-                    <div class="spinner"></div>
-                    <p>読み込み中...</p>
-                </div>
+            <div class="card">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>プロンプト名</th>
+                            <th>説明</th>
+                            <th>モデル</th>
+                            <th>ステータス</th>
+                            <th>ファイル出力</th>
+                            <th>アクション</th>
+                        </tr>
+                    </thead>
+                    <tbody id="prompts-tbody">
+                        <tr>
+                            <td colspan="7" style="text-align: center;">読み込み中...</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
-        </div>
-    </div>
-
-    <!-- プロンプト作成/編集モーダル -->
-    <div id="prompt-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 id="modal-title">新しいプロンプト</h2>
-                <button class="close-modal" onclick="hideModal('prompt-modal')">&times;</button>
-            </div>
-            <form id="prompt-form">
-                <input type="hidden" id="prompt-id">
-                <div class="form-group">
-                    <label for="prompt-name">プロンプト名 *</label>
-                    <input type="text" id="prompt-name" required>
-                </div>
-                <div class="form-group">
-                    <label for="prompt-description">説明</label>
-                    <textarea id="prompt-description" rows="3"></textarea>
-                </div>
-                <div class="form-group">
-                    <label for="prompt-model">AIモデル *</label>
-                    <select id="prompt-model" required>
-                        <optgroup label="OpenAI">
-                            <option value="gpt-5-thinking" selected>GPT-5 Thinking</option>
-                            <option value="gpt-5-pro">GPT-5 Pro</option>
-                            <option value="gpt-5">GPT-5</option>
-                            <option value="gpt-4o-mini">GPT-4o Mini</option>
-                        </optgroup>
-                        <optgroup label="Gemini">
-                            <option value="gemini-2.5-pro-deep-think">Gemini 2.5 Pro Deep Think</option>
-                            <option value="gemini-2.5-pro">Gemini 2.5 Pro（無料枠: 1日100リクエスト、有料版で制限なし）</option>
-                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                        </optgroup>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="prompt-content">プロンプト内容 *</label>
-                    <textarea id="prompt-content" rows="10" placeholder="プロンプトを入力してください。&#10;変数は {{variable_name}} の形式で記述できます。" required></textarea>
-                    <small style="color: #6c757d;">変数の例: {{article_text}}, {{input}}, {{query}} など</small>
-                </div>
-                <div class="form-group">
-                    <label for="prompt-schema">入力スキーマ（JSON形式、オプション）</label>
-                    <textarea id="prompt-schema" rows="5" placeholder='{"field_name": {"type": "string", "label": "フィールドラベル", "required": true}}'></textarea>
-                </div>
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="prompt-allows-file-output">
-                        ファイル出力を許可する
-                    </label>
-                    <small style="color: #6c757d;">チェックすると、このプロンプトの実行結果をCSV、PDF、DOCXなどの形式で出力できます</small>
-                </div>
-                <div class="actions">
-                    <button type="submit" class="btn btn-primary">保存</button>
-                    <button type="button" class="btn btn-secondary" onclick="hideModal('prompt-modal')">キャンセル</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- プロンプト内容表示モーダル -->
-    <div id="view-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>プロンプト内容</h2>
-                <button class="close-modal" onclick="hideModal('view-modal')">&times;</button>
-            </div>
-            <div class="json-display" id="prompt-content-display"></div>
+            <div id="pagination-container" class="pagination" style="display: none;"></div>
         </div>
     </div>
 
     <script src="js/admin-common.js"></script>
     <script>
         let prompts = [];
+        let currentPage = 1;
+        const itemsPerPage = 10;
+        let totalItems = 0;
 
-        async function loadPrompts() {
+        async function loadPrompts(page = 1) {
             try {
-                prompts = await apiRequest('/api/admin/prompts');
+                const skip = (page - 1) * itemsPerPage;
+                const response = await apiRequest(`/api/admin/prompts?skip=${skip}&limit=${itemsPerPage}`);
+
+                prompts = response.items || response;
+                totalItems = response.total !== undefined ? response.total : (prompts.length === itemsPerPage ? page * itemsPerPage + 1 : page * itemsPerPage);
+
+                currentPage = page;
                 renderPrompts();
+                renderPagination();
             } catch (error) {
                 showAlert('プロンプトの読み込みに失敗しました', 'error');
                 console.error('Load prompts error:', error);
@@ -121,146 +112,479 @@
         }
 
         function renderPrompts() {
-            const container = document.getElementById('prompts-container');
+            const tbody = document.getElementById('prompts-tbody');
 
             if (prompts.length === 0) {
-                container.innerHTML = '<p style="text-align: center; color: #6c757d;">プロンプトがまだ登録されていません</p>';
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: rgba(255, 255, 255, 0.6);">プロンプトがまだ登録されていません</td></tr>';
                 return;
             }
 
-            container.innerHTML = prompts.map(prompt => `
-                <div class="card">
-                    <h3>${prompt.name}</h3>
-                    <p>${prompt.description || '説明なし'}</p>
-                    <p><strong>モデル:</strong> ${prompt.model_type}</p>
-                    <p><strong>ステータス:</strong> ${prompt.is_active ? '有効' : '無効'}</p>
-                    <p><strong>ファイル出力:</strong> ${prompt.allows_file_output ? '✅ 許可' : '❌ 不可'}</p>
-                    <div class="actions">
-                        <button class="btn btn-sm btn-primary" onclick="viewPromptContent(${prompt.id})">内容を表示</button>
-                        <button class="btn btn-sm btn-secondary" onclick="editPrompt(${prompt.id})">編集</button>
-                        <button class="btn btn-sm btn-danger" onclick="deletePrompt(${prompt.id})">削除</button>
-                    </div>
-                </div>
-            `).join('');
+            tbody.innerHTML = prompts.map(prompt => {
+                let modelDisplay = prompt.model_type;
+                if (prompt.model_type === 'gpt-5.1' || prompt.model_type === 'gemini-3-pro-preview') {
+                    modelDisplay = `${prompt.model_type}<span class="new-badge">NEW</span>`;
+                }
+                return `
+                <tr>
+                    <td>${prompt.id}</td>
+                    <td>${prompt.name}</td>
+                    <td>${prompt.description || '説明なし'}</td>
+                    <td>${modelDisplay}</td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            ${prompt.is_active ? `
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="#28a745" style="flex-shrink: 0;">
+                                    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                                </svg>
+                            ` : `
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="#dc3545" style="flex-shrink: 0;">
+                                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                                </svg>
+                            `}
+                            <span style="color: ${prompt.is_active ? '#28a745' : '#dc3545'}; font-weight: ${prompt.is_active ? 'bold' : 'normal'};">${prompt.is_active ? '有効' : '無効'}</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            ${prompt.allows_file_output ? `
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="#28a745" style="flex-shrink: 0;">
+                                    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                                </svg>
+                            ` : `
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="#dc3545" style="flex-shrink: 0;">
+                                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                                </svg>
+                            `}
+                            <span style="color: ${prompt.allows_file_output ? '#28a745' : '#dc3545'}; font-weight: ${prompt.allows_file_output ? 'bold' : 'normal'};">${prompt.allows_file_output ? '許可' : '不可'}</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="actions">
+                            <button onclick="viewPromptContent(${prompt.id})" title="プロンプトを表示" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
+                                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #9c27b0; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m15.985 17.031c-1.479 1.238-3.384 1.985-5.461 1.985-4.697 0-8.509-3.812-8.509-8.508s3.812-8.508 8.509-8.508c4.695 0 8.508 3.812 8.508 8.508 0 2.078-.747 3.984-1.985 5.461l4.749 4.75c.146.146.219.338.219.531 0 .587-.537.75-.75.75-.192 0-.384-.073-.531-.22zm-5.461-13.53c-3.868 0-7.007 3.14-7.007 7.007s3.139 7.007 7.007 7.007c3.866 0 7.007-3.14 7.007-7.007s-3.141-7.007-7.007-7.007zm.741 8.499h-4.5c-.414 0-.75.336-.75.75s.336.75.75.75h4.5c.414 0 .75-.336.75-.75s-.336-.75-.75-.75zm3-2.5h-7.5c-.414 0-.75.336-.75.75s.336.75.75.75h7.5c.414 0 .75-.336.75-.75s-.336-.75-.75-.75zm0-2.5h-7.5c-.414 0-.75.336-.75.75s.336.75.75.75h7.5c.414 0 .75-.336.75-.75s-.336-.75-.75-.75z" fill-rule="nonzero"/></svg>
+                            </button>
+                            <button onclick="editPrompt(${prompt.id})" title="編集" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
+                                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #28a745; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m11.239 15.533c-1.045 3.004-1.238 3.451-1.238 3.84 0 .441.385.627.627.627.272 0 1.108-.301 3.829-1.249zm.888-.888 3.22 3.22 6.408-6.401c.163-.163.245-.376.245-.591 0-.213-.082-.427-.245-.591-.58-.579-1.458-1.457-2.039-2.036-.163-.163-.377-.245-.591-.245-.213 0-.428.082-.592.245zm-3.127-.895c0-.402-.356-.75-.75-.75-2.561 0-2.939 0-5.5 0-.394 0-.75.348-.75.75s.356.75.75.75h5.5c.394 0 .75-.348.75-.75zm5-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75z" fill-rule="nonzero"/></svg>
+                            </button>
+                            <button onclick="deletePrompt(${prompt.id})" title="削除" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
+                                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #dc3545; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m20.015 6.506h-16v14.423c0 .591.448 1.071 1 1.071h14c.552 0 1-.48 1-1.071 0-3.905 0-14.423 0-14.423zm-5.75 2.494c.414 0 .75.336.75.75v8.5c0 .414-.336.75-.75.75s-.75-.336-.75-.75v-8.5c0-.414.336-.75.75-.75zm-4.5 0c.414 0 .75.336.75.75v8.5c0 .414-.336.75-.75.75s-.75-.336-.75-.75v-8.5c0-.414.336-.75.75-.75zm-.75-5v-1c0-.535.474-1 1-1h4c.526 0 1 .465 1 1v1h5.254c.412 0 .746.335.746.747s-.334.747-.746.747h-16.507c-.413 0-.747-.335-.747-.747s.334-.747.747-.747zm4.5 0v-.5h-3v.5z" fill-rule="nonzero"/></svg>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                `;
+            }).join('');
         }
 
-        function showCreateModal() {
-            document.getElementById('modal-title').textContent = '新しいプロンプト';
-            document.getElementById('prompt-form').reset();
-            document.getElementById('prompt-id').value = '';
-            showModal('prompt-modal');
+        function renderPagination() {
+            const container = document.getElementById('pagination-container');
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+            if (totalPages <= 1) {
+                container.style.display = 'none';
+                return;
+            }
+
+            container.style.display = 'flex';
+
+            let html = `
+                <button onclick="loadPrompts(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>前へ</button>
+            `;
+
+            const startPage = Math.max(1, currentPage - 2);
+            const endPage = Math.min(totalPages, startPage + 4);
+
+            for (let i = startPage; i <= endPage; i++) {
+                html += `<button class="page-number ${i === currentPage ? 'active' : ''}" onclick="loadPrompts(${i})">${i}</button>`;
+            }
+
+            html += `
+                <span class="page-info">${currentPage} / ${totalPages}</span>
+                <button onclick="loadPrompts(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>次へ</button>
+            `;
+
+            container.innerHTML = html;
+        }
+
+        function formatJSON(json) {
+            try {
+                if (typeof json === 'string') {
+                    json = JSON.parse(json);
+                }
+                return JSON.stringify(json, null, 2);
+            } catch {
+                return json;
+            }
+        }
+
+        async function showCreateModal() {
+            const { value: formValues } = await Swal.fire({
+                title: '新しいプロンプト',
+                html: `
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">プロンプト名 <span style="color: #ff6b6b;">*</span></label>
+                        <input id="swal-prompt-name" class="swal2-input" placeholder="例: 記事要約プロンプト" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">説明</label>
+                        <textarea id="swal-prompt-description" class="swal2-textarea" placeholder="このプロンプトの用途や説明を入力してください" style="min-height: 80px; width: 100%; margin-top: 0; box-sizing: border-box; resize: vertical; max-width: 100%;"></textarea>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">AIモデル <span style="color: #ff6b6b;">*</span></label>
+                        <select id="swal-prompt-model" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <optgroup label="OpenAI">
+                                <option value="gpt-5.1" selected>GPT-5.1 NEW</option>
+                                <option value="gpt-5-pro">GPT-5 Pro</option>
+                                <option value="gpt-5">GPT-5</option>
+                                <option value="gpt-4o-mini">GPT-4o Mini</option>
+                            </optgroup>
+                            <optgroup label="Gemini">
+                                <option value="gemini-3-pro-preview">Gemini 3.0 Pro NEW</option>
+                                <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">プロンプト内容 <span style="color: #ff6b6b;">*</span></label>
+                        <textarea id="swal-prompt-content" class="swal2-textarea" placeholder="プロンプトを入力してください。&#10;変数は {{variable_name}} の形式で記述できます。&#10;例: {{article_text}} を要約してください。" required style="min-height: 200px; width: 100%; margin-top: 0; box-sizing: border-box; resize: vertical; max-width: 100%;"></textarea>
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">変数の例: {{article_text}}, {{input}}, {{query}} など</small>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">入力スキーマ（JSON形式、オプション）</label>
+                        <textarea id="swal-prompt-schema" class="swal2-textarea" placeholder='{"field_name": {"type": "string", "label": "フィールドラベル", "required": true}}' style="min-height: 120px; width: 100%; margin-top: 0; box-sizing: border-box; resize: vertical; max-width: 100%; font-family: monospace; font-size: 12px;"></textarea>
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">ユーザー入力フィールドの定義をJSON形式で指定します（省略可能）</small>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="swal-prompt-is-active" checked style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
+                            <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">有効にする</span>
+                        </label>
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このプロンプトが有効になり、ユーザーが使用できるようになります</small>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="swal-prompt-allows-file-output" style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
+                            <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">ファイル出力を許可する</span>
+                        </label>
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このプロンプトの実行結果をCSV、PDF、DOCXなどの形式で出力できます</small>
+                    </div>
+                `,
+                focusConfirm: false,
+                showCancelButton: true,
+                confirmButtonText: '保存',
+                cancelButtonText: 'キャンセル',
+                confirmButtonColor: '#28a745',
+                cancelButtonColor: '#6c757d',
+                width: '800px',
+                customClass: {
+                    popup: 'swal-no-scroll',
+                    htmlContainer: 'swal-no-scroll'
+                },
+                preConfirm: () => {
+                    const name = document.getElementById('swal-prompt-name').value.trim();
+                    const description = document.getElementById('swal-prompt-description').value.trim();
+                    const model = document.getElementById('swal-prompt-model').value;
+                    const content = document.getElementById('swal-prompt-content').value.trim();
+                    const schemaText = document.getElementById('swal-prompt-schema').value.trim();
+                    const isActive = document.getElementById('swal-prompt-is-active').checked;
+                    const allowsFileOutput = document.getElementById('swal-prompt-allows-file-output').checked;
+
+                    if (!name) {
+                        Swal.showValidationMessage('プロンプト名は必須です');
+                        return false;
+                    }
+                    if (!content) {
+                        Swal.showValidationMessage('プロンプト内容は必須です');
+                        return false;
+                    }
+
+                    let inputSchema = null;
+                    if (schemaText) {
+                        try {
+                            inputSchema = JSON.parse(schemaText);
+                        } catch {
+                            Swal.showValidationMessage('入力スキーマのJSON形式が正しくありません');
+                            return false;
+                        }
+                    }
+
+                    return {
+                        name,
+                        description,
+                        model,
+                        content,
+                        inputSchema,
+                        isActive,
+                        allowsFileOutput
+                    };
+                }
+            });
+
+            if (formValues) {
+                await savePrompt(null, formValues);
+            }
         }
 
         async function editPrompt(id) {
             const prompt = prompts.find(p => p.id === id);
             if (!prompt) return;
 
-            document.getElementById('modal-title').textContent = 'プロンプトを編集';
-            document.getElementById('prompt-id').value = prompt.id;
-            document.getElementById('prompt-name').value = prompt.name;
-            document.getElementById('prompt-description').value = prompt.description || '';
-            document.getElementById('prompt-model').value = prompt.model_type;
-
             // プロンプト内容を取得
+            let promptContent = '';
             try {
                 const data = await apiRequest(`/api/admin/prompts/${id}/content`);
-                document.getElementById('prompt-content').value = data.content;
+                promptContent = data.content;
             } catch (error) {
-                showAlert('プロンプト内容の読み込みに失敗しました', 'error');
+                await showAlert('プロンプト内容の読み込みに失敗しました', 'error');
+                return;
             }
 
-            if (prompt.input_schema) {
-                document.getElementById('prompt-schema').value = formatJSON(prompt.input_schema);
-            }
+            const { value: formValues } = await Swal.fire({
+                title: 'プロンプトを編集',
+                html: `
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">プロンプト名 <span style="color: #ff6b6b;">*</span></label>
+                        <input id="swal-prompt-name" class="swal2-input" placeholder="例: 記事要約プロンプト" value="${prompt.name.replace(/"/g, '&quot;')}" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">説明</label>
+                        <textarea id="swal-prompt-description" class="swal2-textarea" placeholder="このプロンプトの用途や説明を入力してください" style="min-height: 80px; width: 100%; margin-top: 0; box-sizing: border-box; resize: vertical; max-width: 100%;">${(prompt.description || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">AIモデル <span style="color: #ff6b6b;">*</span></label>
+                        <select id="swal-prompt-model" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <optgroup label="OpenAI">
+                                <option value="gpt-5.1" ${prompt.model_type === 'gpt-5.1' ? 'selected' : ''}>GPT-5.1 NEW</option>
+                                <option value="gpt-5-pro" ${prompt.model_type === 'gpt-5-pro' ? 'selected' : ''}>GPT-5 Pro</option>
+                                <option value="gpt-5" ${prompt.model_type === 'gpt-5' ? 'selected' : ''}>GPT-5</option>
+                                <option value="gpt-4o-mini" ${prompt.model_type === 'gpt-4o-mini' ? 'selected' : ''}>GPT-4o Mini</option>
+                            </optgroup>
+                            <optgroup label="Gemini">
+                                <option value="gemini-3-pro-preview" ${prompt.model_type === 'gemini-3-pro-preview' ? 'selected' : ''}>Gemini 3.0 Pro NEW</option>
+                                <option value="gemini-2.5-pro" ${prompt.model_type === 'gemini-2.5-pro' ? 'selected' : ''}>Gemini 2.5 Pro</option>
+                                <option value="gemini-2.5-flash" ${prompt.model_type === 'gemini-2.5-flash' ? 'selected' : ''}>Gemini 2.5 Flash</option>
+                                <option value="gemini-2.0-flash" ${prompt.model_type === 'gemini-2.0-flash' ? 'selected' : ''}>Gemini 2.0 Flash</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">プロンプト内容 <span style="color: #ff6b6b;">*</span></label>
+                        <textarea id="swal-prompt-content" class="swal2-textarea" placeholder="プロンプトを入力してください。&#10;変数は {{variable_name}} の形式で記述できます。&#10;例: {{article_text}} を要約してください。" required style="min-height: 200px; width: 100%; margin-top: 0; box-sizing: border-box; resize: vertical; max-width: 100%;">${promptContent.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">変数の例: {{article_text}}, {{input}}, {{query}} など</small>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">入力スキーマ（JSON形式、オプション）</label>
+                        <textarea id="swal-prompt-schema" class="swal2-textarea" placeholder='{"field_name": {"type": "string", "label": "フィールドラベル", "required": true}}' style="min-height: 120px; width: 100%; margin-top: 0; box-sizing: border-box; resize: vertical; max-width: 100%; font-family: monospace; font-size: 12px;">${prompt.input_schema ? formatJSON(prompt.input_schema).replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''}</textarea>
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">ユーザー入力フィールドの定義をJSON形式で指定します（省略可能）</small>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="swal-prompt-is-active" ${prompt.is_active ? 'checked' : ''} style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
+                            <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">有効にする</span>
+                        </label>
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このプロンプトが有効になり、ユーザーが使用できるようになります</small>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="swal-prompt-allows-file-output" style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;" ${prompt.allows_file_output ? 'checked' : ''}>
+                            <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">ファイル出力を許可する</span>
+                        </label>
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このプロンプトの実行結果をCSV、PDF、DOCXなどの形式で出力できます</small>
+                    </div>
+                `,
+                focusConfirm: false,
+                showCancelButton: true,
+                confirmButtonText: '保存',
+                cancelButtonText: 'キャンセル',
+                confirmButtonColor: '#28a745',
+                cancelButtonColor: '#6c757d',
+                width: '800px',
+                customClass: {
+                    popup: 'swal-no-scroll',
+                    htmlContainer: 'swal-no-scroll'
+                },
+                preConfirm: () => {
+                    const name = document.getElementById('swal-prompt-name').value.trim();
+                    const description = document.getElementById('swal-prompt-description').value.trim();
+                    const model = document.getElementById('swal-prompt-model').value;
+                    const content = document.getElementById('swal-prompt-content').value.trim();
+                    const schemaText = document.getElementById('swal-prompt-schema').value.trim();
+                    const isActive = document.getElementById('swal-prompt-is-active').checked;
+                    const allowsFileOutput = document.getElementById('swal-prompt-allows-file-output').checked;
 
-            document.getElementById('prompt-allows-file-output').checked = prompt.allows_file_output || false;
+                    if (!name) {
+                        Swal.showValidationMessage('プロンプト名は必須です');
+                        return false;
+                    }
+                    if (!content) {
+                        Swal.showValidationMessage('プロンプト内容は必須です');
+                        return false;
+                    }
 
-            showModal('prompt-modal');
-        }
+                    let inputSchema = null;
+                    if (schemaText) {
+                        try {
+                            inputSchema = JSON.parse(schemaText);
+                        } catch {
+                            Swal.showValidationMessage('入力スキーマのJSON形式が正しくありません');
+                            return false;
+                        }
+                    }
 
-        async function viewPromptContent(id) {
-            try {
-                const data = await apiRequest(`/api/admin/prompts/${id}/content`);
-                document.getElementById('prompt-content-display').textContent = data.content;
-                showModal('view-modal');
-            } catch (error) {
-                showAlert('プロンプト内容の読み込みに失敗しました', 'error');
-            }
-        }
-
-        async function deletePrompt(id) {
-            if (!confirmAction('本当にこのプロンプトを削除しますか？')) return;
-
-            try {
-                await apiRequest(`/api/admin/prompts/${id}`, {
-                    method: 'DELETE'
-                });
-                showAlert('プロンプトを削除しました', 'success');
-                loadPrompts();
-            } catch (error) {
-                showAlert('プロンプトの削除に失敗しました', 'error');
-                console.error('Delete prompt error:', error);
-            }
-        }
-
-        document.getElementById('prompt-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const promptId = document.getElementById('prompt-id').value;
-            const name = document.getElementById('prompt-name').value;
-            const description = document.getElementById('prompt-description').value;
-            const model = document.getElementById('prompt-model').value;
-            const content = document.getElementById('prompt-content').value;
-            const schemaText = document.getElementById('prompt-schema').value;
-
-            let inputSchema = null;
-            if (schemaText.trim()) {
-                try {
-                    inputSchema = JSON.parse(schemaText);
-                } catch {
-                    showAlert('入力スキーマのJSON形式が正しくありません', 'error');
-                    return;
+                    return {
+                        name,
+                        description,
+                        model,
+                        content,
+                        inputSchema,
+                        isActive,
+                        allowsFileOutput
+                    };
                 }
-            }
+            });
 
+            if (formValues) {
+                await savePrompt(id, formValues);
+            }
+        }
+
+        async function savePrompt(id, formValues) {
             const data = {
-                name,
-                description,
-                model_type: model,
-                content,
-                input_schema: inputSchema,
-                allows_file_output: document.getElementById('prompt-allows-file-output').checked
+                name: formValues.name,
+                description: formValues.description,
+                model_type: formValues.model,
+                content: formValues.content,
+                input_schema: formValues.inputSchema,
+                is_active: formValues.isActive,
+                allows_file_output: formValues.allowsFileOutput
             };
 
             try {
-                if (promptId) {
+                if (id) {
                     // 更新
-                    await apiRequest(`/api/admin/prompts/${promptId}`, {
+                    await apiRequest(`/api/admin/prompts/${id}`, {
                         method: 'PATCH',
                         body: JSON.stringify(data)
                     });
-                    showAlert('プロンプトを更新しました', 'success');
+                    await Swal.fire({
+                        title: '更新完了',
+                        text: 'プロンプトを更新しました',
+                        icon: 'success',
+                        confirmButtonText: 'OK'
+                    });
+                    loadPrompts(currentPage);
                 } else {
                     // 作成
                     await apiRequest('/api/admin/prompts', {
                         method: 'POST',
                         body: JSON.stringify(data)
                     });
-                    showAlert('プロンプトを作成しました', 'success');
+                    await Swal.fire({
+                        title: '作成完了',
+                        text: 'プロンプトを作成しました',
+                        icon: 'success',
+                        confirmButtonText: 'OK'
+                    });
+                    loadPrompts(1);
                 }
-
-                hideModal('prompt-modal');
-                loadPrompts();
             } catch (error) {
-                showAlert('プロンプトの保存に失敗しました', 'error');
+                await Swal.fire({
+                    title: 'エラー',
+                    text: 'プロンプトの保存に失敗しました',
+                    icon: 'error',
+                    confirmButtonText: 'OK'
+                });
                 console.error('Save prompt error:', error);
             }
-        });
+        }
+
+        async function viewPromptContent(id) {
+            try {
+                const data = await apiRequest(`/api/admin/prompts/${id}/content`);
+                const contentHTML = `
+                    <div style="text-align: left; max-height: 70vh; overflow-y: auto;">
+                        <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); padding: 15px; border-radius: 8px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; line-height: 1.6; color: rgba(255, 255, 255, 0.9);">${data.content}</div>
+                    </div>
+                `;
+
+                await Swal.fire({
+                    title: 'プロンプト内容',
+                    html: contentHTML,
+                    width: '900px',
+                    confirmButtonText: '閉じる',
+                    confirmButtonColor: '#6c757d',
+                    customClass: {
+                        popup: 'swal-wide'
+                    }
+                });
+            } catch (error) {
+                await showAlert('プロンプト内容の読み込みに失敗しました', 'error');
+            }
+        }
+
+        async function deletePrompt(id) {
+            const prompt = prompts.find(p => p.id === id);
+            if (!prompt) return;
+
+            const result = await Swal.fire({
+                title: '削除の確認',
+                html: `本当に「<strong>${prompt.name}</strong>」を削除しますか？<br>この操作は取り消せません。`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                cancelButtonColor: '#6c757d',
+                confirmButtonText: '削除',
+                cancelButtonText: 'キャンセル'
+            });
+
+            if (result.isConfirmed) {
+                try {
+                    await apiRequest(`/api/admin/prompts/${id}`, {
+                        method: 'DELETE'
+                    });
+                    await Swal.fire({
+                        title: '削除完了',
+                        text: 'プロンプトを削除しました',
+                        icon: 'success',
+                        confirmButtonText: 'OK'
+                    });
+                    loadPrompts(currentPage);
+                } catch (error) {
+                    await Swal.fire({
+                        title: 'エラー',
+                        text: 'プロンプトの削除に失敗しました',
+                        icon: 'error',
+                        confirmButtonText: 'OK'
+                    });
+                    console.error('Delete prompt error:', error);
+                }
+            }
+        }
+
+        async function togglePromptStatus(id, isActive) {
+            try {
+                await apiRequest(`/api/admin/prompts/${id}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ is_active: isActive })
+                });
+                await showAlert(`プロンプトを${isActive ? '有効' : '無効'}にしました`, 'success');
+                loadPrompts(currentPage);
+            } catch (error) {
+                await showAlert('ステータスの更新に失敗しました', 'error');
+                console.error('Toggle prompt status error:', error);
+                // エラー時は元に戻すために再読み込み
+                loadPrompts(currentPage);
+            }
+        }
+
 
         // ページ読み込み時に実行
-        checkAuth();
-        loadPrompts();
+        (async () => {
+            await checkAuth();
+            loadPrompts(1);
+        })();
     </script>
 </body>
 </html>
-

@@ -23,10 +23,10 @@ class GeminiService:
     - 無料枠の制限を超えた場合、自動的に有料版に切り替わります
 
     サポートモデル:
+    - gemini-3-pro-preview: Gemini 3.0 Pro（最新モデル）
     - gemini-2.0-flash: Gemini 2.0 Flash
     - gemini-2.5-flash: Gemini 2.5 Flash
     - gemini-2.5-pro: Gemini 2.5 Pro（無料枠: 1日100リクエストまで、有料版で制限なし）
-    - gemini-2.5-pro-deep-think: Gemini 2.5 Pro Deep Think
     """
 
     def __init__(self, api_key: Optional[str] = None):
@@ -54,10 +54,10 @@ class GeminiService:
             正規化されたモデル名（Gemini APIで使用可能な形式）
 
         サポートされるモデル名:
+        - gemini-3-pro-preview → gemini-3-pro-preview (Gemini 3.0 Pro)
         - gemini-2.0-flash → gemini-2.0-flash (Gemini 2.0 Flash)
         - gemini-2.5-flash → gemini-2.5-flash (Gemini 2.5 Flash)
         - gemini-2.5-pro → gemini-2.5-pro (Gemini 2.5 Pro)
-        - gemini-2.5-pro-deep-think → gemini-2.5-pro-deep-think (Gemini 2.5 Pro Deep Think)
         """
         # gemini/ プレフィックスを削除
         if model_name.startswith("gemini/"):
@@ -65,6 +65,11 @@ class GeminiService:
 
         # モデル名のマッピング（Gemini APIの正しいモデル名に変換）
         model_mapping = {
+            # 3.0 シリーズ
+            "gemini-3-pro-preview": "gemini-3-pro-preview",
+            "Gemini-3-Pro-Preview": "gemini-3-pro-preview",
+            "gemini-3-pro": "gemini-3-pro-preview",
+            "Gemini-3-Pro": "gemini-3-pro-preview",
             # 2.0 シリーズ
             "gemini-2.0-flash": "gemini-2.0-flash",
             "Gemini-2.0-Flash": "gemini-2.0-flash",
@@ -73,8 +78,6 @@ class GeminiService:
             "Gemini-2.5-Flash": "gemini-2.5-flash",
             "gemini-2.5-pro": "gemini-2.5-pro",
             "Gemini-2.5-Pro": "gemini-2.5-pro",
-            "gemini-2.5-pro-deep-think": "gemini-2.5-pro-deep-think",
-            "Gemini-2.5-Pro-Deep-Think": "gemini-2.5-pro-deep-think",
         }
 
         # マッピングがあれば使用、なければそのまま返す
@@ -93,10 +96,10 @@ class GeminiService:
         Args:
             prompt: 実行するプロンプト
             model: 使用するモデル
+                - gemini-3-pro-preview: Gemini 3.0 Pro（最新モデル）
                 - gemini-2.0-flash: Gemini 2.0 Flash
                 - gemini-2.5-flash: Gemini 2.5 Flash
                 - gemini-2.5-pro: Gemini 2.5 Pro（無料枠: 1日100リクエストまで、有料版で制限なし）
-                - gemini-2.5-pro-deep-think: Gemini 2.5 Pro Deep Think
             temperature: 温度パラメータ
             max_tokens: 最大トークン数（Noneの場合は長文対応のデフォルト値を使用）
 
@@ -334,10 +337,10 @@ class GeminiService:
         Args:
             prompt: 実行するプロンプト
             model: 使用するモデル
+                - gemini-3-pro-preview: Gemini 3.0 Pro（最新モデル）
                 - gemini-2.0-flash: Gemini 2.0 Flash
                 - gemini-2.5-flash: Gemini 2.5 Flash
                 - gemini-2.5-pro: Gemini 2.5 Pro（無料枠: 1日100リクエストまで、有料版で制限なし）
-                - gemini-2.5-pro-deep-think: Gemini 2.5 Pro Deep Think
             temperature: 温度パラメータ
             max_tokens: 最大トークン数
 

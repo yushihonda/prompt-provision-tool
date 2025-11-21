@@ -5,125 +5,151 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>アカウント管理 - Prompt Provision Tool</title>
     <link rel="stylesheet" href="../css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
-<body>
+<body class="admin-theme">
     <div class="container">
         <div class="header">
-            <h1>👥 アカウント管理</h1>
+            <span class="tool-name">Prompt Provision Tool</span>
             <div class="user-info">
                 <span id="username-display">-</span>
                 <button class="btn-logout" onclick="logout()">ログアウト</button>
             </div>
+            <button class="hamburger-menu" onclick="toggleMobileMenu()">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+
+        <!-- モバイルメニュー -->
+        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
+        <div class="mobile-menu" id="mobile-menu">
+            <div class="mobile-menu-header">
+                <span class="tool-name">Prompt Provision Tool</span>
+                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+            </div>
+            <div class="mobile-menu-content">
+                <div class="nav">
+                    <button class="nav-item" onclick="location.href='dashboard.html'">ダッシュボード</button>
+                    <button class="nav-item" onclick="location.href='prompts.html'">プロンプト管理</button>
+                    <button class="nav-item active" onclick="location.href='accounts.html'">アカウント管理</button>
+                    <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
+                </div>
+                <div class="user-info">
+                    <span id="mobile-username-display">-</span>
+                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
+                </div>
+            </div>
         </div>
 
         <div class="content">
-            <div class="nav">
-                <button class="nav-item" onclick="location.href='dashboard.html'">ダッシュボード</button>
-                <button class="nav-item" onclick="location.href='prompts.html'">プロンプト管理</button>
-                <button class="nav-item active" onclick="location.href='accounts.html'">アカウント管理</button>
-                <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
+            <h1 class="page-title">アカウント管理</h1>
+            <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; gap: 10px;">
+                    <button class="nav-item" onclick="location.href='dashboard.html'">ダッシュボード</button>
+                    <button class="nav-item" onclick="location.href='prompts.html'">プロンプト管理</button>
+                    <button class="nav-item active" onclick="location.href='accounts.html'">アカウント管理</button>
+                    <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
+                </div>
+                <button class="btn btn-success" onclick="showCreateModal()" style="white-space: nowrap; display: inline-flex; align-items: center; gap: 8px;">
+                    <img src="../img/iconmonstr-id-card-17.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">
+                    アカウント作成
+                </button>
             </div>
 
-            <div id="alert-container"></div>
 
-            <button class="btn btn-success" onclick="showCreateModal()">新しいアカウントを作成</button>
-
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>ユーザー名</th>
-                        <th>メールアドレス</th>
-                        <th>ステータス</th>
-                        <th>プロンプト数</th>
-                        <th>実行回数</th>
-                        <th>アクション</th>
-                    </tr>
-                </thead>
-                <tbody id="accounts-tbody">
-                    <tr>
-                        <td colspan="7" style="text-align: center;">読み込み中...</td>
-                    </tr>
-                </tbody>
-            </table>
+            <div class="card">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>ユーザー名</th>
+                            <th>メールアドレス</th>
+                            <th>タイプ</th>
+                            <th>ステータス</th>
+                            <th>プロンプト数</th>
+                            <th>実行回数</th>
+                            <th>アクション</th>
+                        </tr>
+                    </thead>
+                    <tbody id="accounts-tbody">
+                        <tr>
+                            <td colspan="8" style="text-align: center;">読み込み中...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="pagination-container" class="pagination" style="display: none;"></div>
         </div>
     </div>
 
-    <!-- アカウント作成モーダル -->
-    <div id="account-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>新しいアカウント</h2>
-                <button class="close-modal" onclick="hideModal('account-modal')">&times;</button>
-            </div>
-            <form id="account-form">
-                <div class="form-group">
-                    <label for="account-username">ユーザー名 *</label>
-                    <input type="text" id="account-username" required>
-                </div>
-                <div class="form-group">
-                    <label for="account-email">メールアドレス *</label>
-                    <input type="email" id="account-email" required>
-                </div>
-                <div class="form-group">
-                    <label for="account-password">パスワード *</label>
-                    <input type="password" id="account-password" required>
-                </div>
-                <div class="form-group">
-                    <label for="account-type">アカウントタイプ *</label>
-                    <select id="account-type" required>
-                        <option value="child" selected>子アカウント（ユーザー）</option>
-                        <option value="parent">親アカウント（管理者）</option>
-                    </select>
-                </div>
-                <div class="actions">
-                    <button type="submit" class="btn btn-primary">作成</button>
-                    <button type="button" class="btn btn-secondary" onclick="hideModal('account-modal')">キャンセル</button>
-                </div>
-            </form>
-        </div>
-    </div>
 
-    <!-- プロンプト割り当てモーダル -->
-    <div id="assign-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>プロンプト割り当て</h2>
-                <button class="close-modal" onclick="hideModal('assign-modal')">&times;</button>
-            </div>
-            <input type="hidden" id="assign-account-id">
-            <h3 id="assign-account-name"></h3>
-            
-            <h4>割り当て可能なプロンプト</h4>
-            <div id="available-prompts" style="max-height: 300px; overflow-y: auto;">
-                <p>読み込み中...</p>
-            </div>
-            
-            <h4 style="margin-top: 20px;">割り当て済みプロンプト</h4>
-            <div id="assigned-prompts" style="max-height: 300px; overflow-y: auto;">
-                <p>読み込み中...</p>
-            </div>
-        </div>
-    </div>
+
 
     <script src="js/admin-common.js"></script>
     <script>
         let accounts = [];
         let allPrompts = [];
+        let currentPage = 1;
+        const itemsPerPage = 10;
+        let totalItems = 0;
 
-        async function loadAccounts() {
+        async function loadAccounts(page = 1) {
             try {
-                accounts = await apiRequest('/api/admin/accounts');
+                const skip = (page - 1) * itemsPerPage;
+                const response = await apiRequest(`/api/admin/accounts?skip=${skip}&limit=${itemsPerPage}`);
+
+                accounts = response.items || response;
+                totalItems = response.total !== undefined ? response.total : (accounts.length === itemsPerPage ? page * itemsPerPage + 1 : page * itemsPerPage);
+
+                currentPage = page;
                 renderAccounts();
+                renderPagination();
             } catch (error) {
                 showAlert('アカウントの読み込みに失敗しました', 'error');
                 console.error('Load accounts error:', error);
             }
         }
 
+        function renderPagination() {
+            const container = document.getElementById('pagination-container');
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+            if (totalPages <= 1) {
+                container.style.display = 'none';
+                return;
+            }
+
+            container.style.display = 'flex';
+
+            let html = `
+                <button onclick="loadAccounts(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>前へ</button>
+            `;
+
+            const startPage = Math.max(1, currentPage - 2);
+            const endPage = Math.min(totalPages, startPage + 4);
+
+            for (let i = startPage; i <= endPage; i++) {
+                html += `<button class="page-number ${i === currentPage ? 'active' : ''}" onclick="loadAccounts(${i})">${i}</button>`;
+            }
+
+            html += `
+                <span class="page-info">${currentPage} / ${totalPages}</span>
+                <button onclick="loadAccounts(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>次へ</button>
+            `;
+
+            container.innerHTML = html;
+        }
+
         async function loadAllPrompts() {
             try {
-                allPrompts = await apiRequest('/api/admin/prompts');
+                const response = await apiRequest('/api/admin/prompts?skip=0&limit=1000');
+                allPrompts = response.items || response;
             } catch (error) {
                 console.error('Load prompts error:', error);
             }
@@ -133,7 +159,7 @@
             const tbody = document.getElementById('accounts-tbody');
 
             if (accounts.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #6c757d;">アカウントがまだ登録されていません</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: rgba(255, 255, 255, 0.6);">アカウントがまだ登録されていません</td></tr>';
                 return;
             }
 
@@ -142,34 +168,287 @@
                     <td>${account.id}</td>
                     <td>${account.username}</td>
                     <td>${account.email}</td>
-                    <td>${account.is_active ? '有効' : '無効'}</td>
+                    <td>
+                        <span style="color: ${account.account_type === 'PARENT' ? '#9c27b0' : 'rgba(255, 255, 255, 0.9)'}; font-weight: ${account.account_type === 'PARENT' ? 'bold' : 'normal'};">
+                            ${account.account_type === 'PARENT' ? '管理者' : 'ユーザー'}
+                        </span>
+                    </td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            ${account.is_active ? `
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="#28a745" style="flex-shrink: 0;">
+                                    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                                </svg>
+                            ` : `
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="#dc3545" style="flex-shrink: 0;">
+                                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                                </svg>
+                            `}
+                            <span style="color: ${account.is_active ? '#28a745' : '#dc3545'}; font-weight: ${account.is_active ? 'bold' : 'normal'};">${account.is_active ? '有効' : '無効'}</span>
+                        </div>
+                    </td>
                     <td>${account.prompt_count}</td>
                     <td>${account.execution_count}</td>
                     <td>
-                        <button class="btn btn-sm btn-primary" onclick="showAssignModal(${account.id})">プロンプト割り当て</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteAccount(${account.id})">削除</button>
+                        <div class="actions">
+                            <button ${account.account_type === 'PARENT' ? 'disabled' : `onclick="showAssignModal(${account.id})"`} title="${account.account_type === 'PARENT' ? '管理者はプロンプト割り当てできません' : 'プロンプト割り当て'}" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; ${account.account_type === 'PARENT' ? 'cursor: not-allowed; opacity: 0.5;' : 'cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;'}">
+                                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #9c27b0; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m21 4c0-.478-.379-1-1-1h-16c-.62 0-1 .519-1 1v16c0 .621.52 1 1 1h16c.478 0 1-.379 1-1zm-16.5.5h15v15h-15zm6.75 9.25v3.25c0 .53-.47 1-1 1h-3.25c-.53 0-1-.47-1-1v-3.25c0-.53.47-1 1-1h3.25c.53 0 1 .47 1 1zm0-6.75v3.25c0 .53-.47 1-1 1h-3.25c-.53 0-1-.47-1-1v-3.25c0-.53.47-1 1-1h3.25c.53 0 1 .47 1 1zm6.75 0v3.25c0 .53-.47 1-1 1h-3.25c-.53 0-1-.47-1-1v-3.25c0-.53.47-1 1-1h3.25c.53 0 1 .47 1 1z" fill-rule="nonzero"/></svg>
+                            </button>
+                            <button onclick="editAccount(${account.id})" title="編集" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
+                                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #28a745; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m11.239 15.533c-1.045 3.004-1.238 3.451-1.238 3.84 0 .441.385.627.627.627.272 0 1.108-.301 3.829-1.249zm.888-.888 3.22 3.22 6.408-6.401c.163-.163.245-.376.245-.591 0-.213-.082-.427-.245-.591-.58-.579-1.458-1.457-2.039-2.036-.163-.163-.377-.245-.591-.245-.213 0-.428.082-.592.245zm-3.127-.895c0-.402-.356-.75-.75-.75-2.561 0-2.939 0-5.5 0-.394 0-.75.348-.75.75s.356.75.75.75h5.5c.394 0 .75-.348.75-.75zm5-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75z" fill-rule="nonzero"/></svg>
+                            </button>
+                            <button ${account.account_type === 'PARENT' ? 'disabled' : `onclick="deleteAccount(${account.id})"`} title="${account.account_type === 'PARENT' ? '管理者は削除できません' : '削除'}" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; ${account.account_type === 'PARENT' ? 'cursor: not-allowed; opacity: 0.5;' : 'cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;'}">
+                                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #dc3545; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m20.015 6.506h-16v14.423c0 .591.448 1.071 1 1.071h14c.552 0 1-.48 1-1.071 0-3.905 0-14.423 0-14.423zm-5.75 2.494c.414 0 .75.336.75.75v8.5c0 .414-.336.75-.75.75s-.75-.336-.75-.75v-8.5c0-.414.336-.75.75-.75zm-4.5 0c.414 0 .75.336.75.75v8.5c0 .414-.336.75-.75.75s-.75-.336-.75-.75v-8.5c0-.414.336-.75.75-.75zm-.75-5v-1c0-.535.474-1 1-1h4c.526 0 1 .465 1 1v1h5.254c.412 0 .746.335.746.747s-.334.747-.746.747h-16.507c-.413 0-.747-.335-.747-.747s.334-.747.747-.747zm4.5 0v-.5h-3v.5z" fill-rule="nonzero"/></svg>
+                            </button>
+                        </div>
                     </td>
                 </tr>
             `).join('');
         }
 
-        function showCreateModal() {
-            document.getElementById('account-form').reset();
-            showModal('account-modal');
+        async function showCreateModal() {
+            const { value: formValues } = await Swal.fire({
+                title: '新しいアカウント',
+                html: `
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">ユーザー名 <span style="color: #ff6b6b;">*</span></label>
+                        <input id="swal-account-username" class="swal2-input" type="text" placeholder="例: user01" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">メールアドレス <span style="color: #ff6b6b;">*</span></label>
+                        <input id="swal-account-email" class="swal2-input" type="email" placeholder="例: user@example.com" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">パスワード <span style="color: #ff6b6b;">*</span></label>
+                        <input id="swal-account-password" class="swal2-input" type="password" placeholder="パスワードを入力してください" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    </div>
+                    <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">アカウントタイプ <span style="color: #ff6b6b;">*</span></label>
+                        <select id="swal-account-type" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <option value="CHILD" selected>子アカウント（ユーザー）</option>
+                            <option value="PARENT">親アカウント（管理者）</option>
+                        </select>
+                    </div>
+                `,
+                focusConfirm: false,
+                showCancelButton: true,
+                confirmButtonText: '作成',
+                cancelButtonText: 'キャンセル',
+                confirmButtonColor: '#28a745',
+                cancelButtonColor: '#6c757d',
+                width: '600px',
+                customClass: {
+                    popup: 'swal-no-scroll',
+                    htmlContainer: 'swal-no-scroll'
+                },
+                preConfirm: () => {
+                    const username = document.getElementById('swal-account-username').value.trim();
+                    const email = document.getElementById('swal-account-email').value.trim();
+                    const password = document.getElementById('swal-account-password').value.trim();
+                    const accountType = document.getElementById('swal-account-type').value;
+
+                    if (!username) {
+                        Swal.showValidationMessage('ユーザー名は必須です');
+                        return false;
+                    }
+                    if (!email) {
+                        Swal.showValidationMessage('メールアドレスは必須です');
+                        return false;
+                    }
+                    // メールアドレスの基本的なバリデーション
+                    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                    if (!emailRegex.test(email)) {
+                        Swal.showValidationMessage('有効なメールアドレスを入力してください（例: user@example.com）');
+                        return false;
+                    }
+                    if (!password) {
+                        Swal.showValidationMessage('パスワードは必須です');
+                        return false;
+                    }
+
+                    return {
+                        username,
+                        email,
+                        password,
+                        accountType
+                    };
+                }
+            });
+
+            if (formValues) {
+                await saveAccount(null, formValues);
+            }
+        }
+
+        async function editAccount(id) {
+            const account = accounts.find(a => a.id === id);
+            if (!account) return;
+
+            const { value: formValues } = await Swal.fire({
+                title: 'アカウントを編集',
+                html: `
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">ユーザー名</label>
+                        <input id="swal-account-username" class="swal2-input" type="text" value="${account.username}" disabled style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%; background: rgba(255, 255, 255, 0.1);">
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">ユーザー名は変更できません</small>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">メールアドレス <span style="color: #ff6b6b;">*</span></label>
+                        <input id="swal-account-email" class="swal2-input" type="email" placeholder="例: user@example.com" value="${account.email}" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    </div>
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                        <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">パスワード（変更する場合のみ入力）</label>
+                        <input id="swal-account-password" class="swal2-input" type="password" placeholder="変更しない場合は空欄のまま" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">パスワードを変更しない場合は空欄のままにしてください</small>
+                    </div>
+                    <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="swal-account-is-active" ${account.is_active ? 'checked' : ''} style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
+                            <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">有効にする</span>
+                        </label>
+                        <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このアカウントが有効になります</small>
+                    </div>
+                `,
+                focusConfirm: false,
+                showCancelButton: true,
+                confirmButtonText: '保存',
+                cancelButtonText: 'キャンセル',
+                confirmButtonColor: '#28a745',
+                cancelButtonColor: '#6c757d',
+                width: '600px',
+                customClass: {
+                    popup: 'swal-no-scroll',
+                    htmlContainer: 'swal-no-scroll'
+                },
+                preConfirm: () => {
+                    const email = document.getElementById('swal-account-email').value.trim();
+                    const password = document.getElementById('swal-account-password').value.trim();
+                    const isActive = document.getElementById('swal-account-is-active').checked;
+
+                    if (!email) {
+                        Swal.showValidationMessage('メールアドレスは必須です');
+                        return false;
+                    }
+
+                    return {
+                        email,
+                        password,
+                        isActive
+                    };
+                }
+            });
+
+            if (formValues) {
+                await saveAccount(id, formValues);
+            }
+        }
+
+        async function saveAccount(id, formValues) {
+            const data = {};
+            
+            if (id) {
+                // 更新
+                if (formValues.email) {
+                    data.email = formValues.email;
+                }
+                if (formValues.password) {
+                    data.password = formValues.password;
+                }
+                if (formValues.isActive !== undefined) {
+                    data.is_active = formValues.isActive;
+                }
+
+                try {
+                    await apiRequest(`/api/admin/accounts/${id}`, {
+                        method: 'PATCH',
+                        body: JSON.stringify(data)
+                    });
+                    await Swal.fire({
+                        title: '更新完了',
+                        text: 'アカウントを更新しました',
+                        icon: 'success',
+                        confirmButtonText: 'OK'
+                    });
+                    loadAccounts(currentPage);
+                } catch (error) {
+                    await Swal.fire({
+                        title: 'エラー',
+                        text: 'アカウントの更新に失敗しました',
+                        icon: 'error',
+                        confirmButtonText: 'OK'
+                    });
+                    console.error('Update account error:', error);
+                }
+            } else {
+                // 作成
+                data.username = formValues.username;
+                data.email = formValues.email;
+                data.password = formValues.password;
+                data.account_type = formValues.accountType;
+
+                try {
+                    await apiRequest('/api/admin/accounts', {
+                        method: 'POST',
+                        body: JSON.stringify(data)
+                    });
+                    await Swal.fire({
+                        title: '作成完了',
+                        text: 'アカウントを作成しました',
+                        icon: 'success',
+                        confirmButtonText: 'OK'
+                    });
+                    loadAccounts(1);
+                } catch (error) {
+                    const errorMessage = error.message || 'アカウントの作成に失敗しました';
+                    await Swal.fire({
+                        title: 'エラー',
+                        text: errorMessage,
+                        icon: 'error',
+                        confirmButtonText: 'OK'
+                    });
+                    console.error('Create account error:', error);
+                    console.error('Error message:', errorMessage);
+                }
+            }
         }
 
         async function deleteAccount(id) {
-            if (!confirmAction('本当にこのアカウントを削除しますか？')) return;
+            const account = accounts.find(a => a.id === id);
+            if (!account) return;
 
-            try {
-                await apiRequest(`/api/admin/accounts/${id}`, {
-                    method: 'DELETE'
-                });
-                showAlert('アカウントを削除しました', 'success');
-                loadAccounts();
-            } catch (error) {
-                showAlert('アカウントの削除に失敗しました', 'error');
-                console.error('Delete account error:', error);
+            const result = await Swal.fire({
+                title: '削除の確認',
+                html: `本当に「<strong>${account.username}</strong>」を削除しますか？<br>この操作は取り消せません。`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                cancelButtonColor: '#6c757d',
+                confirmButtonText: '削除',
+                cancelButtonText: 'キャンセル'
+            });
+
+            if (result.isConfirmed) {
+                try {
+                    await apiRequest(`/api/admin/accounts/${id}`, {
+                        method: 'DELETE'
+                    });
+                    await Swal.fire({
+                        title: '削除完了',
+                        text: 'アカウントを削除しました',
+                        icon: 'success',
+                        confirmButtonText: 'OK'
+                    });
+                    loadAccounts(currentPage);
+                } catch (error) {
+                    const errorMessage = error.message || 'アカウントの削除に失敗しました';
+                    await Swal.fire({
+                        title: 'エラー',
+                        text: errorMessage,
+                        icon: 'error',
+                        confirmButtonText: 'OK'
+                    });
+                    console.error('Delete account error:', error);
+                }
             }
         }
 
@@ -177,38 +456,86 @@
             const account = accounts.find(a => a.id === accountId);
             if (!account) return;
 
-            document.getElementById('assign-account-id').value = accountId;
-            document.getElementById('assign-account-name').textContent = `${account.username} (${account.email})`;
-
             // 割り当て済みプロンプトを取得
             try {
                 const assignedPrompts = await apiRequest(`/api/admin/accounts/${accountId}/prompts`);
                 const assignedIds = assignedPrompts.map(p => p.id);
 
-                // 割り当て可能なプロンプト
-                const availablePrompts = allPrompts.filter(p => !assignedIds.includes(p.id));
-                document.getElementById('available-prompts').innerHTML = availablePrompts.length > 0
+                // 割り当て可能なプロンプト（有効なプロンプトのみ）
+                const availablePrompts = allPrompts.filter(p => !assignedIds.includes(p.id) && p.is_active);
+                
+                // 割り当て可能なプロンプトのHTML
+                const availablePromptsHTML = availablePrompts.length > 0
                     ? availablePrompts.map(p => `
-                        <div class="card" style="padding: 10px; margin-bottom: 10px;">
-                            <strong>${p.name}</strong>
-                            <button class="btn btn-sm btn-success" onclick="assignPrompt(${accountId}, ${p.id})">割り当て</button>
+                        <div class="card" style="padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px;">
+                            <div style="flex: 1;">
+                                <strong style="color: rgba(255, 255, 255, 0.9);">${p.name}</strong>
+                                ${p.description ? `<div style="color: rgba(255, 255, 255, 0.6); font-size: 0.9em; margin-top: 4px;">${p.description}</div>` : ''}
+                            </div>
+                            <button class="btn btn-sm btn-success" onclick="Swal.close(); assignPrompt(${accountId}, ${p.id})" style="margin-left: 10px; white-space: nowrap;">割り当て</button>
                         </div>
                     `).join('')
-                    : '<p>割り当て可能なプロンプトがありません</p>';
+                    : '<p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">割り当て可能なプロンプトがありません</p>';
 
-                // 割り当て済みプロンプト
-                document.getElementById('assigned-prompts').innerHTML = assignedPrompts.length > 0
+                // 割り当て済みプロンプトのHTML
+                const assignedPromptsHTML = assignedPrompts.length > 0
                     ? assignedPrompts.map(p => `
-                        <div class="card" style="padding: 10px; margin-bottom: 10px;">
-                            <strong>${p.name}</strong>
-                            <button class="btn btn-sm btn-danger" onclick="unassignPrompt(${accountId}, ${p.id})">解除</button>
+                        <div class="card" style="padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; ${!p.is_active ? 'opacity: 0.7;' : ''}">
+                            <div style="flex: 1;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <strong style="color: rgba(255, 255, 255, 0.9);">${p.name}</strong>
+                                    ${!p.is_active ? `
+                                        <span style="display: flex; align-items: center; gap: 4px; color: #dc3545; font-size: 0.85em;">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="#dc3545">
+                                                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                                            </svg>
+                                            無効
+                                        </span>
+                                    ` : ''}
+                                </div>
+                                ${p.description ? `<div style="color: rgba(255, 255, 255, 0.6); font-size: 0.9em; margin-top: 4px;">${p.description}</div>` : ''}
+                            </div>
+                            <button class="btn btn-sm btn-danger" onclick="Swal.close(); unassignPrompt(${p.assignment_id}, ${accountId})" style="margin-left: 10px; white-space: nowrap;">解除</button>
                         </div>
                     `).join('')
-                    : '<p>割り当てられているプロンプトがありません</p>';
+                    : '<p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">割り当てられているプロンプトがありません</p>';
 
-                showModal('assign-modal');
+                await Swal.fire({
+                    title: 'プロンプト割り当て',
+                    html: `
+                        <div style="text-align: left; margin-bottom: 20px;">
+                            <strong style="color: rgba(255, 255, 255, 0.9);">${account.username} (${account.email})</strong>
+                        </div>
+                        <div style="margin-bottom: 20px;">
+                            <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 10px; font-size: 16px;">割り当て可能なプロンプト</h4>
+                            <div style="max-height: 300px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); border-radius: 8px;">
+                                ${availablePromptsHTML}
+                            </div>
+                        </div>
+                        <div>
+                            <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 10px; font-size: 16px;">割り当て済みプロンプト</h4>
+                            <div style="max-height: 300px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); border-radius: 8px;">
+                                ${assignedPromptsHTML}
+                            </div>
+                        </div>
+                    `,
+                    width: '900px',
+                    confirmButtonText: '閉じる',
+                    confirmButtonColor: '#6c757d',
+                    customClass: {
+                        popup: 'swal-wide',
+                        htmlContainer: 'swal-no-scroll'
+                    },
+                    didOpen: () => {
+                        // ボタンのスタイルを調整
+                        const buttons = document.querySelectorAll('.swal2-popup .btn');
+                        buttons.forEach(btn => {
+                            btn.style.cursor = 'pointer';
+                        });
+                    }
+                });
             } catch (error) {
-                showAlert('プロンプト情報の読み込みに失敗しました', 'error');
+                await showAlert('プロンプト情報の読み込みに失敗しました', 'error');
                 console.error('Load assigned prompts error:', error);
             }
         }
@@ -222,53 +549,69 @@
                         prompt_id: promptId
                     })
                 });
-                showAlert('プロンプトを割り当てました', 'success');
+                await Swal.fire({
+                    title: '割り当て完了',
+                    text: 'プロンプトを割り当てました',
+                    icon: 'success',
+                    confirmButtonText: 'OK'
+                });
                 showAssignModal(accountId); // リロード
-                loadAccounts(); // アカウント一覧も更新
+                loadAccounts(currentPage); // アカウント一覧も更新
             } catch (error) {
-                showAlert('プロンプトの割り当てに失敗しました', 'error');
+                await Swal.fire({
+                    title: 'エラー',
+                    text: 'プロンプトの割り当てに失敗しました',
+                    icon: 'error',
+                    confirmButtonText: 'OK'
+                });
                 console.error('Assign prompt error:', error);
             }
         }
 
-        async function unassignPrompt(accountId, promptId) {
-            // assignment_idを取得する必要があるため、一時的な実装
-            // 実際には割り当て情報からassignment_idを取得する必要がある
-            showAlert('この機能は未実装です', 'info');
+        async function unassignPrompt(assignmentId, accountId) {
+            const result = await Swal.fire({
+                title: '解除の確認',
+                text: 'このプロンプトの割り当てを解除しますか？',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                cancelButtonColor: '#6c757d',
+                confirmButtonText: '解除',
+                cancelButtonText: 'キャンセル'
+            });
+
+            if (result.isConfirmed) {
+                try {
+                    await apiRequest(`/api/admin/assign-prompt/${assignmentId}`, {
+                        method: 'DELETE'
+                    });
+                    await Swal.fire({
+                        title: '解除完了',
+                        text: 'プロンプトの割り当てを解除しました',
+                        icon: 'success',
+                        confirmButtonText: 'OK'
+                    });
+                    showAssignModal(accountId); // リロード
+                    loadAccounts(currentPage); // アカウント一覧も更新
+                } catch (error) {
+                    await Swal.fire({
+                        title: 'エラー',
+                        text: '割り当て解除に失敗しました',
+                        icon: 'error',
+                        confirmButtonText: 'OK'
+                    });
+                    console.error('Unassign prompt error:', error);
+                }
+            }
         }
 
-        document.getElementById('account-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const username = document.getElementById('account-username').value;
-            const email = document.getElementById('account-email').value;
-            const password = document.getElementById('account-password').value;
-            const accountType = document.getElementById('account-type').value;
-
-            try {
-                await apiRequest('/api/admin/accounts', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        username,
-                        email,
-                        password,
-                        account_type: accountType
-                    })
-                });
-
-                showAlert('アカウントを作成しました', 'success');
-                hideModal('account-modal');
-                loadAccounts();
-            } catch (error) {
-                showAlert('アカウントの作成に失敗しました', 'error');
-                console.error('Create account error:', error);
-            }
-        });
 
         // ページ読み込み時に実行
-        checkAuth();
-        loadAccounts();
-        loadAllPrompts();
+        (async () => {
+            await checkAuth();
+            loadAccounts(1);
+            loadAllPrompts();
+        })();
     </script>
 </body>
 </html>

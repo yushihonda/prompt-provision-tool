@@ -13,14 +13,18 @@ class OpenAIService:
 
     # 推論モデル（Responses APIを使用）
     REASONING_MODELS = {
-        "gpt-5-thinking",
-        "gpt-5-pro",  # Responses APIのみサポート
+        "gpt-5-pro",  # 最上位モデル（Responses APIのみサポート）
     }
 
     # temperatureをサポートしないモデル
     NO_TEMPERATURE_MODELS = {
         "gpt-5",
         "gpt-5-pro",  # Responses APIでtemperature非対応
+    }
+
+    # max_completion_tokensを使用する必要があるモデル（max_tokensの代わり）
+    MAX_COMPLETION_TOKENS_MODELS = {
+        "gpt-5.1",
     }
 
     def __init__(self, api_key: Optional[str] = None):
@@ -223,7 +227,7 @@ class OpenAIService:
                             if text:
                                 chunks.append(text)
                 output_text = "".join(chunks)
-        
+
         # 長文レスポンスの処理（output_textがまだ空の場合）
         if not output_text:
             # その他の方法でレスポンスを取得
@@ -245,7 +249,7 @@ class OpenAIService:
 
         if not output_text:
             raise Exception("Responses APIの出力が空です")
-        
+
         # 長文レスポンスのログ出力
         if len(output_text) > 10000:
             logger.info(f"  長文レスポンスを取得しました（{len(output_text)}文字）")
@@ -269,8 +273,12 @@ class OpenAIService:
             "messages": messages,
         }
 
+        # GPT-5.1など、max_completion_tokensを使用する必要があるモデル
         if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+            if model_name in self.MAX_COMPLETION_TOKENS_MODELS:
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
 
         # gpt-5など、temperatureをサポートしないモデルは除外
         if model_name not in self.NO_TEMPERATURE_MODELS:
@@ -507,8 +515,12 @@ class OpenAIService:
             "stream": True
         }
 
+        # GPT-5.1など、max_completion_tokensを使用する必要があるモデル
         if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+            if model in self.MAX_COMPLETION_TOKENS_MODELS:
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
 
         if model not in self.NO_TEMPERATURE_MODELS:
             if temperature is not None:

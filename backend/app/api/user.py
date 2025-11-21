@@ -4,31 +4,84 @@ from typing import List
 from app.database import get_db
 from app.auth import get_current_user
 from app.models import Account, Prompt, AccountPrompt, Execution
-from app.schemas import PromptListResponse, ExecutionResponse
+from app.schemas import PromptListResponse, ExecutionResponse, UserDashboardStats
 import json
+from datetime import datetime
 
 router = APIRouter(prefix="/api/user", tags=["ユーザー"])
 
 
-@router.get("/prompts", response_model=List[PromptListResponse])
+# ==================== ダッシュボード ====================
+@router.get("/dashboard", response_model=UserDashboardStats)
+async def get_user_dashboard_stats(
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user)
+):
+    """ユーザー用ダッシュボード統計情報を取得"""
+    # 利用可能なプロンプト数
+    available_prompts = db.query(Prompt).join(
+        AccountPrompt, Prompt.id == AccountPrompt.prompt_id
+    ).filter(
+        AccountPrompt.account_id == current_user.id,
+        Prompt.is_active == True
+    ).count()
+    
+    # 総実行回数
+    total_executions = db.query(Execution).filter(
+        Execution.account_id == current_user.id
+    ).count()
+    
+    # 今日の実行数
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    executions_today = db.query(Execution).filter(
+        Execution.account_id == current_user.id,
+        Execution.executed_at >= today_start
+    ).count()
+    
+    # 今月の実行数
+    month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    executions_this_month = db.query(Execution).filter(
+        Execution.account_id == current_user.id,
+        Execution.executed_at >= month_start
+    ).count()
+    
+    return {
+        "available_prompts": available_prompts,
+        "total_executions": total_executions,
+        "executions_today": executions_today,
+        "executions_this_month": executions_this_month
+    }
+
+
+@router.get("/prompts")
 async def list_available_prompts(
+    skip: int = 0,
+    limit: int = 6,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_user)
 ):
     """
-    現在のユーザーが利用可能なプロンプト一覧を取得
+    現在のユーザーが利用可能なプロンプト一覧を取得（ページネーション対応）
 
     注意: プロンプトの内容は含まれない（セキュリティ）
     """
+    # 総件数を取得
+    total = db.query(Prompt).join(
+        AccountPrompt, Prompt.id == AccountPrompt.prompt_id
+    ).filter(
+        AccountPrompt.account_id == current_user.id,
+        Prompt.is_active == True
+    ).count()
+    
     prompts = db.query(Prompt).join(
         AccountPrompt, Prompt.id == AccountPrompt.prompt_id
     ).filter(
         AccountPrompt.account_id == current_user.id,
         Prompt.is_active == True
-    ).all()
+    ).order_by(Prompt.created_at.desc()).offset(skip).limit(limit).all()
 
     # input_schemaをJSON形式にパース
-    result = []
+    items = []
     for prompt in prompts:
         prompt_dict = {
             "id": prompt.id,
@@ -37,9 +90,14 @@ async def list_available_prompts(
             "model_type": prompt.model_type,
             "allows_file_output": prompt.allows_file_output
         }
-        result.append(prompt_dict)
+        items.append(prompt_dict)
 
-    return result
+    return {
+        "items": items,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 
 @router.get("/prompts/{prompt_id}")
@@ -92,7 +150,7 @@ async def get_prompt_detail(
     }
 
 
-@router.get("/executions", response_model=List[ExecutionResponse])
+@router.get("/executions")
 async def list_my_executions(
     skip: int = 0,
     limit: int = 50,
@@ -102,21 +160,31 @@ async def list_my_executions(
     """
     自分の実行履歴を取得
     """
+    # 総件数を取得
+    total = db.query(Execution).filter(
+        Execution.account_id == current_user.id
+    ).count()
+
     executions = db.query(Execution).filter(
         Execution.account_id == current_user.id
     ).order_by(
         Execution.executed_at.desc()
     ).offset(skip).limit(limit).all()
-    
-    result = []
+
+    items = []
     for execution in executions:
         prompt_name = execution.prompt.name if execution.prompt else None
-        result.append({
+        items.append({
             **execution.__dict__,
             "prompt_name": prompt_name
         })
-    
-    return result
+
+    return {
+        "items": items,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 
 @router.get("/executions/{execution_id}", response_model=ExecutionResponse)

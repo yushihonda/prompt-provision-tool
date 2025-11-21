@@ -241,12 +241,12 @@ async def execute_prompt(
         # 許可モデル
         allowed_models = {
             # OpenAI
-            "gpt-5-thinking",
-            "gpt-5-pro",
+            "gpt-5-pro",  # 最上位モデル
             "gpt-5",
+            "gpt-5.1",  # 最新モデル
             "gpt-4o-mini",  # コスパ最適化モデル
             # Gemini
-            "gemini-2.5-pro-deep-think",
+            "gemini-3-pro-preview",  # Gemini 3.0 Pro（最新モデル）
             "gemini-2.5-pro",  # 無料枠: 1日100リクエストまで（有料版で制限なし）
             "gemini-2.5-flash",
             "gemini-2.0-flash",  # コスパ最適化モデル
@@ -258,8 +258,8 @@ async def execute_prompt(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="サポートされていないモデルです（許可モデルのみ使用可能）"
             )
-        is_openai = model_str in {"gpt-5-thinking", "gpt-5-pro", "gpt-5", "gpt-4o-mini"}
-        is_gemini = model_str in {"gemini-2.5-pro-deep-think", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"}
+        is_openai = model_str in {"gpt-5-pro", "gpt-5", "gpt-5.1", "gpt-4o-mini"}
+        is_gemini = model_str in {"gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"}
 
         if is_openai:
             # OpenAI
@@ -358,4 +358,3 @@ async def execute_prompt(
         "status": status_result,
         "file_output": file_output
     }
-
