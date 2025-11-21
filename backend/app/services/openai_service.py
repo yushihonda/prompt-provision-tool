@@ -22,6 +22,11 @@ class OpenAIService:
         "gpt-5-pro",  # Responses APIでtemperature非対応
     }
 
+    # max_completion_tokensを使用する必要があるモデル（max_tokensの代わり）
+    MAX_COMPLETION_TOKENS_MODELS = {
+        "gpt-5.1",
+    }
+
     def __init__(self, api_key: Optional[str] = None):
         """
         Args:
@@ -268,8 +273,12 @@ class OpenAIService:
             "messages": messages,
         }
 
+        # GPT-5.1など、max_completion_tokensを使用する必要があるモデル
         if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+            if model_name in self.MAX_COMPLETION_TOKENS_MODELS:
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
 
         # gpt-5など、temperatureをサポートしないモデルは除外
         if model_name not in self.NO_TEMPERATURE_MODELS:
@@ -506,8 +515,12 @@ class OpenAIService:
             "stream": True
         }
 
+        # GPT-5.1など、max_completion_tokensを使用する必要があるモデル
         if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+            if model in self.MAX_COMPLETION_TOKENS_MODELS:
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
 
         if model not in self.NO_TEMPERATURE_MODELS:
             if temperature is not None:

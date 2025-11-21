@@ -116,13 +116,18 @@
                 return;
             }
 
-            tbody.innerHTML = executions.map(execution => `
+            tbody.innerHTML = executions.map(execution => {
+                let modelDisplay = execution.model_used;
+                if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview') {
+                    modelDisplay = `${execution.model_used}<span class="new-badge">NEW</span>`;
+                }
+                return `
                 <tr>
                     <td>${execution.id}</td>
                     <td>${formatDate(execution.executed_at)}</td>
                     <td>${execution.account_id}</td>
                     <td>${execution.prompt_name || '-'}</td>
-                    <td>${execution.model_used}</td>
+                    <td>${modelDisplay}</td>
                     <td>${execution.execution_time}ms</td>
                     <td>${execution.tokens_used || '-'}</td>
                     <td><span style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</span></td>
@@ -132,7 +137,8 @@
                         </button>
                     </td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
         }
 
         function renderPagination() {
@@ -196,7 +202,7 @@
                     </div>
                     <div style="margin-bottom: 15px;">
                         <strong>使用モデル:</strong><br>
-                        <span>${execution.model_used}</span>
+                        <span>${execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' ? `${execution.model_used}<span class="new-badge">NEW</span>` : execution.model_used}</span>
                     </div>
                     <div style="margin-bottom: 15px;">
                         <strong>入力データ:</strong><br>

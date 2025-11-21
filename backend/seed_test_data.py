@@ -20,7 +20,9 @@ import json
 ALLOWED_MODELS: List[str] = [
     "gpt-5-pro",  # 最上位モデル
     "gpt-5",
+    "gpt-5.1",  # 最新モデル
     "gpt-4o-mini",  # コスパ最適化モデル
+    "gemini-3-pro-preview",  # Gemini 3.0 Pro（最新モデル）
     "gemini-2.5-pro",  # 無料枠: 1日100リクエストまで
     "gemini-2.5-flash",
     "gemini-2.0-flash",  # コスパ最適化モデル
@@ -1584,7 +1586,51 @@ step_4:
             {
                 "name": "基本要約",
                 "description": "テキストの要点を簡潔にまとめます。",
+                "model": "gpt-5.1",
+                "content": """以下の入力をもとに要点を日本語で簡潔にまとめてください。
+- 出力はmarkdownで、見出し/箇条書きを適宜使用
+- 必要なら短い提案を1つ添える
+
+<入力>
+{{input}}""",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "title": "入力テキスト",
+                            "description": "モデルに渡す任意のテキスト（長文可）"
+                        }
+                    },
+                    "required": ["input"]
+                }
+            },
+            {
+                "name": "基本要約",
+                "description": "テキストの要点を簡潔にまとめます。",
                 "model": "gemini-2.0-flash",
+                "content": """以下の入力をもとに要点を日本語で簡潔にまとめてください。
+- 出力はmarkdownで、見出し/箇条書きを適宜使用
+- 必要なら短い提案を1つ添える
+
+<入力>
+{{input}}""",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "title": "入力テキスト",
+                            "description": "モデルに渡す任意のテキスト（長文可）"
+                        }
+                    },
+                    "required": ["input"]
+                }
+            },
+            {
+                "name": "基本要約",
+                "description": "テキストの要点を簡潔にまとめます。",
+                "model": "gemini-3-pro-preview",
                 "content": """以下の入力をもとに要点を日本語で簡潔にまとめてください。
 - 出力はmarkdownで、見出し/箇条書きを適宜使用
 - 必要なら短い提案を1つ添える

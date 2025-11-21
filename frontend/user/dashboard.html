@@ -128,16 +128,22 @@
                 return;
             }
 
-            container.innerHTML = prompts.map(prompt => `
+            container.innerHTML = prompts.map(prompt => {
+                let modelDisplay = prompt.model_type;
+                if (prompt.model_type === 'gpt-5.1' || prompt.model_type === 'gemini-3-pro-preview') {
+                    modelDisplay = `${prompt.model_type}<span class="new-badge">NEW</span>`;
+                }
+                return `
                 <div class="card">
                     <h3>${prompt.name}</h3>
                     <p>${prompt.description || '説明なし'}</p>
-                    <p><strong>モデル:</strong> ${prompt.model_type}</p>
+                    <p><strong>モデル:</strong> ${modelDisplay}</p>
                     <div class="actions">
                         <button class="btn btn-primary" onclick="location.href='execute.html?id=${prompt.id}'">実行</button>
                     </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         }
 
         function renderPagination() {

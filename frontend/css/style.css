@@ -1741,3 +1741,34 @@ table .actions {
         overflow-y: auto;
     }
 }
+
+/* NEWバッジのスタイル */
+.new-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 12px;
+    margin-left: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+    animation: pulse 2s ease-in-out infinite;
+    vertical-align: middle;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+    }
+    50% {
+        box-shadow: 0 2px 12px rgba(102, 126, 234, 0.6);
+    }
+}
+
+/* セレクトボックス内のNEWバッジ（オプションタグ内ではスタイルが効かないため、テキストのみ） */
+option[value="gpt-5.1"] {
+    font-weight: 600;
+}

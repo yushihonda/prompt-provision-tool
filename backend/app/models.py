@@ -17,7 +17,9 @@ class ModelType(str, enum.Enum):
     GPT4_TURBO = "gpt-4-turbo-preview"
     GPT5_PRO = "gpt-5-pro"  # 最上位モデル
     GPT5 = "gpt-5"
+    GPT5_1 = "gpt-5.1"  # 最新モデル
     GEMINI_PRO = "gemini-pro"
+    GEMINI_3_PRO = "gemini-3-pro-preview"  # Gemini 3.0 Pro（最新モデル）
     GEMINI_2_5_PRO = "gemini-2.5-pro"
 
 

@@ -162,7 +162,11 @@
                 // プロンプト情報を表示
                 document.getElementById('prompt-name').textContent = promptDetail.name;
                 document.getElementById('prompt-description').textContent = promptDetail.description || '説明なし';
-                document.getElementById('prompt-model').textContent = promptDetail.model_type;
+                let modelDisplay = promptDetail.model_type;
+                if (promptDetail.model_type === 'gpt-5.1' || promptDetail.model_type === 'gemini-3-pro-preview') {
+                    modelDisplay = `${promptDetail.model_type}<span class="new-badge">NEW</span>`;
+                }
+                document.getElementById('prompt-model').innerHTML = modelDisplay;
 
                 // ファイル出力オプションの表示/非表示
                 const fileOutputContainer = document.getElementById('file-output-container');
@@ -222,10 +226,15 @@
                         </tr>
                     </thead>
                     <tbody>
-                        ${displayedExecutions.map(execution => `
+                        ${displayedExecutions.map(execution => {
+                            let modelDisplay = execution.model_used;
+                            if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview') {
+                                modelDisplay = `${execution.model_used}<span class="new-badge">NEW</span>`;
+                            }
+                            return `
                             <tr>
                                 <td>${formatDate(execution.executed_at)}</td>
-                                <td>${execution.model_used}</td>
+                                <td>${modelDisplay}</td>
                                 <td>${execution.execution_time}ms</td>
                                 <td>${execution.tokens_used || '-'}</td>
                                 <td><span style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</span></td>
@@ -240,7 +249,8 @@
                                     </div>
                                 </td>
                             </tr>
-                        `).join('')}
+                            `;
+                        }).join('')}
                     </tbody>
                 </table>
                 ${hasMore ? `
@@ -279,7 +289,7 @@
                         </div>
                         <div style="margin-bottom: 15px;">
                             <strong>使用モデル:</strong><br>
-                            <span>${execution.model_used}</span>
+                            <span>${execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' ? `${execution.model_used}<span class="new-badge">NEW</span>` : execution.model_used}</span>
                         </div>
                         <div style="margin-bottom: 15px;">
                             <strong>入力データ:</strong><br>
@@ -475,7 +485,11 @@
 
                 // 結果を表示（中身だけを更新）
                 document.getElementById('output-content').textContent = result.output;
-                document.getElementById('stat-model').textContent = result.model_used;
+                let statModelDisplay = result.model_used;
+                if (result.model_used === 'gpt-5.1' || result.model_used === 'gemini-3-pro-preview') {
+                    statModelDisplay = `${result.model_used}<span class="new-badge">NEW</span>`;
+                }
+                document.getElementById('stat-model').innerHTML = statModelDisplay;
                 document.getElementById('stat-time').textContent = `${result.execution_time}ms`;
                 document.getElementById('stat-tokens').textContent = result.tokens_used || '-';
                 

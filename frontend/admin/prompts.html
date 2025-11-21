@@ -119,12 +119,17 @@
                 return;
             }
 
-            tbody.innerHTML = prompts.map(prompt => `
+            tbody.innerHTML = prompts.map(prompt => {
+                let modelDisplay = prompt.model_type;
+                if (prompt.model_type === 'gpt-5.1' || prompt.model_type === 'gemini-3-pro-preview') {
+                    modelDisplay = `${prompt.model_type}<span class="new-badge">NEW</span>`;
+                }
+                return `
                 <tr>
                     <td>${prompt.id}</td>
                     <td>${prompt.name}</td>
                     <td>${prompt.description || '説明なし'}</td>
-                    <td>${prompt.model_type}</td>
+                    <td>${modelDisplay}</td>
                     <td>
                         <div style="display: flex; align-items: center; gap: 6px;">
                             ${prompt.is_active ? `
@@ -167,7 +172,8 @@
                         </div>
                     </td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
         }
 
         function renderPagination() {
@@ -227,12 +233,14 @@
                         <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">AIモデル <span style="color: #ff6b6b;">*</span></label>
                         <select id="swal-prompt-model" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
                             <optgroup label="OpenAI">
-                                <option value="gpt-5-pro" selected>GPT-5 Pro（最上位モデル）</option>
+                                <option value="gpt-5.1" selected>GPT-5.1 NEW</option>
+                                <option value="gpt-5-pro">GPT-5 Pro</option>
                                 <option value="gpt-5">GPT-5</option>
                                 <option value="gpt-4o-mini">GPT-4o Mini</option>
                             </optgroup>
                             <optgroup label="Gemini">
-                                <option value="gemini-2.5-pro">Gemini 2.5 Pro（無料枠: 1日100リクエスト、有料版で制限なし）</option>
+                                <option value="gemini-3-pro-preview">Gemini 3.0 Pro NEW</option>
+                                <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                                 <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                                 <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
                             </optgroup>
@@ -348,12 +356,14 @@
                         <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">AIモデル <span style="color: #ff6b6b;">*</span></label>
                         <select id="swal-prompt-model" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
                             <optgroup label="OpenAI">
-                                <option value="gpt-5-pro" ${prompt.model_type === 'gpt-5-pro' ? 'selected' : ''}>GPT-5 Pro（最上位モデル）</option>
+                                <option value="gpt-5.1" ${prompt.model_type === 'gpt-5.1' ? 'selected' : ''}>GPT-5.1 NEW</option>
+                                <option value="gpt-5-pro" ${prompt.model_type === 'gpt-5-pro' ? 'selected' : ''}>GPT-5 Pro</option>
                                 <option value="gpt-5" ${prompt.model_type === 'gpt-5' ? 'selected' : ''}>GPT-5</option>
                                 <option value="gpt-4o-mini" ${prompt.model_type === 'gpt-4o-mini' ? 'selected' : ''}>GPT-4o Mini</option>
                             </optgroup>
                             <optgroup label="Gemini">
-                                <option value="gemini-2.5-pro" ${prompt.model_type === 'gemini-2.5-pro' ? 'selected' : ''}>Gemini 2.5 Pro（無料枠: 1日100リクエスト、有料版で制限なし）</option>
+                                <option value="gemini-3-pro-preview" ${prompt.model_type === 'gemini-3-pro-preview' ? 'selected' : ''}>Gemini 3.0 Pro NEW</option>
+                                <option value="gemini-2.5-pro" ${prompt.model_type === 'gemini-2.5-pro' ? 'selected' : ''}>Gemini 2.5 Pro</option>
                                 <option value="gemini-2.5-flash" ${prompt.model_type === 'gemini-2.5-flash' ? 'selected' : ''}>Gemini 2.5 Flash</option>
                                 <option value="gemini-2.0-flash" ${prompt.model_type === 'gemini-2.0-flash' ? 'selected' : ''}>Gemini 2.0 Flash</option>
                             </optgroup>
