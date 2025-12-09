@@ -105,8 +105,6 @@ backend/.env.local
 # docker-compose.local.yml はリポジトリに含める（ローカル開発環境構築用）
 
 # ローカル開発用スクリプト
-# 注意: seed_test_data.py はローカル開発用ですが、リポジトリに含めます
-# （使用方法をドキュメント化するため）
 
 # 資料フォルダ（GitHub Actionsデプロイ時に除外）
 資料/

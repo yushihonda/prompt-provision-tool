@@ -7,6 +7,7 @@
 - クライアントへ本文を送らず、完成プロンプトはAI APIにのみ送信
 - JWT認証（PARENT/CHILDロール）
 - ガードレール注入・出力サニタイズ・ログ抑止（漏洩対策）
+- プロンプトの論理削除（物理削除なし、データ保持）
 
 ## 対応モデル
 - OpenAI: gpt-5.1（最新モデル） / gpt-5-pro / gpt-5 / gpt-4o-mini
@@ -69,7 +70,181 @@ python -m app.init_admin
 ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-## データベーススキーマ
+## システム仕様書
+
+### セキュリティキーの要件
+
+#### SECRET_KEY（JWT署名用）
+- **用途**: JWTアクセストークンの署名・検証
+- **形式**: 任意の文字列（推奨: 32文字以上のhex文字列）
+- **生成方法**: `secrets.token_hex(32)` で生成可能
+- **例**: `6QgaI2NTUSns12GhPLVb3L6sZtXmG1mjhf8QNYno_vI5AD8CS2U5KV3pRp8yYkKA`
+- **要件**: 本番環境では必ず強力なランダム文字列を使用すること
+
+#### ENCRYPTION_KEY（Fernet暗号化用）
+- **用途**: プロンプト本文の暗号化・復号化（Fernet方式）
+- **形式**: 32バイトの文字列（Base64エンコードされる）
+- **生成方法**: `secrets.token_urlsafe(32)[:32]` で生成可能
+- **例**: `Yog4ak1a12Y9bBzsbDEIUn/0yTd2BYrZ`
+- **要件**: 必ず32文字の文字列であること（システムが自動的にBase64エンコードする）
+
+#### パスワードハッシュ
+- **方式**: bcrypt
+- **実装**: `passlib.context.CryptContext` を使用
+- **保存**: `hashed_password` カラムにハッシュ化されたパスワードを保存
+
+### 認証・認可仕様
+
+#### JWT認証
+- **アルゴリズム**: HS256（デフォルト、`ALGORITHM`環境変数で変更可能）
+- **有効期限**: `ACCESS_TOKEN_EXPIRE_MINUTES`環境変数で設定（デフォルト: 1440分 = 24時間）
+- **トークン形式**: Bearer認証（`Authorization: Bearer <token>`）
+- **ペイロード**: `{"sub": username, "exp": expiration_time}`
+
+#### アカウントタイプ
+- **PARENT**: 管理者アカウント（全機能アクセス可能）
+- **CHILD**: 子アカウント（ユーザー、制限付きアクセス）
+
+#### アクセス制御
+- 管理者専用エンドポイント: `get_current_active_parent`依存関数で保護
+- 子アカウント専用エンドポイント: `get_current_active_child`依存関数で保護
+- アカウント無効化: `is_active=False`の場合、認証は成功するがアクセスは拒否される
+
+### 暗号化仕様
+
+#### プロンプト暗号化
+- **方式**: Fernet（symmetric encryption）
+- **対象**: `prompts.encrypted_content`カラム
+- **処理フロー**:
+  1. プロンプト作成時: プレーンテキスト → Fernet暗号化 → Base64エンコード → DB保存
+  2. プロンプト取得時: DB取得 → Base64デコード → Fernet復号化 → プレーンテキスト
+- **復号場所**: サーバー側のみ（クライアントには送信しない）
+- **空文字列処理**: `encrypted_content`が`None`または空文字列の場合は空文字列を返す
+
+### 論理削除仕様
+
+#### プロンプトの論理削除
+- **カラム**: `prompts.deleted_at` (DateTime, timezone aware, nullable)
+- **削除判定**: `deleted_at IS NULL` → 有効、`deleted_at IS NOT NULL` → 削除済み
+- **削除処理**:
+  - 削除時: `deleted_at`にJST（日本標準時）の現在時刻を設定
+  - 物理削除は行わない（データは保持される）
+- **クエリフィルタ**: すべてのプロンプト取得クエリで`Prompt.deleted_at.is_(None)`でフィルタリング
+- **影響範囲**:
+  - 管理者画面: 論理削除されたプロンプトは一覧に表示されない
+  - ユーザー画面: 論理削除されたプロンプトは利用可能なプロンプトに含まれない
+  - プロンプト割り当て: 論理削除されたプロンプトは新規割り当て不可（既存割り当ては解除可能）
+  - 実行履歴: 既存の実行履歴は保持される（`prompt_id`は`SET NULL`にならない）
+
+### タイムゾーン仕様
+
+#### 使用タイムゾーン
+- **標準**: JST（日本標準時、UTC+9）
+- **適用箇所**:
+  - `executions.executed_at`: 実行日時（JSTで保存）
+  - `prompts.deleted_at`: 論理削除日時（JSTで保存）
+  - `accounts.last_month_reset`: 月次リセット日時（JSTで保存）
+  - 月次集計のリセット判定: JST基準で月初（1日0時0分）を判定
+
+#### 月次リセットロジック
+- **リセットタイミング**: 月初（JST基準、1日0時0分）
+- **リセット対象**: `tokens_this_month`, `cost_this_month`, `executions_this_month`
+- **判定方法**: `last_month_reset`が現在月より前の場合にリセット
+- **タイムゾーン処理**: `last_month_reset`がtimezone-naiveの場合はJSTとして解釈
+
+### アカウント統計仕様
+
+#### 統計カラム（accountsテーブル）
+- **全期間統計**:
+  - `total_tokens`: 総トークン数（Integer, default: 0）
+  - `total_cost`: 総料金（Numeric(12, 6), default: 0.0, USD）
+  - `total_executions`: 総実行回数（Integer, default: 0）
+- **月次統計**:
+  - `tokens_this_month`: 今月のトークン数（Integer, default: 0）
+  - `cost_this_month`: 今月の料金（Numeric(12, 6), default: 0.0, USD）
+  - `executions_this_month`: 今月の実行回数（Integer, default: 0）
+  - `last_month_reset`: 最後に月リセットした日時（DateTime, timezone aware, nullable）
+
+#### 統計更新タイミング
+- **実行完了時**: `execution_service.py`で自動更新
+- **更新内容**:
+  1. 月次統計のリセット判定（月初の場合）
+  2. 月次統計のインクリメント（`tokens_this_month`, `cost_this_month`, `executions_this_month`）
+  3. 全期間統計のインクリメント（`total_tokens`, `total_cost`, `total_executions`）
+  4. `last_month_reset`の更新（リセット時のみ）
+
+### 実行ログ仕様
+
+#### executionsテーブル
+- **コスト計算**: `calculate_token_cost()`関数でモデル別の単価から計算
+- **コスト保存**: `cost`カラム（Numeric(10, 6), USD、小数点以下6桁）
+- **Deep Think状態**: `enable_deep_think`カラムで実行時点のDeep Think設定を保存
+- **実行日時**: `executed_at`（JSTで保存）
+
+### ガードレール・サニタイズ仕様
+
+#### プロンプトガードレール
+- **有効化**: `ENABLE_PROMPT_GUARDRAILS`環境変数で制御（デフォルト: true）
+- **実装方式**:
+  - OpenAI: systemメッセージとして`GUARDRAIL_PREFIX`を追加
+  - Gemini: プロンプトの先頭に`GUARDRAIL_PREFIX`を追加
+- **デフォルト内容**: 内部指示・プロンプト・システムメッセージの開示拒否ポリシー
+- **カスタマイズ**: `GUARDRAIL_PREFIX`環境変数で内容を変更可能
+
+#### 出力サニタイズ
+- **目的**: AI出力からプロンプトテンプレートの漏洩を防止
+- **実装**: `sanitize_output()`関数で類似度判定とマスキング
+- **パラメータ**:
+  - `SANITIZE_MIN_MATCH_LEN`: 最小マッチ長（デフォルト: 60文字）
+  - `SANITIZE_SIMILARITY_THRESHOLD`: 類似度閾値（デフォルト: 0.6）
+- **処理**: プロンプトテンプレートと類似した出力部分を`[REDACTED]`でマスキング
+
+#### ログ抑止
+- **完成プロンプトログ**: `LOG_FINAL_PROMPT`環境変数で制御（デフォルト: false）
+- **本番環境**: 完成プロンプトはログに出力しない（漏洩対策）
+
+### ファイル出力仕様
+
+#### 対応形式
+- **CSV**: テキストをCSV形式に変換（Excel対応、BOM付きUTF-8）
+- **PDF**: ReportLabを使用してPDF生成（A4サイズ、日本語フォント対応）
+- **DOCX**: python-docxを使用してWord文書生成（Markdown見出し認識、日本語フォント対応）
+- **Markdown**: テキストをそのままMarkdown形式で出力
+- **TXT**: プレーンテキスト形式で出力
+
+#### 添付ファイル処理
+- **形式**: Base64エンコードまたはプレーンテキスト
+- **処理**: Base64デコードに失敗した場合はテキストとして扱う
+- **プロンプトへの追加**: 添付ファイルの内容はプロンプトに追加される
+
+### Deep Think機能仕様
+
+#### 対応モデル
+- **Gemini 2.5系**: `gemini-2.5-pro`, `gemini-2.5-pro-deep-think`
+- **Gemini 3系**: `gemini-3-pro-preview`, `gemini-3-pro-preview-deep-think`
+- **設定**: `prompts.enable_deep_think`カラムで有効/無効を制御（デフォルト: true）
+
+#### 実装方式
+- **Gemini 2.5系**: 新SDK（`genai`）の`thinking_budget`パラメータを使用
+- **Gemini 3系**: 新SDK（`genai`）の`thinking_level`パラメータを使用（"high"）
+- **実行時状態**: `executions.enable_deep_think`カラムに実行時点の設定を保存
+
+### API制限仕様
+
+#### レート制限
+- **設定場所**: `api_configs`テーブル
+- **制限項目**:
+  - `rate_limit_per_hour`: 1時間あたりの実行制限（デフォルト: 100）
+  - `rate_limit_per_day`: 1日あたりの実行制限（デフォルト: 1000）
+- **適用**: 子アカウント（CHILD）のみに適用
+- **管理者**: レート制限なし
+
+#### APIキー設定
+- **グローバル**: 環境変数`OPENAI_API_KEY`、`GEMINI_API_KEY`で設定
+- **個別設定**: `api_configs`テーブルで子アカウントごとに個別のAPIキーを設定可能
+- **優先順位**: 個別設定がある場合は個別設定を優先、なければグローバル設定を使用
+
+### データベーススキーマ
 
 ### 主要テーブルと制約
 
@@ -79,9 +254,16 @@ ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
   - `username` (String(100), unique, not null, indexed)
   - `email` (String(255), unique, not null, indexed)
 - **その他のカラム**:
-  - `hashed_password` (String(255), not null)
+  - `hashed_password` (String(255), not null) - bcryptハッシュ
   - `account_type` (String(20), not null, default: 'CHILD')
   - `is_active` (Boolean, not null, default: true)
+  - `total_tokens` (Integer, default: 0) - 総トークン数（全期間）
+  - `total_cost` (Numeric(12, 6), default: 0.0) - 総料金（USD、全期間）
+  - `total_executions` (Integer, default: 0) - 総実行回数（全期間）
+  - `tokens_this_month` (Integer, default: 0) - 今月のトークン数
+  - `cost_this_month` (Numeric(12, 6), default: 0.0) - 今月の料金（USD）
+  - `executions_this_month` (Integer, default: 0) - 今月の実行回数
+  - `last_month_reset` (DateTime, timezone aware, nullable) - 最後に月リセットした日時
   - `created_at` (DateTime, timezone aware)
   - `updated_at` (DateTime, timezone aware, auto update)
 
@@ -90,11 +272,13 @@ ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
 - **インデックス**: `name` (String(255), indexed)
 - **外部キー**: `created_by` → `accounts.id`
 - **その他のカラム**:
-  - `encrypted_content` (Text, not null) - 暗号化されたプロンプト内容
+  - `encrypted_content` (Text, not null) - 暗号化されたプロンプト内容（Fernet）
   - `model_type` (String(100), not null)
   - `input_schema` (Text) - JSON形式の入力フィールド定義
   - `is_active` (Boolean, not null, default: true)
   - `allows_file_output` (Boolean, not null, default: false)
+  - `enable_deep_think` (Boolean, not null, default: true) - Deep Think機能（Gemini 2.5/3系のみ）
+  - `deleted_at` (DateTime, timezone aware, nullable) - 論理削除日時（JST）
   - `created_at`, `updated_at` (DateTime, timezone aware)
 
 #### account_prompts（アカウント-プロンプト紐付けテーブル）
@@ -111,14 +295,16 @@ ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
   - `account_id` → `accounts.id` (ondelete: CASCADE)
   - `prompt_id` → `prompts.id` (ondelete: SET NULL)
 - **その他のカラム**:
-  - `input_data` (Text)
-  - `output_data` (Text)
-  - `model_used` (String(100))
-  - `tokens_used` (Integer)
-  - `execution_time` (Integer) - ミリ秒
+  - `input_data` (Text) - ユーザー入力データ（JSON形式）
+  - `output_data` (Text) - AI出力結果
+  - `model_used` (String(100)) - 使用されたAIモデル
+  - `tokens_used` (Integer) - 使用トークン数
+  - `cost` (Numeric(10, 6), nullable) - トークン料金（USD、小数点以下6桁）
+  - `execution_time` (Integer) - 実行時間（ミリ秒）
   - `status` (String(50)) - success, error, timeout
-  - `error_message` (Text)
-  - `executed_at` (DateTime, timezone aware)
+  - `error_message` (Text) - エラーメッセージ
+  - `enable_deep_think` (Boolean, nullable) - 実行時点のDeep Think設定状態
+  - `executed_at` (DateTime, timezone aware) - 実行日時（JST）
 
 #### api_configs（API設定テーブル）
 - **プライマリキー**: `id` (Integer, auto increment)
@@ -403,24 +589,19 @@ mainブランチにマージすると、自動的に本番サーバーにデプ�
 - `docker-compose.local.yml` - ローカル開発用Docker Compose
 - `資料/` - ドキュメント
 
-### 方法2: 手動デプロイ
+### 方法2: 手動デプロイ（非推奨）
 
-本番サーバー上で `deployment/deploy.sh` スクリプトを使用します。
+GitHub Actionsによる自動デプロイを推奨します。手動でデプロイする場合は、本番サーバーにSSH接続して以下を実行してください：
 
 ```bash
 # 本番サーバー上で実行
-cd /opt/prompt-provision-tool
-sudo bash deployment/deploy.sh
+cd /opt/prompt-provision-tool/backend
+source /opt/prompt-provision-tool/venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+alembic upgrade head
+sudo systemctl restart prompt-tool.service
 ```
-
-### デプロイスクリプトの処理内容
-
-1. Gitから最新のコードを取得（Gitリポジトリが存在する場合）
-2. 仮想環境のアクティベート
-3. Pythonパッケージの更新
-4. データベースマイグレーションの実行
-5. アプリケーションの再起動（systemd）
-6. サービス状態の確認
 
 ### デプロイ前の確認事項
 
@@ -568,18 +749,17 @@ docker compose -f docker-compose.local.yml up --build
 docker compose -f docker-compose.local.yml down
 ```
 
-5) テストデータの挿入（オプション）
+5) 初期管理者アカウントの作成
 ```
 # コンテナ内で実行
 docker exec -it ppt-backend bash
-python seed_test_data.py
+python -m app.init_admin
 ```
 
 注意
 - このDocker構成はローカル検証向けです。本番環境（ConoHaVPS）では使用しません。
 - 本番環境では `deployment/` の systemd 構成を使用してください。
 - DB初期化/マイグレーションが必要な場合は、コンテナ内で `alembic upgrade head` を実行してください。
-- `seed_test_data.py` はローカル開発用です。本番環境では使用しないでください。
 
 ## 更新履歴
 
