@@ -59,16 +59,16 @@
                     <div class="value" id="available-prompts">-</div>
                 </div>
                 <div class="stat-card">
-                    <h3>総実行回数</h3>
-                    <div class="value" id="total-executions">-</div>
-                </div>
-                <div class="stat-card">
-                    <h3>今日の実行</h3>
-                    <div class="value" id="executions-today">-</div>
-                </div>
-                <div class="stat-card">
-                    <h3>今月の実行</h3>
+                    <h3>今月の総実行</h3>
                     <div class="value" id="executions-month">-</div>
+                </div>
+                <div class="stat-card">
+                    <h3>今月の総トークン数</h3>
+                    <div class="value" id="total-tokens-month">-</div>
+                </div>
+                <div class="stat-card">
+                    <h3>今月の総トークン料金</h3>
+                    <div class="value" id="total-cost-month">-</div>
                 </div>
             </div>
 
@@ -94,9 +94,15 @@
                 const stats = await apiRequest('/api/user/dashboard');
 
                 document.getElementById('available-prompts').textContent = stats.available_prompts;
-                document.getElementById('total-executions').textContent = stats.total_executions;
-                document.getElementById('executions-today').textContent = stats.executions_today;
                 document.getElementById('executions-month').textContent = stats.executions_this_month;
+
+                // トークン数をフォーマット（カンマ区切り）
+                const tokens = stats.total_tokens_this_month || 0;
+                document.getElementById('total-tokens-month').textContent = tokens.toLocaleString();
+
+                // 料金をフォーマット（USD、小数点以下2桁）
+                const cost = stats.total_cost_this_month || 0;
+                document.getElementById('total-cost-month').textContent = `$${cost.toFixed(2)}`;
             } catch (error) {
                 showAlert('統計情報の読み込みに失敗しました', 'error');
                 console.error('Dashboard stats error:', error);
@@ -107,10 +113,10 @@
             try {
                 const skip = (page - 1) * itemsPerPage;
                 const response = await apiRequest(`/api/user/prompts?skip=${skip}&limit=${itemsPerPage}`);
-                
+
                 prompts = response.items || response;
                 totalItems = response.total !== undefined ? response.total : (prompts.length === itemsPerPage ? page * itemsPerPage + 1 : page * itemsPerPage);
-                
+
                 currentPage = page;
                 renderPrompts();
                 renderPagination();
@@ -130,16 +136,59 @@
 
             container.innerHTML = prompts.map(prompt => {
                 let modelDisplay = prompt.model_type;
-                if (prompt.model_type === 'gpt-5.1' || prompt.model_type === 'gemini-3-pro-preview') {
-                    modelDisplay = `${prompt.model_type}<span class="new-badge">NEW</span>`;
+
+                // Deep Thinkモデルの場合はサフィックスを削除して表示
+                let isDeepThinkModel = false;
+                if (modelDisplay && modelDisplay.includes('deep-think')) {
+                    modelDisplay = modelDisplay.replace('-deep-think', '');
+                    isDeepThinkModel = true;
+                }
+
+                // Thinkingモデルの場合はサフィックスを削除して表示
+                let isThinkingModel = false;
+                if (modelDisplay && modelDisplay.includes('thinking')) {
+                    modelDisplay = modelDisplay.replace('-thinking', '');
+                    isThinkingModel = true;
+                }
+
+                // Proモデルの場合は「-pro」を削除してProバッジを追加
+                const isProModel = prompt.model_type && (prompt.model_type.includes('-pro') || prompt.model_type.endsWith('-pro'));
+                if (isProModel) {
+                    // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
+                    modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
+                    modelDisplay += `<span class="pro-badge">Pro</span>`;
+                }
+
+                // 「-preview」を削除
+                modelDisplay = modelDisplay.replace(/-preview/g, '');
+
+                // Deep Thinkバッジを追加（Geminiモデルで有効な場合）
+                const isDeepThinkEnabled = isDeepThinkModel || (prompt.enable_deep_think === true || prompt.enable_deep_think === 1 || prompt.enable_deep_think === 'true');
+
+                if (isDeepThinkEnabled && prompt.model_type && prompt.model_type.startsWith('gemini-')) {
+                    modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
+                }
+
+                // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
+                if (isThinkingModel || prompt.model_type === 'gpt-5.1-thinking') {
+                    modelDisplay += `<span class="thinking-badge">Thinking</span>`;
+                }
+
+                // NEWバッジを追加
+                if (prompt.model_type === 'gpt-5.1' || prompt.model_type === 'gemini-3-pro-preview' || prompt.model_type === 'gemini-3-pro-preview-deep-think') {
+                    modelDisplay += `<span class="new-badge">NEW</span>`;
+                } else if (isThinkingModel || prompt.model_type === 'gpt-5.1-thinking') {
+                    modelDisplay += `<span class="new-badge">NEW</span>`;
                 }
                 return `
                 <div class="card">
-                    <h3>${prompt.name}</h3>
-                    <p>${prompt.description || '説明なし'}</p>
-                    <p><strong>モデル:</strong> ${modelDisplay}</p>
-                    <div class="actions">
-                        <button class="btn btn-primary" onclick="location.href='execute.html?id=${prompt.id}'">実行</button>
+                    <div class="card-content">
+                        <h3>${prompt.name}</h3>
+                        <p>${prompt.description || '説明なし'}</p>
+                        <p><strong>モデル:</strong> ${modelDisplay}</p>
+                    </div>
+                    <div class="card-corner">
+                        <button class="btn btn-primary card-execute-btn" onclick="location.href='execute.html?id=${prompt.id}'">実行</button>
                     </div>
                 </div>
             `;
@@ -149,30 +198,30 @@
         function renderPagination() {
             const container = document.getElementById('pagination-container');
             const totalPages = Math.ceil(totalItems / itemsPerPage);
-            
+
             if (totalPages <= 1) {
                 container.style.display = 'none';
                 return;
             }
-            
+
             container.style.display = 'flex';
-            
+
             let html = `
                 <button onclick="loadPrompts(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>前へ</button>
             `;
-            
+
             const startPage = Math.max(1, currentPage - 2);
             const endPage = Math.min(totalPages, startPage + 4);
-            
+
             for (let i = startPage; i <= endPage; i++) {
                 html += `<button class="page-number ${i === currentPage ? 'active' : ''}" onclick="loadPrompts(${i})">${i}</button>`;
             }
-            
+
             html += `
                 <span class="page-info">${currentPage} / ${totalPages}</span>
                 <button onclick="loadPrompts(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>次へ</button>
             `;
-            
+
             container.innerHTML = html;
         }
 

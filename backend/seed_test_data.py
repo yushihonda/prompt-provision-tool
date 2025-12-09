@@ -23,7 +23,9 @@ ALLOWED_MODELS: List[str] = [
     "gpt-5.1",  # 最新モデル
     "gpt-4o-mini",  # コスパ最適化モデル
     "gemini-3-pro-preview",  # Gemini 3.0 Pro（最新モデル）
+    "gemini-3-pro-preview-deep-think", # Deep Think対応
     "gemini-2.5-pro",  # 無料枠: 1日100リクエストまで
+    "gemini-2.5-pro-deep-think", # Deep Think対応
     "gemini-2.5-flash",
     "gemini-2.0-flash",  # コスパ最適化モデル
 ]

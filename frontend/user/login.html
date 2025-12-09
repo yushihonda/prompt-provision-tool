@@ -40,7 +40,7 @@
                             <p><strong>メッセージ:</strong> ${error.message || '不明なエラー'}</p>
                             ${error.status ? `<p><strong>ステータス:</strong> ${error.status}</p>` : ''}
                             ${error.response ? `<p><strong>レスポンス:</strong> ${error.response.substring(0, 200)}</p>` : ''}
-                            <p><strong>時刻:</strong> ${new Date(error.timestamp).toLocaleString('ja-JP')}</p>
+                            <p><strong>時刻:</strong> ${new Date(error.timestamp).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}</p>
                             <details style="margin-top: 10px;">
                                 <summary>詳細ログ（クリックで展開）</summary>
                                 <pre style="text-align: left; font-size: 10px; max-height: 200px; overflow: auto;">${JSON.stringify(error, null, 2)}</pre>
