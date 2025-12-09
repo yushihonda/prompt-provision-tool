@@ -19,7 +19,14 @@ class OpenAIService:
     # temperatureをサポートしないモデル
     NO_TEMPERATURE_MODELS = {
         "gpt-5",
+        "gpt-5.1",  # Responses APIでtemperature非対応
         "gpt-5-pro",  # Responses APIでtemperature非対応
+    }
+
+    # max_completion_tokensを使用する必要があるモデル（max_tokensの代わり）
+    MAX_COMPLETION_TOKENS_MODELS = {
+        "gpt-5",
+        "gpt-5.1",
     }
 
     def __init__(self, api_key: Optional[str] = None):
@@ -46,6 +53,9 @@ class OpenAIService:
 
     def _is_reasoning_model(self, model_name: str) -> bool:
         """推論モデルかどうかを判定"""
+        # gpt-5.1-thinkingはgpt-5.1にreasoning_effort="high"を指定する形で使用
+        if model_name == "gpt-5.1-thinking":
+            return True
         return model_name in self.REASONING_MODELS
 
     def _get_reasoning_effort(self, model_name: str) -> Optional[str]:
@@ -54,6 +64,9 @@ class OpenAIService:
             return None
 
         m = model_name.lower()
+        # gpt-5.1-thinkingはhighを返す
+        if m == "gpt-5.1-thinking":
+            return "high"
         # gpt-5-proはreasoning_effortを必要としない
         if "gpt-5-pro" in m:
             return None
@@ -114,9 +127,12 @@ class OpenAIService:
             raise RuntimeError("OpenAI クライアントが未初期化です")
 
         reasoning_effort = self._get_reasoning_effort(model_name)
+        
+        # gpt-5.1-thinkingの場合は実際のAPI呼び出し時にはgpt-5.1を使用
+        actual_model = "gpt-5.1" if model_name == "gpt-5.1-thinking" else model_name
 
         kwargs = {
-            "model": model_name,
+            "model": actual_model,
             "input": self._convert_messages_to_responses_input(messages)
         }
 
@@ -124,7 +140,8 @@ class OpenAIService:
             kwargs["max_output_tokens"] = max_tokens
 
         # temperatureパラメータの追加（gpt-5-proなど、temperatureをサポートするモデル向け）
-        if model_name not in self.NO_TEMPERATURE_MODELS:
+        # gpt-5.1-thinking（実際にはgpt-5.1）はtemperatureをサポートしない
+        if model_name not in self.NO_TEMPERATURE_MODELS and actual_model not in self.NO_TEMPERATURE_MODELS:
             if temperature is not None:
                 kwargs["temperature"] = temperature
 
@@ -268,8 +285,12 @@ class OpenAIService:
             "messages": messages,
         }
 
+        # GPT-5.1など、max_completion_tokensを使用する必要があるモデル
         if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+            if model_name in self.MAX_COMPLETION_TOKENS_MODELS:
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
 
         # gpt-5など、temperatureをサポートしないモデルは除外
         if model_name not in self.NO_TEMPERATURE_MODELS:
@@ -506,8 +527,12 @@ class OpenAIService:
             "stream": True
         }
 
+        # GPT-5.1など、max_completion_tokensを使用する必要があるモデル
         if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+            if model in self.MAX_COMPLETION_TOKENS_MODELS:
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
 
         if model not in self.NO_TEMPERATURE_MODELS:
             if temperature is not None:

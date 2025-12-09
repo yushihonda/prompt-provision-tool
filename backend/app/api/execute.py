@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.database import get_db
 from app.auth import get_current_user
 from app.models import Account, Prompt, AccountPrompt, Execution
@@ -10,6 +11,7 @@ from app.services.openai_service import openai_service
 from app.services.gemini_service import gemini_service
 from app.config import settings
 from app.utils.file_export import export_content, parse_attached_files
+from datetime import datetime, timezone, timedelta
 import difflib
 import json
 import time
@@ -152,20 +154,25 @@ def sanitize_output(
     return redacted
 
 
+from fastapi import BackgroundTasks
+import asyncio
+
+# 実行中のタスクを管理するグローバル辞書
+_running_tasks: dict[int, asyncio.Task] = {}
+
 @router.post("", response_model=ExecutePromptResponse)
 async def execute_prompt(
     request: ExecutePromptRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_user)
 ):
     """
-    プロンプトを実行
+    プロンプトを実行（バックグラウンド処理）
 
     重要: プロンプトの内容はクライアントに送信されない
     サーバー側でプロンプトと入力データを結合してAI APIに送信
     """
-    start_time = time.time()
-
     # デバッグ: 受信したリクエスト（本番は入力詳細を出力しない）
     if settings.ENVIRONMENT != "production":
         logger.info(f"Execute request - prompt_id: {request.prompt_id}, input_data: {request.input_data}")
@@ -199,160 +206,125 @@ async def execute_prompt(
             detail="このプロンプトは現在利用できません"
         )
 
-    # プロンプトを復号化
-    try:
-        decrypted_prompt = encryption_service.decrypt(prompt.encrypted_content)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="プロンプトの復号化に失敗しました"
-        )
+    # 実行時にDeep Thinkが有効かどうかを判定
+    # 優先順位: リクエストで明示的に指定された場合 -> プロンプトの設定 -> デフォルトTrue
+    final_enable_deep_think = request.enable_deep_think
+    if final_enable_deep_think is None:
+        final_enable_deep_think = getattr(prompt, 'enable_deep_think', True)
+    if final_enable_deep_think is None:
+        final_enable_deep_think = True
 
-    # 添付ファイルの処理
-    attached_files = {}
-    if request.attachments:
-        for attachment in request.attachments:
-            try:
-                # Base64デコードを試みる（失敗した場合はテキストとして扱う）
-                try:
-                    file_content = base64.b64decode(attachment.content).decode('utf-8')
-                except:
-                    file_content = attachment.content
-                attached_files[attachment.filename] = file_content
-            except Exception as e:
-                logger.warning(f"添付ファイルの処理に失敗: {attachment.filename} - {str(e)}")
-
-    # プロンプトと入力データを結合
-    final_prompt = replace_placeholders(decrypted_prompt, request.input_data)
-
-    # 添付ファイルの内容をプロンプトに追加（オプション）
-    if attached_files:
-        attachment_section = "\n\n## 添付ファイル\n\n"
-        for filename, content in attached_files.items():
-            attachment_section += f"### {filename}\n\n{content}\n\n"
-        final_prompt += attachment_section
-
-    # デバッグ: 最終的なプロンプトをログ出力（設定で制御）
-    if settings.LOG_FINAL_PROMPT:
-        logger.info(f"Final prompt (first 200 chars): {final_prompt[:200]}...")
-
-    # AIサービスの選択と実行
-    try:
-        # 許可モデル
-        allowed_models = {
-            # OpenAI
-            "gpt-5-pro",  # 最上位モデル
-            "gpt-5",
-            "gpt-4o-mini",  # コスパ最適化モデル
-            # Gemini
-            "gemini-2.5-pro",  # 無料枠: 1日100リクエストまで（有料版で制限なし）
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",  # コスパ最適化モデル
-        }
-        # モデルのルーティング（OpenAI / Gemini 判定を拡張）
-        model_str = prompt.model_type or ""
-        if model_str not in allowed_models:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="サポートされていないモデルです（許可モデルのみ使用可能）"
-            )
-        is_openai = model_str in {"gpt-5-pro", "gpt-5", "gpt-4o-mini"}
-        is_gemini = model_str in {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"}
-
-        if is_openai:
-            # OpenAI
-            result = await openai_service.execute_prompt(
-                prompt=final_prompt,
-                model=model_str
-            )
-        elif is_gemini:
-            # Gemini
-            result = await gemini_service.execute_prompt(
-                prompt=final_prompt,
-                model=model_str
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="サポートされていないモデルです"
-            )
-
-        output = result["output"]
-        model_used = result["model"]
-        tokens_used = result["tokens"]
-        status_result = "success"
-        error_message = None
-
-    except Exception as e:
-        output = ""
-        model_used = prompt.model_type
-        tokens_used = 0
-        status_result = "error"
-        error_message = str(e)
-
-    # 実行時間の計算（ミリ秒）
-    execution_time = int((time.time() - start_time) * 1000)
-
-    # 出力のサニタイズ（テンプレ類似を赤抜き）
-    try:
-        output = sanitize_output(
-            output_text=output,
-            template_text=decrypted_prompt,
-            min_match_len=settings.SANITIZE_MIN_MATCH_LEN,
-            similarity_threshold=settings.SANITIZE_SIMILARITY_THRESHOLD,
-        )
-    except Exception:
-        # サニタイズに失敗しても処理は継続
-        pass
-
-    # 実行ログの保存
+    # 実行ログの作成（pending状態）
+    # JST（日本時間）で現在時刻を取得
+    jst = timezone(timedelta(hours=9))
+    now_jst = datetime.now(jst)
+    
     execution = Execution(
         account_id=current_user.id,
         prompt_id=prompt.id,
         input_data=json.dumps(request.input_data, ensure_ascii=False),
-        output_data=output,
-        model_used=model_used,
-        tokens_used=tokens_used,
-        execution_time=execution_time,
-        status=status_result,
-        error_message=error_message
+        status="pending",
+        model_used=prompt.model_type, # 初期値として設定
+        enable_deep_think=bool(final_enable_deep_think),  # 実行時点のDeep Think状態を保存
+        executed_at=now_jst
     )
     db.add(execution)
     db.commit()
+    db.refresh(execution)
 
-    # エラーがあった場合は例外を投げる
-    if status_result == "error":
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"AI実行エラー: {error_message}"
+    # バックグラウンドタスクの追加（asyncio.Taskとして管理）
+    from app.services.execution_service import process_execution_background
+
+    # タスクを作成して実行
+    task = asyncio.create_task(
+        process_execution_background(
+            execution_id=execution.id,
+            prompt_id=prompt.id,
+            input_data=request.input_data,
+            output_format=request.output_format,
+            attachments=request.attachments,
+            enable_deep_think=request.enable_deep_think
         )
+    )
 
-    # ファイル出力の処理
-    file_output = None
-    if request.output_format and request.output_format.lower() != "txt":
-        try:
-            file_bytes, filename = export_content(
-                content=output,
-                output_format=request.output_format,
-                filename=f"output_{prompt.id}_{int(time.time())}"
-            )
-            # Base64エンコードして返す
-            file_base64 = base64.b64encode(file_bytes).decode('utf-8')
-            file_output = {
-                "filename": filename,
-                "content": file_base64,
-                "format": request.output_format.lower(),
-                "size": len(file_bytes)
-            }
-        except Exception as e:
-            logger.error(f"ファイル出力エラー: {str(e)}")
-            # ファイル出力に失敗しても処理は継続（テキスト出力を返す）
+    # タスクを辞書に保存（キャンセル時に使用）
+    _running_tasks[execution.id] = task
+
+    # タスク完了時に辞書から削除するコールバック
+    def remove_task(task_id: int):
+        _running_tasks.pop(task_id, None)
+
+    task.add_done_callback(lambda _: remove_task(execution.id))
 
     return {
-        "output": output,
-        "model_used": model_used,
-        "tokens_used": tokens_used,
-        "execution_time": execution_time,
-        "status": status_result,
-        "file_output": file_output
+        "execution_id": execution.id,
+        "status": "pending"
     }
+
+
+@router.post("/{execution_id}/cancel")
+async def cancel_execution(
+    execution_id: int,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user)
+):
+    """
+    実行中のプロンプトをキャンセルする
+    """
+    try:
+        execution = db.query(Execution).filter(
+            Execution.id == execution_id,
+            Execution.account_id == current_user.id
+        ).first()
+
+        if not execution:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="実行ログが見つかりません"
+            )
+
+        # 既にキャンセル済みの場合は成功として返す
+        if execution.status == "cancelled":
+            logger.info(f"Execution {execution_id} is already cancelled")
+            return {"status": "cancelled", "message": "既にキャンセル済みです"}
+
+        # 完了済みの場合はキャンセルできない
+        if execution.status in ["success", "error"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"この実行はキャンセルできません（現在のステータス: {execution.status}）"
+            )
+
+        # ステータスをキャンセルに更新
+        execution.status = "cancelled"
+        execution.error_message = "ユーザーによりキャンセルされました"
+
+        # 確実にコミット
+        db.commit()
+        db.refresh(execution)
+
+        # 実行中のタスクがあればキャンセル
+        if execution_id in _running_tasks:
+            task = _running_tasks[execution_id]
+            if not task.done():
+                task.cancel()
+                logger.info(f"Cancelled asyncio task for execution {execution_id}")
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    logger.info(f"Task for execution {execution_id} was cancelled")
+                except Exception as e:
+                    logger.error(f"Error while cancelling task for execution {execution_id}: {e}")
+
+        logger.info(f"Execution {execution_id} cancelled by user {current_user.id}")
+
+        return {"status": "cancelled", "message": "実行をキャンセルしました"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling execution {execution_id}: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"キャンセル処理中にエラーが発生しました: {str(e)}"
+        )

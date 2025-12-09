@@ -162,7 +162,54 @@
                 // プロンプト情報を表示
                 document.getElementById('prompt-name').textContent = promptDetail.name;
                 document.getElementById('prompt-description').textContent = promptDetail.description || '説明なし';
-                document.getElementById('prompt-model').textContent = promptDetail.model_type;
+                let modelDisplay = promptDetail.model_type;
+
+                // Deep Thinkモデルの場合はサフィックスを削除して表示
+                let isDeepThinkModel = false;
+                if (modelDisplay && modelDisplay.includes('deep-think')) {
+                    modelDisplay = modelDisplay.replace('-deep-think', '');
+                    isDeepThinkModel = true;
+                }
+
+                // Thinkingモデルの場合はサフィックスを削除して表示
+                let isThinkingModel = false;
+                if (modelDisplay && modelDisplay.includes('thinking')) {
+                    modelDisplay = modelDisplay.replace('-thinking', '');
+                    isThinkingModel = true;
+                }
+
+                // Proモデルの場合は「-pro」を削除してProバッジを追加
+                const isProModel = promptDetail.model_type && (promptDetail.model_type.includes('-pro') || promptDetail.model_type.endsWith('-pro'));
+                if (isProModel) {
+                    // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
+                    modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
+                    modelDisplay += `<span class="pro-badge">Pro</span>`;
+                }
+
+                // 「-preview」を削除
+                modelDisplay = modelDisplay.replace(/-preview/g, '');
+
+                // Deep Thinkバッジを追加（Geminiモデルで有効な場合）
+                // 1. モデル名にdeep-thinkが含まれる場合
+                // 2. enable_deep_thinkフラグが有効な場合
+                const isDeepThinkEnabled = isDeepThinkModel || (promptDetail.enable_deep_think === true || promptDetail.enable_deep_think === 1 || promptDetail.enable_deep_think === 'true');
+
+                if (isDeepThinkEnabled && promptDetail.model_type && promptDetail.model_type.startsWith('gemini-')) {
+                    modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
+                }
+
+                // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
+                if (isThinkingModel || promptDetail.model_type === 'gpt-5.1-thinking') {
+                    modelDisplay += `<span class="thinking-badge">Thinking</span>`;
+                }
+
+                // NEWバッジを追加
+                if (promptDetail.model_type === 'gpt-5.1' || promptDetail.model_type === 'gemini-3-pro-preview' || promptDetail.model_type === 'gemini-3-pro-preview-deep-think') {
+                    modelDisplay += `<span class="new-badge">NEW</span>`;
+                } else if (isThinkingModel || promptDetail.model_type === 'gpt-5.1-thinking') {
+                    modelDisplay += `<span class="new-badge">NEW</span>`;
+                }
+                document.getElementById('prompt-model').innerHTML = modelDisplay;
 
                 // ファイル出力オプションの表示/非表示
                 const fileOutputContainer = document.getElementById('file-output-container');
@@ -172,14 +219,414 @@
                     fileOutputContainer.style.display = 'none';
                 }
 
+
                 // 入力フィールドを生成
                 generateInputFields(promptDetail.input_schema);
 
                 // 実行履歴を読み込む
                 loadHistory();
+
+                // URLパラメータにexecution_idがある場合は、その実行の入力データを復元
+                const executionIdParam = getQueryParam('execution_id');
+                if (executionIdParam && executionIdParam !== 'undefined' && executionIdParam !== 'null') {
+                    await restoreExecutionData(executionIdParam);
+                } else {
+                    // 実行中のタスクがあるかチェックして復元
+                    await restoreActiveExecution();
+                }
             } catch (error) {
                 showAlert('プロンプト情報の読み込みに失敗しました', 'error');
                 console.error('Load prompt detail error:', error);
+            }
+        }
+
+        async function restoreActiveExecution() {
+            // PersistentStatusBarに実行中のタスクがあるか確認
+            if (!PersistentStatusBar.executionId || !PersistentStatusBar.promptId) {
+                return;
+            }
+
+            // 現在のプロンプトIDと一致するか確認
+            const currentPromptId = parseInt(promptId);
+            if (PersistentStatusBar.promptId !== currentPromptId) {
+                return; // 別のプロンプトの実行中なので何もしない
+            }
+
+            const executionId = PersistentStatusBar.executionId;
+
+            // 実行ステータスを確認
+            try {
+                const execution = await apiRequest(`/api/user/executions/${executionId}`);
+
+                if (execution.status === 'success') {
+                    // 既に完了している場合は結果を表示
+                    // 完了状態をDockに表示（履歴として残す）
+                    if (PersistentStatusBar.executionId === executionId) {
+                        PersistentStatusBar.markAsCompleted('success');
+                    }
+
+                    // 入力データを入力フィールドに復元
+                    restoreInputData(execution);
+
+                    // 実行ボタンを再有効化（完了したので）
+                    setExecutionButtonState(false);
+
+                    // 実行履歴を再読み込みして最新の状態を表示
+                    await loadHistory();
+
+                    // 結果を表示
+                    displayExecutionResult(execution, executionId, null);
+
+                    // 完了ポップアップは廃止（Dockの詳細パネルに表示）
+                } else if (execution.status === 'error' || execution.status === 'cancelled') {
+                    // エラーまたはキャンセル済み
+                    // 完了状態をDockに表示（履歴として残す）
+                    if (PersistentStatusBar.executionId === executionId) {
+                        PersistentStatusBar.markAsCompleted(execution.status);
+                    }
+
+                    // 入力データを入力フィールドに復元
+                    restoreInputData(execution);
+
+                    // 実行ボタンを再有効化（エラー/キャンセルなので）
+                    setExecutionButtonState(false);
+
+                    displayExecutionError(execution);
+                    // 実行履歴を再読み込み
+                    await loadHistory();
+                } else if (execution.status === 'pending' || execution.status === 'processing') {
+                    // 実行中なので入力データを復元してからポーリングを再開
+                    restoreInputData(execution);
+                    setExecutionButtonState(true); // 実行ボタンを非活性化
+                    resumePolling(executionId);
+                }
+            } catch (error) {
+                console.error('Failed to restore execution:', error);
+                // エラーが発生した場合は、PersistentStatusBarを停止
+                PersistentStatusBar.stop();
+            }
+        }
+
+        function displayExecutionResult(execution, executionIdForDownload = null, outputFormatForDownload = null) {
+            // 結果パネルを表示
+            const outputPanel = document.querySelector('.execute-output-panel');
+            if (outputPanel) {
+                outputPanel.style.display = 'flex';
+                outputPanel.style.visibility = 'visible';
+            }
+
+            // 結果を表示（既存の処理と統合）
+            const outputContent = document.getElementById('output-content');
+            if (outputContent) {
+                outputContent.textContent = execution.output_data || '';
+                // スクロールを確実に機能させるため、スタイルを再適用
+                outputContent.style.overflowY = 'auto';
+                outputContent.style.overflowX = 'hidden';
+                outputContent.style.maxHeight = '100%';
+            }
+
+            let statModelDisplay = execution.model_used;
+
+            // Deep Thinkモデルの場合はサフィックスを削除して表示
+            let isDeepThinkModel = false;
+            if (statModelDisplay && statModelDisplay.includes('deep-think')) {
+                statModelDisplay = statModelDisplay.replace('-deep-think', '');
+                isDeepThinkModel = true;
+            }
+
+            // Thinkingモデルの場合はサフィックスを削除して表示
+            let isThinkingModel = false;
+            if (statModelDisplay && statModelDisplay.includes('thinking')) {
+                statModelDisplay = statModelDisplay.replace('-thinking', '');
+                isThinkingModel = true;
+            }
+
+            // Proモデルの場合は「-pro」を削除してProバッジを追加
+            const isProModel = execution.model_used && (execution.model_used.includes('-pro') || execution.model_used.endsWith('-pro'));
+            if (isProModel) {
+                // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
+                statModelDisplay = statModelDisplay.replace(/-pro(?=-|$)/g, '');
+                statModelDisplay += `<span class="pro-badge">Pro</span>`;
+            }
+
+            // 「-preview」を削除
+            statModelDisplay = statModelDisplay.replace(/-preview/g, '');
+
+            // Deep Thinkバッジを追加（実行時に保存されたenable_deep_thinkを使用）
+            // 保存されていない場合はプロンプトの設定を参照（後方互換性のため）
+            let isDeepThinkEnabled = isDeepThinkModel;
+
+            if (!isDeepThinkEnabled) {
+                if (execution.enable_deep_think !== undefined && execution.enable_deep_think !== null) {
+                    // 実行時に保存された値を使用
+                    isDeepThinkEnabled = execution.enable_deep_think === true || execution.enable_deep_think === 1 || execution.enable_deep_think === 'true';
+                } else if (promptDetail) {
+                    // 古い実行履歴の場合、プロンプトの設定を参照
+                    isDeepThinkEnabled = promptDetail.enable_deep_think === true || promptDetail.enable_deep_think === 1 || promptDetail.enable_deep_think === 'true';
+                }
+            }
+
+            if (isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-')) {
+                statModelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
+            }
+
+            // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
+            if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                statModelDisplay += `<span class="thinking-badge">Thinking</span>`;
+            }
+
+            // NEWバッジを追加
+            if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
+                statModelDisplay += `<span class="new-badge">NEW</span>`;
+            } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                statModelDisplay += `<span class="new-badge">NEW</span>`;
+            }
+
+            const statModel = document.getElementById('stat-model');
+            if (statModel) {
+                statModel.innerHTML = statModelDisplay;
+            }
+
+            const statTime = document.getElementById('stat-time');
+            if (statTime) {
+                statTime.textContent = `${execution.execution_time}ms`;
+            }
+
+            const statTokens = document.getElementById('stat-tokens');
+            if (statTokens) {
+                statTokens.textContent = execution.tokens_used || '-';
+            }
+
+            // コピーボタンを有効化
+            const copyBtn = document.getElementById('copy-output-btn');
+            if (copyBtn) {
+                copyBtn.style.opacity = '1';
+            }
+
+            // 結果パネルにスクロール
+            if (outputPanel) {
+                // 確実に表示されるように再度設定
+                outputPanel.style.display = 'flex';
+                outputPanel.style.visibility = 'visible';
+                outputPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+
+            // ファイル出力結果の処理
+            const fileOutputDiv = document.getElementById('file-output-result');
+            if (executionIdForDownload && outputFormatForDownload && outputFormatForDownload !== 'txt') {
+                // ファイルダウンロードボタンを表示
+                const downloadLink = document.createElement('a');
+                downloadLink.href = "#";
+                downloadLink.className = 'btn btn-success';
+                downloadLink.textContent = `結果をダウンロード (${outputFormatForDownload.toUpperCase()})`;
+                downloadLink.style.marginTop = '10px';
+                downloadLink.style.display = 'inline-block';
+                downloadLink.onclick = async (e) => {
+                    e.preventDefault();
+                    try {
+                        const response = await fetch(`/api/execute/download/${executionIdForDownload}?output_format=${outputFormatForDownload}`, {
+                            headers: {
+                                'Authorization': `Bearer ${sessionStorage.getItem('token')}`
+                            }
+                        });
+                        if (!response.ok) throw new Error('Download failed');
+
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `execution_${executionIdForDownload}.${outputFormatForDownload}`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                    } catch (err) {
+                        showAlert('ダウンロードに失敗しました', 'error');
+                    }
+                };
+
+                if (fileOutputDiv) {
+                    fileOutputDiv.innerHTML = '';
+                    fileOutputDiv.appendChild(downloadLink);
+                    fileOutputDiv.style.display = 'block';
+                }
+            } else {
+                if (fileOutputDiv) {
+                    fileOutputDiv.style.display = 'none';
+                }
+            }
+        }
+
+        function displayExecutionError(execution) {
+            // 結果パネルを表示
+            const outputPanel = document.querySelector('.execute-output-panel');
+            if (outputPanel) {
+                outputPanel.style.display = 'flex';
+                outputPanel.style.visibility = 'visible';
+            }
+
+            const errorMsg = execution.error_message || '実行エラーが発生しました';
+            const outputContent = document.getElementById('output-content');
+            if (outputContent) {
+                outputContent.innerHTML = `
+                    <div style="color: ${execution.status === 'cancelled' ? '#ffc107' : '#dc3545'}; text-align: center; padding: 20px;">
+                        ${execution.status === 'cancelled' ? '実行がキャンセルされました' : `エラー: ${errorMsg.trim()}`}
+                    </div>
+                `;
+            }
+
+            // 結果パネルにスクロール
+            if (outputPanel) {
+                outputPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+
+        async function resumePolling(executionId) {
+            // 実行データを取得して入力データを復元（まだ取得していない場合）
+            try {
+                const execution = await apiRequest(`/api/user/executions/${executionId}`);
+                restoreInputData(execution);
+            } catch (error) {
+                console.error('Failed to load execution data for input restoration:', error);
+            }
+
+            // 実行ボタンを非活性化（実行中なので）
+            setExecutionButtonState(true);
+
+            // 出力エリアを処理中表示に更新（スピナーなし）
+            document.getElementById('output-content').innerHTML = `
+                <div style="text-align: center; padding: 20px; color: rgba(255, 255, 255, 0.7);">
+                    <p>AIが応答を生成しています...<br>この処理はバックグラウンドで実行されます。</p>
+                    <div class="progress-bar-container" style="width: 100%; background-color: rgba(255,255,255,0.1); border-radius: 4px; height: 4px; margin-top: 10px; overflow: hidden;">
+                        <div class="progress-bar" style="width: 0%; height: 100%; background-color: #007bff; transition: width 0.5s;"></div>
+                    </div>
+                </div>
+            `;
+
+            // ポーリング開始
+            const pollInterval = 2000;
+            let pollCount = 0;
+            const maxPolls = 300;
+            let pollIntervalId = null;
+
+            const cleanupPolling = () => {
+                if (pollIntervalId) {
+                    clearInterval(pollIntervalId);
+                    pollIntervalId = null;
+                }
+            };
+            window.addEventListener('beforeunload', cleanupPolling);
+
+            try {
+                const pollResult = await new Promise((resolve, reject) => {
+                    pollIntervalId = setInterval(async () => {
+                        try {
+                            pollCount++;
+
+                            const progressBar = document.querySelector('.progress-bar');
+                            if (progressBar) {
+                                const currentWidth = parseFloat(progressBar.style.width) || 0;
+                                if (currentWidth < 90) {
+                                    progressBar.style.width = `${currentWidth + (90 - currentWidth) * 0.1}%`;
+                                }
+                            }
+
+                            if (pollCount > maxPolls) {
+                                cleanupPolling();
+                                reject(new Error('タイムアウトしました'));
+                                return;
+                            }
+
+                            const execution = await apiRequest(`/api/user/executions/${executionId}`);
+
+                            // 実行状態を先に確認（完了、エラー、キャンセルの場合は処理を続行）
+                            if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+                                // 完了状態の場合は、PersistentStatusBar.executionIdのチェックをスキップ
+                            } else if (!PersistentStatusBar.executionId || PersistentStatusBar.executionId !== executionId) {
+                                // 実行中の場合のみ、PersistentStatusBar.executionIdのチェックを行う
+                                cleanupPolling();
+                                reject(new Error('キャンセルされました'));
+                                return;
+                            }
+
+                            if (execution.status === 'success') {
+                                cleanupPolling();
+                                if (progressBar) progressBar.style.width = '100%';
+                                // 完了状態をDockに表示（履歴として残す）
+                                if (PersistentStatusBar.executionId === executionId) {
+                                    PersistentStatusBar.markAsCompleted('success');
+                                }
+                                // カスタムイベントを発火（他のページから戻ってきた時などに結果を表示するため）
+                                window.dispatchEvent(new CustomEvent('executionCompleted', {
+                                    detail: { execution, executionId }
+                                }));
+                                resolve(execution);
+                            } else if (execution.status === 'error') {
+                                cleanupPolling();
+                                // エラー状態をDockに表示（履歴として残す）
+                                if (PersistentStatusBar.executionId === executionId) {
+                                    PersistentStatusBar.markAsCompleted('error');
+                                }
+                                // カスタムイベントを発火
+                                window.dispatchEvent(new CustomEvent('executionCompleted', {
+                                    detail: { execution, executionId }
+                                }));
+                                reject(new Error(execution.error_message || '実行エラーが発生しました'));
+                            } else if (execution.status === 'cancelled') {
+                                cleanupPolling();
+                                // キャンセル状態をDockに表示（履歴として残す）
+                                if (PersistentStatusBar.executionId === executionId) {
+                                    PersistentStatusBar.markAsCompleted('cancelled');
+                                }
+                                // カスタムイベントを発火
+                                window.dispatchEvent(new CustomEvent('executionCompleted', {
+                                    detail: { execution, executionId }
+                                }));
+                                reject(new Error('実行がキャンセルされました'));
+                            }
+                        } catch (err) {
+                            if (err.message !== 'キャンセルされました') {
+                                cleanupPolling();
+                                PersistentStatusBar.stop();
+                                reject(err);
+                            }
+                        }
+                    }, pollInterval);
+                });
+
+                window.removeEventListener('beforeunload', cleanupPolling);
+
+                // 入力データを入力フィールドに復元
+                restoreInputData(pollResult);
+
+                // 実行ボタンを再有効化（完了したので）
+                setExecutionButtonState(false);
+
+                // 結果を表示
+                displayExecutionResult(pollResult, executionId, null);
+
+                // 実行履歴を再読み込み（入力データも含めて表示）
+                loadHistory();
+
+                // 出力パネルを確実に表示（loadHistoryの後でも表示されるように）
+                const outputPanel = document.querySelector('.execute-output-panel');
+                if (outputPanel) {
+                    outputPanel.style.display = 'flex';
+                    outputPanel.style.visibility = 'visible';
+                }
+            } catch (error) {
+                window.removeEventListener('beforeunload', cleanupPolling);
+
+                // 実行ボタンを再有効化（エラー/キャンセルなので）
+                setExecutionButtonState(false);
+
+                if (error.message === 'キャンセルされました' || error.message === '実行がキャンセルされました') {
+                    displayExecutionError({ status: 'cancelled', error_message: error.message });
+                } else {
+                    displayExecutionError({ status: 'error', error_message: error.message });
+                }
+                // エラー時も履歴を再読み込み
+                loadHistory();
             }
         }
 
@@ -222,13 +669,75 @@
                         </tr>
                     </thead>
                     <tbody>
-                        ${displayedExecutions.map(execution => `
+                        ${displayedExecutions.map(execution => {
+                            let modelDisplay = execution.model_used;
+
+                            // Deep Thinkモデルの場合はサフィックスを削除して表示
+                            let isDeepThinkModel = false;
+                            if (modelDisplay && modelDisplay.includes('deep-think')) {
+                                modelDisplay = modelDisplay.replace('-deep-think', '');
+                                isDeepThinkModel = true;
+                            }
+
+                            // Thinkingモデルの場合はサフィックスを削除して表示
+                            let isThinkingModel = false;
+                            if (modelDisplay && modelDisplay.includes('thinking')) {
+                                modelDisplay = modelDisplay.replace('-thinking', '');
+                                isThinkingModel = true;
+                            }
+
+                            // Proモデルの場合は「-pro」を削除してProバッジを追加
+                            const isProModel = execution.model_used && (execution.model_used.includes('-pro') || execution.model_used.endsWith('-pro'));
+                            if (isProModel) {
+                                // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
+                                modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
+                                modelDisplay += `<span class="pro-badge">Pro</span>`;
+                            }
+
+                            // 「-preview」を削除
+                            modelDisplay = modelDisplay.replace(/-preview/g, '');
+
+                            // Deep Thinkバッジを追加（実行時に保存されたenable_deep_thinkを使用）
+                            // 保存されていない場合はプロンプトの設定を参照（後方互換性のため）
+                            let isDeepThinkEnabled = isDeepThinkModel;
+
+                            if (!isDeepThinkEnabled) {
+                                if (execution.enable_deep_think !== undefined && execution.enable_deep_think !== null) {
+                                    // 実行時に保存された値を使用
+                                    isDeepThinkEnabled = execution.enable_deep_think === true || execution.enable_deep_think === 1 || execution.enable_deep_think === 'true';
+                                } else if (promptDetail) {
+                                    // 古い実行履歴の場合、プロンプトの設定を参照
+                                    isDeepThinkEnabled = promptDetail.enable_deep_think === true || promptDetail.enable_deep_think === 1 || promptDetail.enable_deep_think === 'true';
+                                }
+                            }
+
+                            if (isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-')) {
+                                modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
+                            }
+                            
+                            // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
+                            if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                                modelDisplay += `<span class="thinking-badge">Thinking</span>`;
+                            }
+                            
+                            // NEWバッジを追加
+                            if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
+                                modelDisplay += `<span class="new-badge">NEW</span>`;
+                            } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                                modelDisplay += `<span class="new-badge">NEW</span>`;
+                            }
+                            
+                            return `
                             <tr>
                                 <td>${formatDate(execution.executed_at)}</td>
-                                <td>${execution.model_used}</td>
+                                <td>${modelDisplay}</td>
                                 <td>${execution.execution_time}ms</td>
                                 <td>${execution.tokens_used || '-'}</td>
-                                <td><span style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</span></td>
+                                <td>
+                                    <span style="color: ${execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'rgba(255, 255, 255, 0.6)'}">
+                                        ${execution.status}
+                                    </span>
+                                </td>
                                 <td>
                                     <div class="actions">
                                         <button onclick="editExecution(${execution.id})" title="編集" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
@@ -240,7 +749,8 @@
                                     </div>
                                 </td>
                             </tr>
-                        `).join('')}
+                            `;
+                        }).join('')}
                     </tbody>
                 </table>
                 ${hasMore ? `
@@ -271,6 +781,25 @@
         async function showHistoryDetail(id) {
             try {
                 const execution = await apiRequest(`/api/user/executions/${id}`);
+
+                // 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
+                // 保存されていない場合はプロンプト情報を取得（後方互換性のため）
+                let enableDeepThink = false;
+                if (execution.enable_deep_think !== undefined && execution.enable_deep_think !== null) {
+                    // 実行時に保存された値を使用
+                    const isDeepThinkEnabled = execution.enable_deep_think === true || execution.enable_deep_think === 1 || execution.enable_deep_think === 'true';
+                    enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
+                } else if (execution.prompt_id) {
+                    // 古い実行履歴の場合、プロンプト情報を取得
+                    try {
+                        const prompt = await apiRequest(`/api/user/prompts/${execution.prompt_id}`);
+                        const isDeepThinkEnabled = prompt.enable_deep_think === true || prompt.enable_deep_think === 1 || prompt.enable_deep_think === 'true';
+                        enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
+                    } catch (e) {
+                        console.error('Failed to load prompt detail:', e);
+                    }
+                }
+
                 const detailHTML = `
                     <div style="text-align: left; max-height: 70vh; overflow-y: auto;">
                         <div style="margin-bottom: 15px;">
@@ -279,7 +808,53 @@
                         </div>
                         <div style="margin-bottom: 15px;">
                             <strong>使用モデル:</strong><br>
-                            <span>${execution.model_used}</span>
+                            <span>${(() => {
+                                let modelDisplay = execution.model_used;
+
+                                // Deep Thinkモデルの場合はサフィックスを削除して表示
+                                let isDeepThinkModel = false;
+                                if (modelDisplay && modelDisplay.includes('deep-think')) {
+                                    modelDisplay = modelDisplay.replace('-deep-think', '');
+                                    isDeepThinkModel = true;
+                                }
+
+                                // Thinkingモデルの場合はサフィックスを削除して表示
+                                let isThinkingModel = false;
+                                if (modelDisplay && modelDisplay.includes('thinking')) {
+                                    modelDisplay = modelDisplay.replace('-thinking', '');
+                                    isThinkingModel = true;
+                                }
+
+                                 // Proモデルの場合は「-pro」を削除してProバッジを追加
+                                 const isProModel = execution.model_used && (execution.model_used.includes('-pro') || execution.model_used.endsWith('-pro'));
+                                 if (isProModel) {
+                                     // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
+                                     modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
+                                     modelDisplay += `<span class="pro-badge">Pro</span>`;
+                                 }
+
+                                 // 「-preview」を削除
+                                 modelDisplay = modelDisplay.replace(/-preview/g, '');
+
+                                 // Deep Thinkバッジを追加（モデル名にdeep-thinkが含まれる場合、またはenableDeepThinkが有効な場合）
+                                if (isDeepThinkModel || enableDeepThink) {
+                                    modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
+                                }
+                                
+                                // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
+                                if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                                    modelDisplay += `<span class="thinking-badge">Thinking</span>`;
+                                }
+                                
+                                // NEWバッジを追加
+                                if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
+                                    modelDisplay += `<span class="new-badge">NEW</span>`;
+                                } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                                    modelDisplay += `<span class="new-badge">NEW</span>`;
+                                }
+                                
+                                return modelDisplay;
+                            })()}</span>
                         </div>
                         <div style="margin-bottom: 15px;">
                             <strong>入力データ:</strong><br>
@@ -299,7 +874,7 @@
                         </div>
                         <div style="margin-bottom: 15px;">
                             <strong>ステータス:</strong><br>
-                            <span style="color: ${execution.status === 'success' ? 'green' : 'red'}">${execution.status}</span>
+                            <span style="color: ${execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'rgba(255, 255, 255, 0.6)'}">${execution.status}</span>
                         </div>
                         ${execution.error_message ? `
                         <div style="margin-bottom: 15px;">
@@ -326,32 +901,152 @@
             }
         }
 
+        function restoreInputData(execution) {
+            // 入力データを入力フィールドに設定
+            if (execution.input_data) {
+                let inputData;
+                try {
+                    // input_dataが文字列の場合はJSONパース
+                    if (typeof execution.input_data === 'string') {
+                        inputData = JSON.parse(execution.input_data);
+                    } else {
+                        inputData = execution.input_data;
+                    }
+
+                    // 各入力フィールドに値を設定
+                    Object.entries(inputData).forEach(([key, value]) => {
+                        const inputElement = document.querySelector(`#${key}, [name="${key}"]`);
+                        if (inputElement) {
+                            inputElement.value = value || '';
+                        }
+                    });
+                } catch (e) {
+                    console.error('Failed to parse input data:', e);
+                }
+            }
+        }
+
+        async function restoreExecutionData(executionId) {
+            // URLパラメータで指定されたexecution_idのデータを復元
+            // executionIdが有効でない場合は処理をスキップ
+            if (!executionId || executionId === 'undefined' || executionId === 'null' || executionId === '') {
+                console.warn('Invalid executionId:', executionId);
+                return;
+            }
+
+            // 数値に変換して有効性をチェック
+            const executionIdNum = parseInt(executionId, 10);
+            if (isNaN(executionIdNum) || executionIdNum <= 0) {
+                console.warn('Invalid executionId (not a positive number):', executionId);
+                return;
+            }
+
+            try {
+                const execution = await apiRequest(`/api/user/executions/${executionIdNum}`);
+
+                // 現在のプロンプトIDと一致するか確認
+                const currentPromptId = parseInt(promptId);
+                if (execution.prompt_id !== currentPromptId) {
+                    console.warn('Execution prompt_id does not match current prompt_id');
+                    return;
+                }
+
+                // 入力データを復元（キャンセル時も復元）
+                restoreInputData(execution);
+
+                // 実行ボタンの状態を設定（完了済みの場合は有効化）
+                if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+                    setExecutionButtonState(false);
+                } else {
+                    // 実行中またはpendingの場合は無効化
+                    setExecutionButtonState(true);
+                }
+
+                // キャンセル時は入力データのみ復元し、出力パネルは表示しない
+                if (execution.status === 'cancelled') {
+                    // 出力パネルは表示しない（入力データのみ復元）
+                    return;
+                }
+
+                // 出力パネルを確実に表示（先に表示してから結果を表示）
+                const outputPanel = document.querySelector('.execute-output-panel');
+                if (outputPanel) {
+                    outputPanel.style.display = 'flex';
+                    outputPanel.style.visibility = 'visible';
+                }
+
+                // 結果がある場合は表示
+                if (execution.status === 'success') {
+                    displayExecutionResult(execution, executionId, null);
+                } else if (execution.status === 'error') {
+                    displayExecutionError(execution);
+                }
+
+                // 出力パネルにスクロール（少し遅延させて確実に表示されるように）
+                setTimeout(() => {
+                    if (outputPanel) {
+                        outputPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                }, 100);
+            } catch (error) {
+                console.error('Failed to restore execution data:', error);
+                showAlert('実行データの復元に失敗しました', 'error');
+            }
+        }
+
+        function setExecutionButtonState(isExecuting) {
+            const executeBtn = document.getElementById('execute-btn');
+            const executeBtnText = document.getElementById('execute-btn-text');
+            const executeBtnSpinner = document.getElementById('execute-btn-spinner');
+            const form = document.getElementById('execute-form');
+
+            if (executeBtn) {
+                executeBtn.disabled = isExecuting;
+            }
+
+            if (isExecuting) {
+                // 実行中状態
+                if (executeBtnText) {
+                    executeBtnText.textContent = '実行中...';
+                }
+                if (executeBtnSpinner) {
+                    executeBtnSpinner.style.display = 'inline';
+                }
+                // 全ての入力フィールドを無効化
+                if (form) {
+                    const inputFields = form.querySelectorAll('input, textarea, select, button');
+                    inputFields.forEach(field => {
+                        if (field !== executeBtn) {
+                            field.disabled = true;
+                        }
+                    });
+                }
+            } else {
+                // 通常状態
+                if (executeBtnText) {
+                    executeBtnText.textContent = '実行';
+                }
+                if (executeBtnSpinner) {
+                    executeBtnSpinner.style.display = 'none';
+                }
+                // 全ての入力フィールドを再有効化
+                if (form) {
+                    const inputFields = form.querySelectorAll('input, textarea, select, button');
+                    inputFields.forEach(field => {
+                        if (field !== executeBtn) {
+                            field.disabled = false;
+                        }
+                    });
+                }
+            }
+        }
+
         async function editExecution(id) {
             try {
                 const execution = await apiRequest(`/api/user/executions/${id}`);
 
-                // 入力データを入力フィールドに設定
-                if (execution.input_data) {
-                    let inputData;
-                    try {
-                        // input_dataが文字列の場合はJSONパース
-                        if (typeof execution.input_data === 'string') {
-                            inputData = JSON.parse(execution.input_data);
-                        } else {
-                            inputData = execution.input_data;
-                        }
-
-                        // 各入力フィールドに値を設定
-                        Object.entries(inputData).forEach(([key, value]) => {
-                            const inputElement = document.querySelector(`#${key}, [name="${key}"]`);
-                            if (inputElement) {
-                                inputElement.value = value || '';
-                            }
-                        });
-                    } catch (e) {
-                        console.error('Failed to parse input data:', e);
-                    }
-                }
+                // 入力データを復元
+                restoreInputData(execution);
 
                 // 入力パネルにスクロール
                 document.querySelector('.execute-input-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -463,8 +1158,55 @@
                 ? document.getElementById('output-format').value
                 : 'txt';
 
+            // 既に実行中の場合、キューに追加
+            if (PersistentStatusBar.executionId) {
+                // キューが満杯かチェック
+                if (PersistentStatusBar.executionQueue.length >= PersistentStatusBar.MAX_QUEUE_SIZE) {
+                    await Swal.fire({
+                        title: 'キューが満杯です',
+                        text: `最大${PersistentStatusBar.MAX_QUEUE_SIZE}つまで予約できます。現在の実行が完了するまでお待ちください。`,
+                        icon: 'warning',
+                        confirmButtonText: 'OK'
+                    });
+                    // ボタンを再有効化
+                    executeBtn.disabled = false;
+                    executeBtnText.textContent = '実行';
+                    if (executeBtnSpinner) {
+                        executeBtnSpinner.style.display = 'none';
+                    }
+                    inputFields.forEach(field => {
+                        if (field !== executeBtn) {
+                            field.disabled = false;
+                        }
+                    });
+                    return;
+                }
+
+                // キューに追加
+                const promptName = document.getElementById('prompt-name').textContent;
+                PersistentStatusBar.addToQueue({
+                    promptId: parseInt(promptId),
+                    promptName: promptName,
+                    inputData: inputData,
+                    outputFormat: outputFormat !== 'txt' ? outputFormat : undefined
+                });
+
+                // ボタンを再有効化
+                executeBtn.disabled = false;
+                executeBtnText.textContent = '実行';
+                if (executeBtnSpinner) {
+                    executeBtnSpinner.style.display = 'none';
+                }
+                inputFields.forEach(field => {
+                    if (field !== executeBtn) {
+                        field.disabled = false;
+                    }
+                });
+                return;
+            }
+
             try {
-                const result = await apiRequest('/api/execute', {
+                const initialResponse = await apiRequest('/api/execute', {
                     method: 'POST',
                     body: JSON.stringify({
                         prompt_id: parseInt(promptId),
@@ -473,29 +1215,265 @@
                     })
                 });
 
-                // 結果を表示（中身だけを更新）
-                document.getElementById('output-content').textContent = result.output;
-                document.getElementById('stat-model').textContent = result.model_used;
-                document.getElementById('stat-time').textContent = `${result.execution_time}ms`;
-                document.getElementById('stat-tokens').textContent = result.tokens_used || '-';
-                
-                // コピーボタンを有効化
-                const copyBtn = document.getElementById('copy-output-btn');
-                if (copyBtn) {
-                    copyBtn.style.opacity = '1';
+                const executionId = initialResponse.execution_id;
+                executeBtnText.textContent = '実行中...';
+
+                // ドロップアニメーションとステータスバー開始
+                const targetDock = document.getElementById('task-dock');
+
+                if (targetDock) {
+                    // アニメーション用パーティクルの生成
+                    const startRect = executeBtn.getBoundingClientRect();
+                    const targetRect = targetDock.getBoundingClientRect();
+
+                    const particle = document.createElement('div');
+                    Object.assign(particle.style, {
+                        position: 'fixed',
+                        width: '20px',
+                        height: '20px',
+                        backgroundColor: '#007bff',
+                        borderRadius: '50%',
+                        zIndex: '9999',
+                        left: `${startRect.left + startRect.width / 2 - 10}px`,
+                        top: `${startRect.top + startRect.height / 2 - 10}px`,
+                        transition: 'all 0.6s cubic-bezier(0.68, -0.55, 0.27, 1.55)',
+                        boxShadow: '0 0 10px #007bff',
+                        pointerEvents: 'none'
+                    });
+
+                    document.body.appendChild(particle);
+
+                    // アニメーション開始（少し遅延させてDOM反映を待つ）
+                    requestAnimationFrame(() => {
+                        particle.style.left = `${targetRect.left + targetRect.width / 2 - 10}px`;
+                        particle.style.top = `${targetRect.top + targetRect.height / 2 - 10}px`;
+                        particle.style.transform = 'scale(0.5)';
+                        particle.style.opacity = '0.5';
+                    });
+
+                    // アニメーション完了時の処理
+                    setTimeout(() => {
+                        if (document.body.contains(particle)) {
+                            document.body.removeChild(particle);
+                        }
+
+                        // ターゲットのエフェクト（受け取った感）
+                        targetDock.style.transform = 'scale(1.2)';
+                        targetDock.style.background = 'rgba(0, 123, 255, 0.4)'; // 一瞬明るく
+
+                        setTimeout(() => {
+                            targetDock.style.transform = 'scale(1)';
+                            // PersistentStatusBar.updateUIで背景色は上書きされるのでここでは戻さない
+                        }, 200);
+
+                        // ステータスバーを開始（ここでアイコンが青くなる）
+                        const promptName = document.getElementById('prompt-name').textContent;
+                        PersistentStatusBar.start(executionId, parseInt(promptId), promptName);
+                    }, 600);
+                } else {
+                    // ターゲットが見つからない場合は即座に開始（フォールバック）
+                    const promptName = document.getElementById('prompt-name').textContent;
+                    PersistentStatusBar.start(executionId, parseInt(promptId), promptName);
+                }
+
+                // 2. 出力エリアを処理中表示に更新（スピナーなし）
+                document.getElementById('output-content').innerHTML = `
+                    <div style="text-align: center; padding: 20px; color: rgba(255, 255, 255, 0.7);">
+                        <p>AIが応答を生成しています...<br>この処理はバックグラウンドで実行されます。</p>
+                        <div class="progress-bar-container" style="width: 100%; background-color: rgba(255,255,255,0.1); border-radius: 4px; height: 4px; margin-top: 10px; overflow: hidden;">
+                            <div class="progress-bar" style="width: 0%; height: 100%; background-color: #007bff; transition: width 0.5s;"></div>
+                        </div>
+                    </div>
+                `;
+
+                // 3. 履歴テーブルに仮の行を追加（即時反映）
+                const historyTableBody = document.querySelector('#history-container tbody');
+                if (historyTableBody) {
+                    const now = new Date();
+                    const tempRow = document.createElement('tr');
+                    tempRow.id = `exec-row-${executionId}`;
+                    tempRow.className = 'highlight-new-row'; // CSSでアニメーションなどをつけると良い
+                    tempRow.innerHTML = `
+                        <td>${formatDate(now.toISOString())}</td>
+                        <td>${document.getElementById('prompt-model').textContent.replace(/<[^>]*>/g, '')}</td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td><span style="color: orange;">pending</span> <div class="spinner" style="width: 12px; height: 12px; border-width: 1px; display: inline-block; vertical-align: middle;"></div></td>
+                        <td>
+                            <div class="actions">
+                                <button disabled class="icon-btn" style="opacity: 0.5; cursor: not-allowed;">
+                                    <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #ccc;"><path d="m11.239 15.533c-1.045 3.004-1.238 3.451-1.238 3.84 0 .441.385.627.627.627.272 0 1.108-.301 3.829-1.249zm.888-.888 3.22 3.22 6.408-6.401c.163-.163.245-.376.245-.591 0-.213-.082-.427-.245-.591-.58-.579-1.458-1.457-2.039-2.036-.163-.163-.377-.245-.591-.245-.213 0-.428.082-.592.245zm-3.127-.895c0-.402-.356-.75-.75-.75-2.561 0-2.939 0-5.5 0-.394 0-.75.348-.75.75s.356.75.75.75h5.5c.394 0 .75-.348.75-.75zm5-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75z" fill-rule="nonzero"/></svg>
+                                </button>
+                                <button onclick="showHistoryDetail(${executionId})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
+                                    <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #17a2b8; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
+                                </button>
+                            </div>
+                        </td>
+                    `;
+                    historyTableBody.insertBefore(tempRow, historyTableBody.firstChild);
+
+                    // 3件以上なら最後を削除
+                    if (historyTableBody.children.length > displayedHistoryCount) {
+                        historyTableBody.removeChild(historyTableBody.lastChild);
+                    }
+                }
+
+                // ポーリング開始
+                const pollInterval = 2000; // 2秒ごとに確認
+                let pollCount = 0;
+                const maxPolls = 300; // 最大10分 (2s * 300)
+                let pollIntervalId = null;
+
+                // ページ離脱時のクリーンアップ
+                const cleanupPolling = () => {
+                    if (pollIntervalId) {
+                        clearInterval(pollIntervalId);
+                        pollIntervalId = null;
+                    }
+                };
+                window.addEventListener('beforeunload', cleanupPolling);
+                // グローバルスコープにも保存して、stopExecutionからアクセスできるようにする
+                window.pollIntervalId = pollIntervalId;
+                window.cleanupPolling = cleanupPolling;
+
+                const pollResult = await new Promise((resolve, reject) => {
+                    pollIntervalId = setInterval(async () => {
+                        try {
+                            pollCount++;
+
+                            // プログレスバーの更新 (90%まで進める)
+                            const progressBar = document.querySelector('.progress-bar');
+                            if (progressBar) {
+                                const currentWidth = parseFloat(progressBar.style.width) || 0;
+                                if (currentWidth < 90) {
+                                    progressBar.style.width = `${currentWidth + (90 - currentWidth) * 0.1}%`;
+                                }
+                            }
+
+                            if (pollCount > maxPolls) {
+                                cleanupPolling();
+                                reject(new Error('タイムアウトしました'));
+                                return;
+                            }
+
+                            const execution = await apiRequest(`/api/user/executions/${executionId}`);
+
+                            // 実行状態を先に確認（完了、エラー、キャンセルの場合は処理を続行）
+                            if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+                                // 完了状態の場合は、PersistentStatusBar.executionIdのチェックをスキップ
+                            } else if (!PersistentStatusBar.executionId || PersistentStatusBar.executionId !== executionId) {
+                                // 実行中の場合のみ、PersistentStatusBar.executionIdのチェックを行う
+                                cleanupPolling();
+                                reject(new Error('キャンセルされました'));
+                                return;
+                            }
+
+                            if (execution.status === 'success') {
+                                cleanupPolling();
+                                // 完了時は100%にする
+                                if (progressBar) progressBar.style.width = '100%';
+                                // 完了状態をDockに表示（履歴として残す）
+                                if (PersistentStatusBar.executionId === executionId) {
+                                    PersistentStatusBar.markAsCompleted('success');
+                                }
+                                // カスタムイベントを発火（他のページから戻ってきた時などに結果を表示するため）
+                                window.dispatchEvent(new CustomEvent('executionCompleted', {
+                                    detail: { execution, executionId }
+                                }));
+                                resolve(execution);
+                            } else if (execution.status === 'error') {
+                                cleanupPolling();
+                                // エラー状態をDockに表示（履歴として残す）
+                                if (PersistentStatusBar.executionId === executionId) {
+                                    PersistentStatusBar.markAsCompleted('error');
+                                }
+                                reject(new Error(execution.error_message || '実行エラーが発生しました'));
+                            } else if (execution.status === 'cancelled') {
+                                cleanupPolling();
+                                // キャンセル状態をDockに表示（履歴として残す）
+                                if (PersistentStatusBar.executionId === executionId) {
+                                    PersistentStatusBar.markAsCompleted('cancelled');
+                                }
+                                reject(new Error('実行がキャンセルされました'));
+                            }
+                            // pending または processing の場合は継続
+                        } catch (err) {
+                            if (err.message !== 'キャンセルされました') {
+                                cleanupPolling();
+                                PersistentStatusBar.stop();
+                                reject(err);
+                            }
+                        }
+                    }, pollInterval);
+                });
+
+                // クリーンアップ
+                window.removeEventListener('beforeunload', cleanupPolling);
+
+                const result = pollResult;
+
+                // 入力データを入力フィールドに復元
+                restoreInputData(result);
+
+                // 結果を表示（関数を使用）
+                displayExecutionResult(result, executionId, outputFormat);
+
+                // 出力パネルを確実に表示
+                const outputPanel = document.querySelector('.execute-output-panel');
+                if (outputPanel) {
+                    outputPanel.style.display = 'flex';
+                    outputPanel.style.visibility = 'visible';
                 }
 
                 // ファイル出力結果の表示
+                // 注: バックグラウンド処理ではファイル出力はまだ実装されていないため、
+                // 必要であれば別途ダウンロードAPIを叩くなどの実装が必要ですが、
+                // 今回はテキスト出力のみ確認します。
+                // 元のコードではレスポンスにfile_outputが含まれていましたが、
+                // バックグラウンド処理後のExecutionモデルにはfile_outputは保存されていません（DB設計上）。
+                // そのため、ファイルダウンロードボタンを表示するには、
+                // /api/execute/download/{execution_id} へのリンクを表示する必要があります。
+
                 const fileOutputDiv = document.getElementById('file-output-result');
-                if (result.file_output) {
-                    const fileOutput = result.file_output;
+                if (outputFormat !== 'txt') {
                     const downloadLink = document.createElement('a');
-                    downloadLink.href = `data:application/octet-stream;base64,${fileOutput.content}`;
-                    downloadLink.download = fileOutput.filename;
+                    // download APIを使用
+                    downloadLink.href = `/api/execute/download/${executionId}?output_format=${outputFormat}`;
                     downloadLink.className = 'btn btn-success';
-                    downloadLink.textContent = `${fileOutput.filename} をダウンロード (${(fileOutput.size / 1024).toFixed(2)} KB)`;
+                    downloadLink.textContent = `結果をダウンロード (${outputFormat.toUpperCase()})`;
                     downloadLink.style.marginTop = '10px';
                     downloadLink.style.display = 'inline-block';
+                    // 認証トークンが必要なため、直接リンクではなくfetchで取得してblobにするか、
+                    // あるいはCookie認証などが効いている前提かによりますが、
+                    // 既存のdownload_execution_fileはGETでトークンをHeaderに必要とするため、
+                    // 単純なhrefでは難しい可能性があります。
+                    // ここでは既存の仕組みに合わせて、ダウンロードボタンをクリックしたら
+                    // fetchで取得してダウンロードする関数を呼び出すようにします。
+
+                    downloadLink.href = "#";
+                    downloadLink.onclick = async (e) => {
+                        e.preventDefault();
+                        try {
+                            const response = await fetch(`/api/execute/download/${executionId}?output_format=${outputFormat}`, {
+                                headers: {
+                                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                                }
+                            });
+                            if (!response.ok) throw new Error('Download failed');
+
+                            const blob = await response.blob();
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `execution_${executionId}.${outputFormat}`; // 簡易的なファイル名
+                            document.body.appendChild(a);
+                            a.click();
+                            window.URL.revokeObjectURL(url);
+                            document.body.removeChild(a);
+                        } catch (err) {
+                            showAlert('ダウンロードに失敗しました', 'error');
+                        }
+                    };
 
                     if (fileOutputDiv) {
                         fileOutputDiv.innerHTML = '';
@@ -518,12 +1496,24 @@
                 // 実行履歴を再読み込み
                 loadHistory();
             } catch (error) {
-                await Swal.fire({
-                    title: '実行エラー',
-                    text: '実行に失敗しました: ' + error.message,
-                    icon: 'error',
-                    confirmButtonText: 'OK'
-                });
+                // クリーンアップ（エラー時も）
+                if (typeof cleanupPolling === 'function') {
+                    cleanupPolling();
+                    window.removeEventListener('beforeunload', cleanupPolling);
+                }
+
+                // キャンセルされた場合は特別な処理
+                if (error.message === 'キャンセルされました' || error.message === '実行がキャンセルされました') {
+                    document.getElementById('output-content').innerHTML = '<div style="color: #ffc107; text-align: center; padding: 20px;">実行がキャンセルされました</div>';
+                } else {
+                    await Swal.fire({
+                        title: '実行エラー',
+                        text: '実行に失敗しました: ' + error.message,
+                        icon: 'error',
+                        confirmButtonText: 'OK'
+                    });
+                    document.getElementById('output-content').innerHTML = `<div style="color: #dc3545; text-align: center; padding: 20px;">エラー: ${error.message.trim()}</div>`;
+                }
                 console.error('Execute error:', error);
             } finally {
                 // 実行ボタンを再有効化
@@ -548,7 +1538,7 @@
         async function copyOutput() {
             const outputContent = document.getElementById('output-content');
             const text = outputContent.textContent || outputContent.innerText;
-            
+
             if (!text || text === '実行ボタンを押すと結果がここに表示されます') {
                 showAlert('コピーする内容がありません', 'warning');
                 return;
@@ -557,7 +1547,7 @@
             try {
                 await navigator.clipboard.writeText(text);
                 showAlert('出力をクリップボードにコピーしました', 'success');
-                
+
                 // ボタンの視覚的フィードバック
                 const copyBtn = document.getElementById('copy-output-btn');
                 const originalOpacity = copyBtn.style.opacity;
@@ -583,10 +1573,243 @@
             }
         }
 
+        // 実行キャンセルイベントのリスナー
+        window.addEventListener('executionCancelled', async (event) => {
+            const { executionId } = event.detail;
+            if (!executionId) return;
+
+            // ポーリングを停止
+            if (typeof cleanupPolling === 'function') {
+                cleanupPolling();
+                window.removeEventListener('beforeunload', cleanupPolling);
+            }
+
+            // 実行データを取得して入力データを復元（出力は復元しない）
+            try {
+                const execution = await apiRequest(`/api/user/executions/${executionId}`);
+                // 入力データを復元
+                restoreInputData(execution);
+            } catch (error) {
+                console.error('Failed to restore cancelled execution data:', error);
+            }
+
+            // 実行ボタンの状態をリセット
+            setExecutionButtonState(false);
+
+            // 出力エリアにキャンセルメッセージを表示（出力は復元しない）
+            const outputContent = document.getElementById('output-content');
+            if (outputContent) {
+                outputContent.innerHTML = '<div style="color: #ffc107; text-align: center; padding: 20px; font-weight: 500;">実行がキャンセルされました</div>';
+            }
+
+            // 出力パネルを表示
+            const outputPanel = document.querySelector('.execute-output-panel');
+            if (outputPanel) {
+                outputPanel.style.display = 'flex';
+                outputPanel.style.visibility = 'visible';
+            }
+
+            // 実行履歴を再読み込み
+            if (typeof loadHistory === 'function') {
+                loadHistory();
+            }
+        });
+
+        // 実行完了イベントのリスナー（他のページから戻ってきた時や、ページ読み込み後に完了した場合）
+        window.addEventListener('executionCompleted', async (event) => {
+            const { execution, executionId } = event.detail;
+            if (!execution || !executionId) return;
+
+            // 現在のプロンプトIDと一致するか確認
+            const currentPromptId = parseInt(promptId);
+            if (execution.prompt_id !== currentPromptId) return;
+
+            // 既に処理済みかチェック（重複実行を防ぐ）
+            if (execution.status === 'success') {
+                // 入力データを復元
+                restoreInputData(execution);
+
+                // 実行ボタンを再有効化（完了したので）
+                setExecutionButtonState(false);
+
+                // 結果を表示
+                displayExecutionResult(execution, executionId, null);
+
+                // 実行履歴を再読み込み
+                loadHistory();
+            } else if (execution.status === 'error' || execution.status === 'cancelled') {
+                // エラーまたはキャンセル済み
+                restoreInputData(execution);
+
+                // 実行ボタンを再有効化（エラー/キャンセルなので）
+                setExecutionButtonState(false);
+
+                displayExecutionError(execution);
+                loadHistory();
+            }
+        });
+
+        // キューからタスクを実行する関数（グローバルスコープに公開）
+        window.executeQueuedTask = async function(taskData) {
+            try {
+                const initialResponse = await apiRequest('/api/execute', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        prompt_id: parseInt(taskData.promptId),
+                        input_data: taskData.inputData,
+                        output_format: taskData.outputFormat !== 'txt' ? taskData.outputFormat : undefined
+                    })
+                });
+
+                const executionId = initialResponse.execution_id;
+                const promptName = taskData.promptName || document.getElementById('prompt-name')?.textContent || '実行中...';
+
+                // ステータスバーを開始
+                PersistentStatusBar.start(executionId, parseInt(taskData.promptId), promptName);
+
+                // 出力エリアを処理中表示に更新
+                document.getElementById('output-content').innerHTML = `
+                    <div style="text-align: center; padding: 20px; color: rgba(255, 255, 255, 0.7);">
+                        <p>AIが応答を生成しています...<br>この処理はバックグラウンドで実行されます。</p>
+                        <div class="progress-bar-container" style="width: 100%; background-color: rgba(255,255,255,0.1); border-radius: 4px; height: 4px; margin-top: 10px; overflow: hidden;">
+                            <div class="progress-bar" style="width: 0%; height: 100%; background-color: #007bff; transition: width 0.5s;"></div>
+                        </div>
+                    </div>
+                `;
+
+                // ポーリング開始（resumePollingと同じロジック）
+                const pollInterval = 2000;
+                let pollCount = 0;
+                const maxPolls = 300;
+                let pollIntervalId = null;
+
+                const cleanupPolling = () => {
+                    if (pollIntervalId) {
+                        clearInterval(pollIntervalId);
+                        pollIntervalId = null;
+                    }
+                };
+                window.addEventListener('beforeunload', cleanupPolling);
+
+                const pollResult = await new Promise((resolve, reject) => {
+                    pollIntervalId = setInterval(async () => {
+                        try {
+                            pollCount++;
+
+                            const progressBar = document.querySelector('.progress-bar');
+                            if (progressBar) {
+                                const currentWidth = parseFloat(progressBar.style.width) || 0;
+                                if (currentWidth < 90) {
+                                    progressBar.style.width = `${currentWidth + (90 - currentWidth) * 0.1}%`;
+                                }
+                            }
+
+                            if (pollCount > maxPolls) {
+                                cleanupPolling();
+                                reject(new Error('タイムアウトしました'));
+                                return;
+                            }
+
+                            const execution = await apiRequest(`/api/user/executions/${executionId}`);
+
+                            if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+                                // 完了状態の場合は、PersistentStatusBar.executionIdのチェックをスキップ
+                            } else if (!PersistentStatusBar.executionId || PersistentStatusBar.executionId !== executionId) {
+                                cleanupPolling();
+                                reject(new Error('キャンセルされました'));
+                                return;
+                            }
+
+                            if (execution.status === 'success') {
+                                cleanupPolling();
+                                if (progressBar) progressBar.style.width = '100%';
+                                if (PersistentStatusBar.executionId === executionId) {
+                                    PersistentStatusBar.markAsCompleted('success');
+                                }
+                                window.dispatchEvent(new CustomEvent('executionCompleted', {
+                                    detail: { execution, executionId }
+                                }));
+                                resolve(execution);
+                            } else if (execution.status === 'error') {
+                                cleanupPolling();
+                                if (PersistentStatusBar.executionId === executionId) {
+                                    PersistentStatusBar.markAsCompleted('error');
+                                }
+                                window.dispatchEvent(new CustomEvent('executionCompleted', {
+                                    detail: { execution, executionId }
+                                }));
+                                reject(new Error(execution.error_message || '実行エラーが発生しました'));
+                            } else if (execution.status === 'cancelled') {
+                                cleanupPolling();
+                                if (PersistentStatusBar.executionId === executionId) {
+                                    PersistentStatusBar.markAsCompleted('cancelled');
+                                }
+                                window.dispatchEvent(new CustomEvent('executionCompleted', {
+                                    detail: { execution, executionId }
+                                }));
+                                reject(new Error('実行がキャンセルされました'));
+                            }
+                        } catch (err) {
+                            if (err.message !== 'キャンセルされました') {
+                                cleanupPolling();
+                                PersistentStatusBar.stop();
+                                reject(err);
+                            }
+                        }
+                    }, pollInterval);
+                });
+
+                window.removeEventListener('beforeunload', cleanupPolling);
+
+                restoreInputData(pollResult);
+                setExecutionButtonState(false);
+                displayExecutionResult(pollResult, executionId, taskData.outputFormat);
+
+                const outputPanel = document.querySelector('.execute-output-panel');
+                if (outputPanel) {
+                    outputPanel.style.display = 'flex';
+                    outputPanel.style.visibility = 'visible';
+                }
+
+                loadHistory();
+            } catch (error) {
+                console.error('Queued task execution error:', error);
+                setExecutionButtonState(false);
+                if (error.message === 'キャンセルされました' || error.message === '実行がキャンセルされました') {
+                    displayExecutionError({ status: 'cancelled', error_message: error.message });
+                } else {
+                    displayExecutionError({ status: 'error', error_message: error.message });
+                }
+                loadHistory();
+            }
+        };
+
+        // URLパラメータを取得する関数
+        function getQueryParam(name) {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get(name);
+        }
+
         // ページ読み込み時に実行
         (async () => {
             await checkAuth();
             loadPromptDetail();
+
+            // localStorageにpending_queue_taskがある場合、キューからタスクを実行
+            const pendingTaskData = localStorage.getItem('pending_queue_task');
+            if (pendingTaskData) {
+                try {
+                    const taskData = JSON.parse(pendingTaskData);
+                    // localStorageから削除
+                    localStorage.removeItem('pending_queue_task');
+                    // キューからタスクを実行
+                    await window.executeQueuedTask(taskData);
+                } catch (error) {
+                    console.error('Failed to execute queued task:', error);
+                    // エラー時もlocalStorageから削除
+                    localStorage.removeItem('pending_queue_task');
+                }
+            }
         })();
     </script>
 </body>

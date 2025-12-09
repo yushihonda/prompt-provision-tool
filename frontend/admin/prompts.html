@@ -119,12 +119,58 @@
                 return;
             }
 
-            tbody.innerHTML = prompts.map(prompt => `
+            tbody.innerHTML = prompts.map(prompt => {
+                let modelDisplay = prompt.model_type;
+
+                // Deep Thinkモデルの場合はサフィックスを削除して表示
+                let isDeepThinkModel = false;
+                if (modelDisplay && modelDisplay.includes('deep-think')) {
+                    modelDisplay = modelDisplay.replace('-deep-think', '');
+                    isDeepThinkModel = true;
+                }
+
+                // Thinkingモデルの場合はサフィックスを削除して表示
+                let isThinkingModel = false;
+                if (modelDisplay && modelDisplay.includes('thinking')) {
+                    modelDisplay = modelDisplay.replace('-thinking', '');
+                    isThinkingModel = true;
+                }
+
+                // Proモデルの場合は「-pro」を削除してProバッジを追加
+                const isProModel = prompt.model_type && (prompt.model_type.includes('-pro') || prompt.model_type.endsWith('-pro'));
+                if (isProModel) {
+                    // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
+                    modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
+                    modelDisplay += `<span class="pro-badge">Pro</span>`;
+                }
+
+                // 「-preview」を削除
+                modelDisplay = modelDisplay.replace(/-preview/g, '');
+
+                // Deep Thinkバッジを追加（Geminiモデルで有効な場合）
+                const isDeepThinkEnabled = isDeepThinkModel || (prompt.enable_deep_think === true || prompt.enable_deep_think === 1 || prompt.enable_deep_think === 'true');
+
+                if (isDeepThinkEnabled && prompt.model_type && prompt.model_type.startsWith('gemini-')) {
+                    modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
+                }
+
+                // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
+                if (isThinkingModel || prompt.model_type === 'gpt-5.1-thinking') {
+                    modelDisplay += `<span class="thinking-badge">Thinking</span>`;
+                }
+
+                // NEWバッジを追加
+                if (prompt.model_type === 'gpt-5.1' || prompt.model_type === 'gemini-3-pro-preview' || prompt.model_type === 'gemini-3-pro-preview-deep-think') {
+                    modelDisplay += `<span class="new-badge">NEW</span>`;
+                } else if (isThinkingModel || prompt.model_type === 'gpt-5.1-thinking') {
+                    modelDisplay += `<span class="new-badge">NEW</span>`;
+                }
+                return `
                 <tr>
                     <td>${prompt.id}</td>
                     <td>${prompt.name}</td>
                     <td>${prompt.description || '説明なし'}</td>
-                    <td>${prompt.model_type}</td>
+                    <td>${modelDisplay}</td>
                     <td>
                         <div style="display: flex; align-items: center; gap: 6px;">
                             ${prompt.is_active ? `
@@ -167,7 +213,8 @@
                         </div>
                     </td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
         }
 
         function renderPagination() {
@@ -227,12 +274,17 @@
                         <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">AIモデル <span style="color: #ff6b6b;">*</span></label>
                         <select id="swal-prompt-model" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
                             <optgroup label="OpenAI">
-                                <option value="gpt-5-pro" selected>GPT-5 Pro（最上位モデル）</option>
+                                <option value="gpt-5.1" selected>GPT-5.1 NEW</option>
+                                <option value="gpt-5.1-thinking">GPT-5.1 Thinking NEW</option>
+                                <option value="gpt-5-pro">GPT-5 Pro</option>
                                 <option value="gpt-5">GPT-5</option>
                                 <option value="gpt-4o-mini">GPT-4o Mini</option>
                             </optgroup>
                             <optgroup label="Gemini">
-                                <option value="gemini-2.5-pro">Gemini 2.5 Pro（無料枠: 1日100リクエスト、有料版で制限なし）</option>
+                                <option value="gemini-3-pro-preview">Gemini 3.0 Pro NEW</option>
+                                <option value="gemini-3-pro-preview-deep-think">Gemini 3.0 Pro Deep Think NEW</option>
+                                <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                <option value="gemini-2.5-pro-deep-think">Gemini 2.5 Pro Deep Think</option>
                                 <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                                 <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
                             </optgroup>
@@ -274,6 +326,9 @@
                     popup: 'swal-no-scroll',
                     htmlContainer: 'swal-no-scroll'
                 },
+                didOpen: () => {
+                    // チェックボックスロジックは削除されました
+                },
                 preConfirm: () => {
                     const name = document.getElementById('swal-prompt-name').value.trim();
                     const description = document.getElementById('swal-prompt-description').value.trim();
@@ -282,6 +337,9 @@
                     const schemaText = document.getElementById('swal-prompt-schema').value.trim();
                     const isActive = document.getElementById('swal-prompt-is-active').checked;
                     const allowsFileOutput = document.getElementById('swal-prompt-allows-file-output').checked;
+
+                    // モデル名からDeep Think設定を判定
+                    const enableDeepThink = model.includes('deep-think');
 
                     if (!name) {
                         Swal.showValidationMessage('プロンプト名は必須です');
@@ -309,7 +367,8 @@
                         content,
                         inputSchema,
                         isActive,
-                        allowsFileOutput
+                        allowsFileOutput,
+                        enableDeepThink
                     };
                 }
             });
@@ -348,13 +407,18 @@
                         <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">AIモデル <span style="color: #ff6b6b;">*</span></label>
                         <select id="swal-prompt-model" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
                             <optgroup label="OpenAI">
-                                <option value="gpt-5-pro" ${prompt.model_type === 'gpt-5-pro' ? 'selected' : ''}>GPT-5 Pro（最上位モデル）</option>
+                                <option value="gpt-5.1" ${prompt.model_type === 'gpt-5.1' ? 'selected' : ''}>GPT-5.1 NEW</option>
+                                <option value="gpt-5.1-thinking" ${prompt.model_type === 'gpt-5.1-thinking' ? 'selected' : ''}>GPT-5.1 Thinking NEW</option>
+                                <option value="gpt-5-pro" ${prompt.model_type === 'gpt-5-pro' ? 'selected' : ''}>GPT-5 Pro</option>
                                 <option value="gpt-5" ${prompt.model_type === 'gpt-5' ? 'selected' : ''}>GPT-5</option>
                                 <option value="gpt-4o-mini" ${prompt.model_type === 'gpt-4o-mini' ? 'selected' : ''}>GPT-4o Mini</option>
                             </optgroup>
                             <optgroup label="Gemini">
-                                <option value="gemini-2.5-pro" ${prompt.model_type === 'gemini-2.5-pro' ? 'selected' : ''}>Gemini 2.5 Pro（無料枠: 1日100リクエスト、有料版で制限なし）</option>
-                                <option value="gemini-2.5-flash" ${prompt.model_type === 'gemini-2.5-flash' ? 'selected' : ''}>Gemini 2.5 Flash</option>
+                                <option value="gemini-3-pro-preview" ${prompt.model_type === 'gemini-3-pro-preview' && !prompt.enable_deep_think ? 'selected' : ''}>Gemini 3.0 Pro NEW</option>
+                                <option value="gemini-3-pro-preview-deep-think" ${(prompt.model_type === 'gemini-3-pro-preview' && prompt.enable_deep_think) || prompt.model_type.includes('deep-think') && prompt.model_type.includes('gemini-3-pro') ? 'selected' : ''}>Gemini 3.0 Pro Deep Think NEW</option>
+                                <option value="gemini-2.5-pro" ${prompt.model_type === 'gemini-2.5-pro' && !prompt.enable_deep_think ? 'selected' : ''}>Gemini 2.5 Pro</option>
+                                <option value="gemini-2.5-pro-deep-think" ${(prompt.model_type === 'gemini-2.5-pro' && prompt.enable_deep_think) || prompt.model_type.includes('deep-think') && prompt.model_type.includes('gemini-2.5-pro') ? 'selected' : ''}>Gemini 2.5 Pro Deep Think</option>
+                                <option value="gemini-2.5-flash" ${prompt.model_type === 'gemini-2.5-flash' && !prompt.enable_deep_think ? 'selected' : ''}>Gemini 2.5 Flash</option>
                                 <option value="gemini-2.0-flash" ${prompt.model_type === 'gemini-2.0-flash' ? 'selected' : ''}>Gemini 2.0 Flash</option>
                             </optgroup>
                         </select>
@@ -395,6 +459,9 @@
                     popup: 'swal-no-scroll',
                     htmlContainer: 'swal-no-scroll'
                 },
+                didOpen: () => {
+                    // チェックボックスロジックは削除されました
+                },
                 preConfirm: () => {
                     const name = document.getElementById('swal-prompt-name').value.trim();
                     const description = document.getElementById('swal-prompt-description').value.trim();
@@ -403,6 +470,9 @@
                     const schemaText = document.getElementById('swal-prompt-schema').value.trim();
                     const isActive = document.getElementById('swal-prompt-is-active').checked;
                     const allowsFileOutput = document.getElementById('swal-prompt-allows-file-output').checked;
+
+                    // モデル名からDeep Think設定を判定
+                    const enableDeepThink = model.includes('deep-think');
 
                     if (!name) {
                         Swal.showValidationMessage('プロンプト名は必須です');
@@ -430,7 +500,8 @@
                         content,
                         inputSchema,
                         isActive,
-                        allowsFileOutput
+                        allowsFileOutput,
+                        enableDeepThink
                     };
                 }
             });
@@ -448,7 +519,8 @@
                 content: formValues.content,
                 input_schema: formValues.inputSchema,
                 is_active: formValues.isActive,
-                allows_file_output: formValues.allowsFileOutput
+                allows_file_output: formValues.allowsFileOutput,
+                enable_deep_think: formValues.enableDeepThink
             };
 
             try {

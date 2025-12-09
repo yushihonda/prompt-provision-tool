@@ -9,8 +9,8 @@
 - ガードレール注入・出力サニタイズ・ログ抑止（漏洩対策）
 
 ## 対応モデル
-- OpenAI: gpt-5-pro（最上位モデル） / gpt-5 / gpt-4o-mini
-- Google: gemini-2.5-pro / gemini-2.5-flash / gemini-2.0-flash
+- OpenAI: gpt-5.1（最新モデル） / gpt-5-pro / gpt-5 / gpt-4o-mini
+- Google: gemini-3-pro-preview（最新モデル） / gemini-2.5-pro / gemini-2.5-flash / gemini-2.0-flash
 
 ## 環境変数（.env）
 ```
@@ -351,6 +351,122 @@ pip install -r requirements.txt
 - 本番要件
   - APIキー設定必須（未設定時は実行エラー）
   - `/docs` 非公開、入力詳細ログ非出力、完成プロンプトログ抑止
+
+## デプロイ（本番環境）
+
+本番環境（ConoHa VPS）へのデプロイは `deployment/deploy.sh` スクリプトを使用します。
+
+### デプロイスクリプトの使用方法
+
+```bash
+# 本番サーバー上で実行
+cd /opt/prompt-provision-tool
+sudo bash deployment/deploy.sh
+```
+
+### デプロイスクリプトの処理内容
+
+1. Gitから最新のコードを取得（Gitリポジトリが存在する場合）
+2. 仮想環境のアクティベート
+3. Pythonパッケージの更新
+4. データベースマイグレーションの実行
+5. アプリケーションの再起動（systemd）
+6. サービス状態の確認
+
+### デプロイ前の確認事項
+
+- 環境変数（`.env`）が正しく設定されているか
+- データベースのバックアップが取得されているか（必要に応じて）
+- マイグレーションスクリプトが最新であるか
+
+### ログの確認
+
+デプロイ後、以下のコマンドでログを確認できます：
+
+```bash
+# アプリケーションログ
+sudo tail -f /var/log/prompt-tool/app.log
+
+# エラーログ
+sudo tail -f /var/log/prompt-tool/error.log
+
+# systemdサービスの状態
+sudo systemctl status prompt-tool
+```
+
+## Git管理
+
+### リポジトリの初期化（初回のみ）
+
+```bash
+cd /Users/hondayushi/workspaece/poifull/prompt-provision-tool
+git init
+git add .
+git commit -m "Initial commit: Prompt Provision Tool"
+```
+
+### リモートリポジトリの設定
+
+```bash
+# リモートリポジトリを追加（例：GitHub）
+git remote add origin https://github.com/your-username/prompt-provision-tool.git
+
+# またはSSHを使用する場合
+git remote add origin git@github.com:your-username/prompt-provision-tool.git
+```
+
+### 変更のコミットとプッシュ
+
+```bash
+# 変更をステージング
+git add .
+
+# コミット
+git commit -m "コミットメッセージ"
+
+# リモートにプッシュ
+git push origin main
+# または master ブランチの場合
+git push origin master
+```
+
+### .gitignore の推奨設定
+
+以下のファイル・ディレクトリはGit管理から除外することを推奨します：
+
+```
+# 環境変数ファイル
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# ログファイル
+*.log
+app.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# その他
+*.zip
+prompt-provision-tool.zip
 
 ## 構成
 ```

@@ -10,7 +10,18 @@ except ImportError:
     # google-api-core がインストールされていない場合のフォールバック
     google_exceptions = None
 
+# 新しいSDK (google-genai) を試行（Deep Think機能用）
+try:
+    from google import genai as genai_new
+    from google.genai import types
+    NEW_SDK_AVAILABLE = True
+except ImportError:
+    NEW_SDK_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+if not NEW_SDK_AVAILABLE:
+    logger.warning("google-genai SDK が利用できません。Deep Think機能は使用できません。")
 
 
 class GeminiService:
@@ -23,6 +34,7 @@ class GeminiService:
     - 無料枠の制限を超えた場合、自動的に有料版に切り替わります
 
     サポートモデル:
+    - gemini-3-pro-preview: Gemini 3.0 Pro（最新モデル）
     - gemini-2.0-flash: Gemini 2.0 Flash
     - gemini-2.5-flash: Gemini 2.5 Flash
     - gemini-2.5-pro: Gemini 2.5 Pro（無料枠: 1日100リクエストまで、有料版で制限なし）
@@ -37,9 +49,22 @@ class GeminiService:
         self.demo_mode = not self.api_key or self.api_key.strip() == ""
 
         if not self.demo_mode:
+            # 古いSDKを初期化（後方互換性のため）
             genai.configure(api_key=self.api_key)
-            logger.info("✓ Gemini Service: 直接Gemini API接続で初期化")
+
+            # 新しいSDKを初期化（Deep Think機能用）
+            if NEW_SDK_AVAILABLE:
+                try:
+                    self.genai_client = genai_new.Client(api_key=self.api_key)
+                    logger.info("✓ Gemini Service: 直接Gemini API接続で初期化（新SDK対応）")
+                except Exception as e:
+                    logger.warning(f"⚠ 新SDKの初期化に失敗: {e}。古いSDKを使用します。")
+                    self.genai_client = None
+            else:
+                self.genai_client = None
+                logger.info("✓ Gemini Service: 直接Gemini API接続で初期化（旧SDKのみ）")
         else:
+            self.genai_client = None
             logger.warning("⚠ Gemini Service: デモモードで初期化")
 
     def _normalize_model_name(self, model_name: str) -> str:
@@ -53,6 +78,7 @@ class GeminiService:
             正規化されたモデル名（Gemini APIで使用可能な形式）
 
         サポートされるモデル名:
+        - gemini-3-pro-preview → gemini-3-pro-preview (Gemini 3.0 Pro)
         - gemini-2.0-flash → gemini-2.0-flash (Gemini 2.0 Flash)
         - gemini-2.5-flash → gemini-2.5-flash (Gemini 2.5 Flash)
         - gemini-2.5-pro → gemini-2.5-pro (Gemini 2.5 Pro)
@@ -63,6 +89,12 @@ class GeminiService:
 
         # モデル名のマッピング（Gemini APIの正しいモデル名に変換）
         model_mapping = {
+            # 3.0 シリーズ
+            "gemini-3-pro-preview": "gemini-3-pro-preview",
+            "Gemini-3-Pro-Preview": "gemini-3-pro-preview",
+            "gemini-3-pro": "gemini-3-pro-preview",
+            "Gemini-3-Pro": "gemini-3-pro-preview",
+            "gemini-3-pro-preview-deep-think": "gemini-3-pro-preview", # Deep Think版もベースモデルは同じ
             # 2.0 シリーズ
             "gemini-2.0-flash": "gemini-2.0-flash",
             "Gemini-2.0-Flash": "gemini-2.0-flash",
@@ -71,17 +103,45 @@ class GeminiService:
             "Gemini-2.5-Flash": "gemini-2.5-flash",
             "gemini-2.5-pro": "gemini-2.5-pro",
             "Gemini-2.5-Pro": "gemini-2.5-pro",
+            "gemini-2.5-pro-deep-think": "gemini-2.5-pro", # Deep Think版もベースモデルは同じ
         }
 
         # マッピングがあれば使用、なければそのまま返す
         return model_mapping.get(model_name, model_name)
+
+    def _is_gemini_3_model(self, model_name: str) -> bool:
+        """
+        モデルがGemini 3系かどうかを判定
+
+        Args:
+            model_name: モデル名
+
+        Returns:
+            Gemini 3系の場合True
+        """
+        return "3" in model_name or "gemini-3" in model_name.lower()
+
+    def _is_gemini_25_model(self, model_name: str) -> bool:
+        """
+        モデルがGemini 2.5系かどうかを判定
+
+        Args:
+            model_name: モデル名
+
+        Returns:
+            Gemini 2.5系の場合True
+        """
+        return "2.5" in model_name or "gemini-2.5" in model_name.lower()
 
     async def execute_prompt(
         self,
         prompt: str,
         model: str = "gemini-2.5-pro",
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        thinking_budget: Optional[int] = None,
+        thinking_level: Optional[str] = None,
+        enable_deep_think: bool = True
     ) -> dict:
         """
         プロンプトを実行
@@ -89,11 +149,16 @@ class GeminiService:
         Args:
             prompt: 実行するプロンプト
             model: 使用するモデル
+                - gemini-3-pro-preview: Gemini 3.0 Pro（最新モデル、Deep Think対応）
                 - gemini-2.0-flash: Gemini 2.0 Flash
-                - gemini-2.5-flash: Gemini 2.5 Flash
-                - gemini-2.5-pro: Gemini 2.5 Pro（無料枠: 1日100リクエストまで、有料版で制限なし）
+                - gemini-2.5-flash: Gemini 2.5 Flash（Deep Think対応）
+                - gemini-2.5-pro: Gemini 2.5 Pro（Deep Think対応、無料枠: 1日100リクエストまで、有料版で制限なし）
+                ※モデル名に "-deep-think" を付与するとDeep Think機能が強制的に有効になります
             temperature: 温度パラメータ
             max_tokens: 最大トークン数（Noneの場合は長文対応のデフォルト値を使用）
+            thinking_budget: 思考バジェット（Gemini 2.5系用、0〜24576、Noneの場合は自動設定）
+            thinking_level: 思考レベル（Gemini 3系用、"low"または"high"、Noneの場合は"high"）
+            enable_deep_think: Deep Think機能を有効にするか（デフォルト: True、Falseの場合は旧SDKを使用）
 
         Returns:
             {
@@ -102,6 +167,11 @@ class GeminiService:
                 "tokens": int
             }
         """
+        # モデル名からDeep Think設定を判定（サフィックスがある場合は有効化）
+        if "-deep-think" in model:
+            enable_deep_think = True
+            model = model.replace("-deep-think", "")
+
         model_name = self._normalize_model_name(model)
 
         logger.info(f"{'='*60}")
@@ -153,6 +223,154 @@ class GeminiService:
                 prompt_text = f"{settings.GUARDRAIL_PREFIX}\n\n{prompt}"
                 logger.debug("  ガードレール有効")
 
+            # Deep Think設定の自動判定
+            use_new_sdk = NEW_SDK_AVAILABLE and self.genai_client is not None
+            is_gemini_3 = self._is_gemini_3_model(model_name)
+            is_gemini_25 = self._is_gemini_25_model(model_name)
+
+            # Deep Thinkが有効で、対応モデルの場合のみ新SDKを使用
+            should_use_deep_think = enable_deep_think and (is_gemini_3 or is_gemini_25)
+
+            # 新しいSDKを使用してDeep Think機能を有効化
+            if use_new_sdk and should_use_deep_think:
+                try:
+                    logger.info(f"→ Gemini API呼び出し（新SDK + Deep Think）: {model_name}")
+
+                    # Deep Think設定の準備
+                    config_params = {}
+
+                    if is_gemini_3:
+                        # Gemini 3系: thinking_levelを使用
+                        if thinking_level is None:
+                            thinking_level = "high"  # デフォルトは高推論
+                        config_params["thinking_level"] = thinking_level
+                        logger.info(f"  Thinking Level: {thinking_level}")
+                    elif is_gemini_25:
+                        # Gemini 2.5系: thinking_budgetを使用
+                        if thinking_budget is None:
+                            thinking_budget = 8192  # デフォルト値
+                        config_params["thinking_config"] = types.ThinkingConfig(
+                            thinking_budget=thinking_budget
+                        )
+                        logger.info(f"  Thinking Budget: {thinking_budget}")
+
+                    if temperature is not None:
+                        config_params["temperature"] = temperature
+                    if max_tokens:
+                        config_params["max_output_tokens"] = max_tokens
+
+                    if temperature is not None:
+                        logger.info(f"  Temperature: {temperature}")
+
+                    # デバッグモード時のみ詳細な情報を出力
+                    if settings.is_debug_mode:
+                        logger.debug(f"  プロンプト（最初の200文字）: {prompt_text[:200]}...")
+                        logger.debug(f"  Config: {config_params}")
+
+                    # リトライロジック（指数バックオフ）
+                    max_retries = 3
+                    base_delay = 2.0
+
+                    for attempt in range(max_retries):
+                        try:
+                            if attempt > 0:
+                                logger.info(f"  → リトライ試行 {attempt + 1}/{max_retries}")
+
+                            # 新しいSDKでAPI呼び出し
+                            loop = asyncio.get_event_loop()
+                            config = types.GenerateContentConfig(**config_params)
+                            response = await loop.run_in_executor(
+                                None,
+                                lambda: self.genai_client.models.generate_content(
+                                    model=model_name,
+                                    contents=prompt_text,
+                                    config=config
+                                )
+                            )
+
+                            if attempt > 0:
+                                logger.info(f"  ✓ {attempt + 1}回目の試行で成功")
+                            break  # 成功したらループを抜ける
+
+                        except Exception as e:
+                            error_type = type(e).__name__
+                            error_msg = str(e)
+
+                            # タイムアウトエラーのチェック
+                            is_timeout = (
+                                isinstance(e, asyncio.TimeoutError) or
+                                "timeout" in error_msg.lower() or
+                                "timed out" in error_msg.lower() or
+                                "deadline" in error_msg.lower()
+                            )
+
+                            if is_timeout:
+                                if attempt < max_retries - 1:
+                                    delay = base_delay * (2 ** attempt)
+                                    logger.warning(
+                                        f"  ⚠ タイムアウトエラー (試行 {attempt + 1}/{max_retries})。"
+                                        f"{delay:.1f}秒後にリトライします..."
+                                    )
+                                    await asyncio.sleep(delay)
+                                    continue
+                                else:
+                                    logger.error(f"✗ Gemini API呼び出し失敗: タイムアウト（{max_retries}回試行後）")
+                                    raise Exception(
+                                        f"Gemini APIのタイムアウト: {max_retries}回のリトライ後も失敗しました。"
+                                    )
+
+                            # その他のエラー
+                            logger.error(f"✗ Gemini API呼び出し失敗: {error_msg}")
+                            if attempt < max_retries - 1:
+                                delay = base_delay * (2 ** attempt)
+                                await asyncio.sleep(delay)
+                                continue
+                            raise
+
+                    # レスポンスの処理
+                    output = None
+                    if hasattr(response, "text"):
+                        output = response.text
+                    elif hasattr(response, "candidates") and response.candidates:
+                        candidate = response.candidates[0]
+                        if hasattr(candidate, "content"):
+                            content = candidate.content
+                            if hasattr(content, "parts"):
+                                text_parts = []
+                                for part in content.parts:
+                                    if hasattr(part, "text"):
+                                        text_parts.append(part.text)
+                                output = "".join(text_parts)
+
+                    # トークン使用量の取得
+                    tokens_used = 0
+                    if hasattr(response, "usage_metadata"):
+                        usage = response.usage_metadata
+                        tokens_used = getattr(usage, "total_token_count", 0) or 0
+
+                    if not output:
+                        raise Exception("Gemini APIの出力が空です")
+
+                    # 長文レスポンスのログ出力
+                    if len(output) > 10000:
+                        logger.info(f"  長文レスポンスを取得しました（{len(output)}文字）")
+
+                    logger.info(f"✓ Gemini API呼び出し成功 (トークン: {tokens_used})")
+                    logger.info(f"{'='*60}")
+
+                    return {
+                        "output": output,
+                        "model": model_name,
+                        "tokens": tokens_used
+                    }
+
+                except Exception as new_sdk_error:
+                    logger.warning(f"新SDKでの呼び出しに失敗: {new_sdk_error}。旧SDKにフォールバックします。")
+                    # 旧SDKにフォールバック（下記のコードに続く）
+
+            # 旧SDKを使用（後方互換性のため、または新SDKが利用できない場合）
+            logger.info(f"→ Gemini API呼び出し（旧SDK）: {model_name}")
+
             # Gemini APIを呼び出す
             gen_model = genai.GenerativeModel(model_name)
 
@@ -162,7 +380,6 @@ class GeminiService:
             if max_tokens:
                 generation_config["max_output_tokens"] = max_tokens
 
-            logger.info(f"→ Gemini API呼び出し: {model_name}")
             if temperature is not None:
                 logger.info(f"  Temperature: {temperature}")
 
@@ -321,7 +538,10 @@ class GeminiService:
         prompt: str,
         model: str = "gemini-2.5-pro",
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        thinking_budget: Optional[int] = None,
+        thinking_level: Optional[str] = None,
+        enable_deep_think: bool = True
     ):
         """
         ストリーミングでプロンプトを実行
@@ -329,15 +549,25 @@ class GeminiService:
         Args:
             prompt: 実行するプロンプト
             model: 使用するモデル
+                - gemini-3-pro-preview: Gemini 3.0 Pro（最新モデル、Deep Think対応）
                 - gemini-2.0-flash: Gemini 2.0 Flash
-                - gemini-2.5-flash: Gemini 2.5 Flash
-                - gemini-2.5-pro: Gemini 2.5 Pro（無料枠: 1日100リクエストまで、有料版で制限なし）
+                - gemini-2.5-flash: Gemini 2.5 Flash（Deep Think対応）
+                - gemini-2.5-pro: Gemini 2.5 Pro（Deep Think対応、無料枠: 1日100リクエストまで、有料版で制限なし）
+                ※モデル名に "-deep-think" を付与するとDeep Think機能が強制的に有効になります
             temperature: 温度パラメータ
             max_tokens: 最大トークン数
+            thinking_budget: 思考バジェット（Gemini 2.5系用、0〜24576、Noneの場合は自動設定）
+            thinking_level: 思考レベル（Gemini 3系用、"low"または"high"、Noneの場合は"high"）
+            enable_deep_think: Deep Think機能を有効にするか（デフォルト: True、Falseの場合は旧SDKを使用）
 
         Yields:
             生成されたテキストのチャンク
         """
+        # モデル名からDeep Think設定を判定（サフィックスがある場合は有効化）
+        if "-deep-think" in model:
+            enable_deep_think = True
+            model = model.replace("-deep-think", "")
+
         model_name = self._normalize_model_name(model)
 
         logger.info(f"{'='*60}")
@@ -353,20 +583,33 @@ class GeminiService:
         if settings.ENABLE_PROMPT_GUARDRAILS:
             prompt_text = f"{settings.GUARDRAIL_PREFIX}\n\n{prompt}"
 
-        gen_model = genai.GenerativeModel(model_name)
-
-        generation_config = {}
-        if temperature is not None:
-            generation_config["temperature"] = temperature
-        if max_tokens:
-            generation_config["max_output_tokens"] = max_tokens
-
-        if temperature is not None:
-            logger.info(f"  Temperature: {temperature}")
+        # Deep Think設定の自動判定
+        use_new_sdk = NEW_SDK_AVAILABLE and self.genai_client is not None
+        is_gemini_3 = self._is_gemini_3_model(model_name)
+        is_gemini_25 = self._is_gemini_25_model(model_name)
+        should_use_deep_think = enable_deep_think and (is_gemini_3 or is_gemini_25)
 
         logger.info("→ ストリーミングAPI呼び出し")
         try:
-            # ストリーミングAPIを使用
+            # 新しいSDKを使用してDeep Think機能を有効化（ストリーミングは新SDKでサポートされていない可能性があるため、旧SDKにフォールバック）
+            # 注: ストリーミングは現時点では旧SDKを使用
+            gen_model = genai.GenerativeModel(model_name)
+
+            generation_config = {}
+            if temperature is not None:
+                generation_config["temperature"] = temperature
+            if max_tokens:
+                generation_config["max_output_tokens"] = max_tokens
+
+            if temperature is not None:
+                logger.info(f"  Temperature: {temperature}")
+
+            if should_use_deep_think:
+                logger.info(f"  Deep Think機能: 有効（ストリーミングでは旧SDKを使用）")
+            elif enable_deep_think is False:
+                logger.info(f"  Deep Think機能: 無効（ユーザー指定）")
+
+            # ストリーミングAPIを使用（旧SDK）
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,

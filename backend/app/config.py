@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # Environment
     ENVIRONMENT: str = "development"
-    
+
     # Debug settings
     DEBUG: bool = False  # デバッグモード（ローカル開発用）
     LOG_LEVEL: str = "INFO"  # ログレベル: DEBUG, INFO, WARNING, ERROR
@@ -55,12 +55,12 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> List[str]:
         """CORS許可オリジンのリスト"""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
-    
+
     @property
     def is_debug_mode(self) -> bool:
         """デバッグモードかどうか（ローカル開発環境では自動的に有効）"""
         return self.DEBUG or self.ENVIRONMENT == "development"
-    
+
     @property
     def is_production(self) -> bool:
         """本番環境かどうか"""
