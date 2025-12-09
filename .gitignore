@@ -1,0 +1,55 @@
+# 環境変数ファイル
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# ログファイル
+*.log
+app.log
+*.log.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+
+# その他
+*.zip
+prompt-provision-tool.zip
+
+# データベース
+*.db
+*.sqlite
+*.sqlite3
+
+# テスト
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 一時ファイル
+*.bak
+*.backup
+*~
+
