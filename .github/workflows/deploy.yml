@@ -31,6 +31,10 @@ jobs:
           SERVER_USER="${{ secrets.SERVER_USER }}"
           SERVER_HOST="${{ secrets.SERVER_HOST }}"
 
+          echo "Current directory: $(pwd)"
+          echo "Directory contents:"
+          ls -la
+
           # rsyncでファイルをアップロード（.envやローカルファイルを除外）
           rsync -avz --delete \
             --exclude='.git' \
@@ -52,7 +56,7 @@ jobs:
             --exclude='frontend/uploads/' \
             --exclude='docker-compose.local.yml' \
             --exclude='資料/' \
-            prompt-provision-tool/ $SERVER_USER@$SERVER_HOST:$APP_DIR/prompt-provision-tool/
+            ./ $SERVER_USER@$SERVER_HOST:$APP_DIR/
 
       - name: Run database migrations
         run: |
