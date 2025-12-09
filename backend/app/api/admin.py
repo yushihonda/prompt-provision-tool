@@ -395,8 +395,16 @@ async def get_prompt_content(
         )
 
     # 復号化
-    decrypted_content = encryption_service.decrypt(prompt.encrypted_content)
-    return {"content": decrypted_content}
+    try:
+        if prompt.encrypted_content is None:
+            return {"content": ""}
+        decrypted_content = encryption_service.decrypt(prompt.encrypted_content)
+        return {"content": decrypted_content}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"プロンプトの復号化に失敗しました: {str(e)}"
+        )
 
 
 @router.patch("/prompts/{prompt_id}", response_model=PromptResponse)
