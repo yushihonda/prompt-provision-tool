@@ -40,6 +40,7 @@ env/
 # Environment Variables
 .env
 .env.local
+.env.local.bak
 .env.*.local
 
 # Database
