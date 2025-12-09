@@ -1,0 +1,87 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to production server
+        run: |
+          # デプロイ先ディレクトリ
+          APP_DIR="/opt/prompt-provision-tool"
+          SERVER_USER="${{ secrets.SERVER_USER }}"
+          SERVER_HOST="${{ secrets.SERVER_HOST }}"
+
+          # rsyncでファイルをアップロード（.envやローカルファイルを除外）
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='.env' \
+            --exclude='.env.local' \
+            --exclude='.env.*' \
+            --exclude='venv/' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='*.pyo' \
+            --exclude='*.log' \
+            --exclude='.DS_Store' \
+            --exclude='*.swp' \
+            --exclude='*.swo' \
+            --exclude='.vscode/' \
+            --exclude='.idea/' \
+            --exclude='backend/uploads/' \
+            --exclude='backend/temp/' \
+            --exclude='frontend/uploads/' \
+            --exclude='docker-compose.local.yml' \
+            --exclude='資料/' \
+            prompt-provision-tool/ $SERVER_USER@$SERVER_HOST:$APP_DIR/prompt-provision-tool/
+
+      - name: Run database migrations
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            cd /opt/prompt-provision-tool/backend
+            source /opt/prompt-provision-tool/venv/bin/activate
+            alembic upgrade head
+          EOF
+
+      - name: Install/update Python dependencies
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            cd /opt/prompt-provision-tool/backend
+            source /opt/prompt-provision-tool/venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+          EOF
+
+      - name: Restart application service
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            sudo systemctl restart prompt-tool.service
+            sleep 5
+            sudo systemctl status prompt-tool.service --no-pager | head -20
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            curl -f http://127.0.0.1:8000/health || exit 1
+          EOF
+

@@ -40,7 +40,7 @@ class EncryptionService:
         Returns:
             復号化されたプレーンテキスト
         """
-        if not encrypted_text:
+        if encrypted_text is None or not encrypted_text:
             return ""
 
         try:

@@ -354,9 +354,58 @@ pip install -r requirements.txt
 
 ## デプロイ（本番環境）
 
-本番環境（ConoHa VPS）へのデプロイは `deployment/deploy.sh` スクリプトを使用します。
+本番環境（ConoHa VPS）へのデプロイには、以下の2つの方法があります：
 
-### デプロイスクリプトの使用方法
+### 方法1: GitHub Actionsによる自動デプロイ（推奨）
+
+mainブランチにマージすると、自動的に本番サーバーにデプロイされます。
+
+#### セットアップ手順
+
+1. **GitHub Secretsの設定**
+
+   GitHubリポジトリの Settings > Secrets and variables > Actions で以下のSecretsを追加：
+
+   - `SSH_PRIVATE_KEY`: 本番サーバーへのSSH接続用の秘密鍵（`~/.ssh/id_rsa`の内容）
+   - `SERVER_HOST`: 本番サーバーのIPアドレスまたはホスト名（例: `160.251.172.234`）
+   - `SERVER_USER`: SSH接続用のユーザー名（例: `root`）
+
+2. **SSH鍵の設定**
+
+   本番サーバーで、GitHub ActionsからSSH接続できるように公開鍵を登録：
+
+   ```bash
+   # 本番サーバー上で実行
+   mkdir -p ~/.ssh
+   # GitHub Actionsの公開鍵を authorized_keys に追加
+   echo "YOUR_PUBLIC_KEY" >> ~/.ssh/authorized_keys
+   chmod 600 ~/.ssh/authorized_keys
+   chmod 700 ~/.ssh
+   ```
+
+3. **自動デプロイの動作**
+
+   - mainブランチへのpush/マージで自動的にデプロイが開始されます
+   - ローカルファイル（`.env`, `venv/`, `__pycache__/`など）は自動的に除外されます
+   - デプロイ後、自動的にマイグレーションとサービス再起動が実行されます
+
+#### 除外されるファイル
+
+以下のファイル/ディレクトリは本番環境にデプロイされません：
+
+- `.env`, `.env.local`, `.env.*.local` - 環境変数ファイル
+- `venv/` - 仮想環境
+- `__pycache__/`, `*.pyc`, `*.pyo` - Pythonキャッシュ
+- `*.log` - ログファイル
+- `.DS_Store`, `*.swp`, `*.swo` - OS/エディタファイル
+- `.vscode/`, `.idea/` - IDE設定
+- `backend/uploads/`, `backend/temp/`, `frontend/uploads/` - アップロードファイル
+- `docker-compose.local.yml` - ローカル開発用Docker Compose
+- `資料/` - ドキュメント
+
+### 方法2: 手動デプロイ
+
+本番サーバー上で `deployment/deploy.sh` スクリプトを使用します。
 
 ```bash
 # 本番サーバー上で実行
