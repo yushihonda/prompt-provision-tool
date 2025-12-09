@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List
 from app.database import get_db
 from app.auth import get_current_user
@@ -18,38 +19,56 @@ async def get_user_dashboard_stats(
     current_user: Account = Depends(get_current_user)
 ):
     """ユーザー用ダッシュボード統計情報を取得"""
-    # 利用可能なプロンプト数
+    # 利用可能なプロンプト数（論理削除されていないもののみ）
     available_prompts = db.query(Prompt).join(
         AccountPrompt, Prompt.id == AccountPrompt.prompt_id
     ).filter(
         AccountPrompt.account_id == current_user.id,
-        Prompt.is_active == True
+        Prompt.is_active == True,
+        Prompt.deleted_at.is_(None)
     ).count()
+
+    # 今月の開始日時（月が変わったかチェック用）
+    # JST（日本時間）で現在の月の開始日時を取得
+    from datetime import timezone, timedelta
+    jst = timezone(timedelta(hours=9))
+    current_month_start = datetime.now(jst).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # 今月の総トークン数、総料金、実行回数はAccountモデルから取得（保存された値を使用）
+    # 月が変わった場合は自動的にリセット
+    # last_month_resetがtimezone-naiveの場合はJSTとして解釈
+    should_reset = False
+    if current_user.last_month_reset is None:
+        should_reset = True
+    else:
+        # timezone-awareかどうかを確認
+        if current_user.last_month_reset.tzinfo is None:
+            # timezone-naiveの場合はJSTとして解釈
+            last_reset_aware = current_user.last_month_reset.replace(tzinfo=jst)
+        else:
+            last_reset_aware = current_user.last_month_reset
+        
+        if last_reset_aware < current_month_start:
+            should_reset = True
     
-    # 総実行回数
-    total_executions = db.query(Execution).filter(
-        Execution.account_id == current_user.id
-    ).count()
-    
-    # 今日の実行数
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    executions_today = db.query(Execution).filter(
-        Execution.account_id == current_user.id,
-        Execution.executed_at >= today_start
-    ).count()
-    
-    # 今月の実行数
-    month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    executions_this_month = db.query(Execution).filter(
-        Execution.account_id == current_user.id,
-        Execution.executed_at >= month_start
-    ).count()
-    
+    if should_reset:
+        current_user.tokens_this_month = 0
+        current_user.cost_this_month = 0.0
+        current_user.executions_this_month = 0
+        current_user.last_month_reset = current_month_start
+        db.commit()
+        db.refresh(current_user)
+
+    # 保存された値を取得（計算不要）
+    total_tokens_this_month = current_user.tokens_this_month or 0
+    total_cost_this_month = float(current_user.cost_this_month or 0.0)
+    executions_this_month = current_user.executions_this_month or 0
+
     return {
         "available_prompts": available_prompts,
-        "total_executions": total_executions,
-        "executions_today": executions_today,
-        "executions_this_month": executions_this_month
+        "executions_this_month": executions_this_month,
+        "total_tokens_this_month": total_tokens_this_month,
+        "total_cost_this_month": total_cost_this_month
     }
 
 
@@ -65,30 +84,38 @@ async def list_available_prompts(
 
     注意: プロンプトの内容は含まれない（セキュリティ）
     """
-    # 総件数を取得
+    # 総件数を取得（論理削除されていないもののみ）
     total = db.query(Prompt).join(
         AccountPrompt, Prompt.id == AccountPrompt.prompt_id
     ).filter(
         AccountPrompt.account_id == current_user.id,
-        Prompt.is_active == True
+        Prompt.is_active == True,
+        Prompt.deleted_at.is_(None)
     ).count()
-    
+
     prompts = db.query(Prompt).join(
         AccountPrompt, Prompt.id == AccountPrompt.prompt_id
     ).filter(
         AccountPrompt.account_id == current_user.id,
-        Prompt.is_active == True
+        Prompt.is_active == True,
+        Prompt.deleted_at.is_(None)
     ).order_by(Prompt.created_at.desc()).offset(skip).limit(limit).all()
 
     # input_schemaをJSON形式にパース
     items = []
     for prompt in prompts:
+        # enable_deep_thinkがNoneの場合はデフォルト値Trueを使用
+        enable_deep_think = getattr(prompt, 'enable_deep_think', True)
+        if enable_deep_think is None:
+            enable_deep_think = True
+
         prompt_dict = {
             "id": prompt.id,
             "name": prompt.name,
             "description": prompt.description,
             "model_type": prompt.model_type,
-            "allows_file_output": prompt.allows_file_output
+            "allows_file_output": prompt.allows_file_output,
+            "enable_deep_think": bool(enable_deep_think)  # 明示的にboolに変換
         }
         items.append(prompt_dict)
 
@@ -112,8 +139,8 @@ async def get_prompt_detail(
     注意: プロンプトの内容は含まれない（セキュリティ）
     input_schemaのみ返す（入力フォームの構築用）
     """
-    # プロンプトの存在確認
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+    # プロンプトの存在確認（論理削除されていないもののみ）
+    prompt = db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.deleted_at.is_(None)).first()
     if not prompt:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -140,13 +167,19 @@ async def get_prompt_detail(
         except:
             input_schema = None
 
+    # enable_deep_thinkがNoneの場合はデフォルト値Trueを使用
+    enable_deep_think = getattr(prompt, 'enable_deep_think', True)
+    if enable_deep_think is None:
+        enable_deep_think = True
+
     return {
         "id": prompt.id,
         "name": prompt.name,
         "description": prompt.description,
         "model_type": prompt.model_type,
         "input_schema": input_schema,
-        "allows_file_output": prompt.allows_file_output
+        "allows_file_output": prompt.allows_file_output,
+        "enable_deep_think": bool(enable_deep_think)  # 明示的にboolに変換
     }
 
 
@@ -174,10 +207,21 @@ async def list_my_executions(
     items = []
     for execution in executions:
         prompt_name = execution.prompt.name if execution.prompt else None
-        items.append({
+        # 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
+        # 保存されていない場合はプロンプトの設定を参照（後方互換性のため）
+        enable_deep_think = getattr(execution, 'enable_deep_think', None)
+        if enable_deep_think is None and execution.prompt:
+            # 古い実行履歴の場合、プロンプトの設定を参照
+            enable_deep_think = getattr(execution.prompt, 'enable_deep_think', None)
+            if enable_deep_think is None:
+                enable_deep_think = True  # デフォルト値
+
+        execution_dict = {
             **execution.__dict__,
-            "prompt_name": prompt_name
-        })
+            "prompt_name": prompt_name,
+            "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
+        }
+        items.append(execution_dict)
 
     return {
         "items": items,
@@ -209,8 +253,18 @@ async def get_execution_detail(
 
     prompt_name = execution.prompt.name if execution.prompt else None
 
+    # 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
+    # 保存されていない場合はプロンプトの設定を参照（後方互換性のため）
+    enable_deep_think = getattr(execution, 'enable_deep_think', None)
+    if enable_deep_think is None and execution.prompt:
+        # 古い実行履歴の場合、プロンプトの設定を参照
+        enable_deep_think = getattr(execution.prompt, 'enable_deep_think', None)
+        if enable_deep_think is None:
+            enable_deep_think = True  # デフォルト値
+
     return {
         **execution.__dict__,
-        "prompt_name": prompt_name
+        "prompt_name": prompt_name,
+        "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
     }
 

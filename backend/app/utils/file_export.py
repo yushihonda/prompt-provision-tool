@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 def export_to_csv(content: str, filename: Optional[str] = None) -> tuple:
     """
     テキストコンテンツをCSV形式で出力
-    
+
     Args:
         content: 出力するテキストコンテンツ
         filename: ファイル名（省略時は自動生成）
-    
+
     Returns:
         (ファイルのバイトデータ, ファイル名)
     """
@@ -30,11 +30,11 @@ def export_to_csv(content: str, filename: Optional[str] = None) -> tuple:
         # テキストをCSV形式に変換
         # まず、テキストを行に分割
         lines = content.strip().split('\n')
-        
+
         # CSVライターで出力
         output = io.StringIO()
         writer = csv.writer(output)
-        
+
         # 各行を処理
         for line in lines:
             # タブ区切りの場合はそのまま、そうでなければカンマ区切りとして処理
@@ -46,20 +46,20 @@ def export_to_csv(content: str, filename: Optional[str] = None) -> tuple:
             else:
                 # 通常のテキスト行
                 writer.writerow([line])
-        
+
         csv_content = output.getvalue()
         output.close()
-        
+
         # バイトデータに変換
         csv_bytes = csv_content.encode('utf-8-sig')  # BOM付きUTF-8（Excel対応）
-        
+
         if not filename:
             filename = "output.csv"
         elif not filename.endswith('.csv'):
             filename = f"{filename}.csv"
-        
+
         return csv_bytes, filename
-    
+
     except Exception as e:
         logger.error(f"CSV出力エラー: {str(e)}")
         # フォールバック: テキストをそのままCSVとして出力
@@ -71,56 +71,56 @@ def export_to_csv(content: str, filename: Optional[str] = None) -> tuple:
 def export_to_markdown(content: str, filename: Optional[str] = None) -> tuple:
     """
     テキストコンテンツをMarkdown形式で出力
-    
+
     Args:
         content: 出力するテキストコンテンツ
         filename: ファイル名（省略時は自動生成）
-    
+
     Returns:
         (ファイルのバイトデータ, ファイル名)
     """
     md_bytes = content.encode('utf-8')
-    
+
     if not filename:
         filename = "output.md"
     elif not filename.endswith('.md'):
         filename = f"{filename}.md"
-    
+
     return md_bytes, filename
 
 
 def export_to_txt(content: str, filename: Optional[str] = None) -> tuple:
     """
     テキストコンテンツをTXT形式で出力
-    
+
     Args:
         content: 出力するテキストコンテンツ
         filename: ファイル名（省略時は自動生成）
-    
+
     Returns:
         (ファイルのバイトデータ, ファイル名)
     """
     txt_bytes = content.encode('utf-8')
-    
+
     if not filename:
         filename = "output.txt"
     elif not filename.endswith('.txt'):
         filename = f"{filename}.txt"
-    
+
     return txt_bytes, filename
 
 
 def export_to_pdf(content: str, filename: Optional[str] = None) -> tuple:
     """
     テキストコンテンツをPDF形式で出力
-    
+
     Args:
         content: 出力するテキストコンテンツ
         filename: ファイル名（省略時は自動生成）
-    
+
     Returns:
         (ファイルのバイトデータ, ファイル名)
-    
+
     Note:
         PDF生成にはreportlabが必要です。インストールされていない場合は
         テキスト形式で返します。
@@ -132,7 +132,7 @@ def export_to_pdf(content: str, filename: Optional[str] = None) -> tuple:
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
-        
+
         # PDF生成
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(
@@ -143,7 +143,7 @@ def export_to_pdf(content: str, filename: Optional[str] = None) -> tuple:
             topMargin=20*mm,
             bottomMargin=20*mm
         )
-        
+
         # スタイル設定
         styles = getSampleStyleSheet()
         normal_style = ParagraphStyle(
@@ -152,11 +152,11 @@ def export_to_pdf(content: str, filename: Optional[str] = None) -> tuple:
             fontSize=10,
             leading=14,
         )
-        
+
         # コンテンツを段落に分割
         story = []
         lines = content.split('\n')
-        
+
         for line in lines:
             if line.strip():
                 # HTMLエスケープ処理
@@ -164,19 +164,19 @@ def export_to_pdf(content: str, filename: Optional[str] = None) -> tuple:
                 story.append(Paragraph(line_escaped, normal_style))
             else:
                 story.append(Spacer(1, 6))
-        
+
         # PDF生成
         doc.build(story)
         pdf_bytes = buffer.getvalue()
         buffer.close()
-        
+
         if not filename:
             filename = "output.pdf"
         elif not filename.endswith('.pdf'):
             filename = f"{filename}.pdf"
-        
+
         return pdf_bytes, filename
-    
+
     except ImportError:
         logger.warning("reportlabがインストールされていません。PDF出力は利用できません。")
         # フォールバック: テキスト形式で返す
@@ -190,14 +190,14 @@ def export_to_pdf(content: str, filename: Optional[str] = None) -> tuple:
 def export_to_docx(content: str, filename: Optional[str] = None) -> tuple:
     """
     テキストコンテンツをDOCX形式で出力
-    
+
     Args:
         content: 出力するテキストコンテンツ
         filename: ファイル名（省略時は自動生成）
-    
+
     Returns:
         (ファイルのバイトデータ, ファイル名)
-    
+
     Note:
         DOCX生成にはpython-docxが必要です。インストールされていない場合は
         テキスト形式で返します。
@@ -205,16 +205,16 @@ def export_to_docx(content: str, filename: Optional[str] = None) -> tuple:
     try:
         from docx import Document
         from docx.shared import Pt
-        
+
         # ドキュメント作成
         doc = Document()
-        
+
         # スタイル設定
         style = doc.styles['Normal']
         font = style.font
         font.name = '游ゴシック'
         font.size = Pt(10)
-        
+
         # コンテンツを行ごとに追加
         lines = content.split('\n')
         for line in lines:
@@ -230,20 +230,20 @@ def export_to_docx(content: str, filename: Optional[str] = None) -> tuple:
                     doc.add_paragraph(line)
             else:
                 doc.add_paragraph('')
-        
+
         # メモリに保存
         buffer = io.BytesIO()
         doc.save(buffer)
         docx_bytes = buffer.getvalue()
         buffer.close()
-        
+
         if not filename:
             filename = "output.docx"
         elif not filename.endswith('.docx'):
             filename = f"{filename}.docx"
-        
+
         return docx_bytes, filename
-    
+
     except ImportError:
         logger.warning("python-docxがインストールされていません。DOCX出力は利用できません。")
         # フォールバック: テキスト形式で返す
@@ -261,20 +261,20 @@ def export_content(
 ) -> tuple:
     """
     コンテンツを指定された形式で出力
-    
+
     Args:
         content: 出力するテキストコンテンツ
         output_format: 出力形式（csv, pdf, docx, md, txt）
         filename: ファイル名（省略時は自動生成）
-    
+
     Returns:
         (ファイルのバイトデータ, ファイル名)
-    
+
     Raises:
         ValueError: サポートされていない形式が指定された場合
     """
     format_lower = output_format.lower()
-    
+
     if format_lower == "csv":
         return export_to_csv(content, filename)
     elif format_lower == "pdf":
@@ -292,22 +292,22 @@ def export_content(
 def parse_attached_files(attachments: Optional[List[Dict[str, Any]]] = None) -> Dict[str, str]:
     """
     添付ファイルを解析して、ファイル名と内容の辞書を返す
-    
+
     Args:
         attachments: 添付ファイルのリスト（各要素は{"filename": str, "content": str}形式）
-    
+
     Returns:
         ファイル名をキー、内容を値とする辞書
     """
     if not attachments:
         return {}
-    
+
     result = {}
     for attachment in attachments:
         filename = attachment.get("filename", "")
         content = attachment.get("content", "")
         if filename and content:
             result[filename] = content
-    
+
     return result
 

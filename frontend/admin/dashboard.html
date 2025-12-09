@@ -70,14 +70,6 @@
                     <h3>総実行回数</h3>
                     <div class="value" id="total-executions">-</div>
                 </div>
-                <div class="stat-card">
-                    <h3>今日の実行</h3>
-                    <div class="value" id="executions-today">-</div>
-                </div>
-                <div class="stat-card">
-                    <h3>今月の実行</h3>
-                    <div class="value" id="executions-month">-</div>
-                </div>
             </div>
 
             <div class="actions">
@@ -105,8 +97,6 @@
                 document.getElementById('total-accounts').textContent = stats.total_accounts;
                 document.getElementById('total-prompts').textContent = stats.total_prompts;
                 document.getElementById('total-executions').textContent = stats.total_executions;
-                document.getElementById('executions-today').textContent = stats.executions_today;
-                document.getElementById('executions-month').textContent = stats.executions_this_month;
             } catch (error) {
                 showAlert('統計情報の読み込みに失敗しました', 'error');
                 console.error('Dashboard error:', error);

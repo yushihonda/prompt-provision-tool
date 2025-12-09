@@ -25,24 +25,15 @@ async def get_dashboard_stats(
 ):
     """ダッシュボード統計情報を取得"""
     total_accounts = db.query(Account).filter(Account.account_type == AccountType.CHILD).count()
-    total_prompts = db.query(Prompt).count()
-    total_executions = db.query(Execution).count()
-
-    # 今日の実行数
-    from datetime import datetime, timedelta
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    executions_today = db.query(Execution).filter(Execution.executed_at >= today_start).count()
-
-    # 今月の実行数
-    month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    executions_this_month = db.query(Execution).filter(Execution.executed_at >= month_start).count()
+    total_prompts = db.query(Prompt).filter(Prompt.deleted_at.is_(None)).count()
+    # 総実行回数はAccount.total_executionsの合計を使用（保存された値）
+    total_executions = db.query(func.sum(Account.total_executions)).scalar() or 0
+    total_executions = int(total_executions)  # Decimal型をintに変換
 
     return {
         "total_accounts": total_accounts,
         "total_prompts": total_prompts,
-        "total_executions": total_executions,
-        "executions_today": executions_today,
-        "executions_this_month": executions_this_month
+        "total_executions": total_executions
     }
 
 
@@ -83,7 +74,14 @@ async def create_account(
 
     # 子アカウントの場合、API設定も作成
     if str(account.account_type) == AccountType.CHILD:
-        api_config = APIConfig(account_id=db_account.id)
+        api_config = APIConfig(
+            account_id=db_account.id,
+            openai_api_key=account.openai_api_key if account.openai_api_key else None,
+            gemini_api_key=account.gemini_api_key if account.gemini_api_key else None,
+            rate_limit_per_hour=account.rate_limit_per_hour if account.rate_limit_per_hour is not None else 100,
+            rate_limit_per_day=account.rate_limit_per_day if account.rate_limit_per_day is not None else 1000,
+            is_enabled=account.api_config_enabled if account.api_config_enabled is not None else True
+        )
         db.add(api_config)
         db.commit()
 
@@ -100,21 +98,73 @@ async def list_accounts(
     """全アカウントを取得（ページネーション対応）"""
     # 総件数を取得
     total = db.query(Account).count()
-    
+
     # アカウント一覧を取得
     accounts = db.query(Account).order_by(Account.id.desc()).offset(skip).limit(limit).all()
 
-    # 各アカウントのプロンプト数と実行回数を個別に取得
+    # 今月の開始日時（JST基準）
+    from datetime import datetime, timezone, timedelta
+    jst = timezone(timedelta(hours=9))
+    current_month_start = datetime.now(jst).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # 各アカウントのプロンプト数、実行回数、総トークン数、総料金を個別に取得
     items = []
     for acc in accounts:
         prompt_count = db.query(func.count(AccountPrompt.id)).filter(
             AccountPrompt.account_id == acc.id
         ).scalar() or 0
+
+        # 今月の実行回数はAccountモデルから取得（保存された値を使用）
+        # 月が変わった場合は自動的にリセット
+        # last_month_resetがtimezone-naiveの場合はJSTとして解釈
+        should_reset = False
+        if acc.last_month_reset is None:
+            should_reset = True
+        else:
+            # timezone-awareかどうかを確認
+            if acc.last_month_reset.tzinfo is None:
+                # timezone-naiveの場合はJSTとして解釈
+                from datetime import timezone, timedelta
+                jst = timezone(timedelta(hours=9))
+                last_reset_aware = acc.last_month_reset.replace(tzinfo=jst)
+            else:
+                last_reset_aware = acc.last_month_reset
+            
+            if last_reset_aware < current_month_start:
+                should_reset = True
         
-        execution_count = db.query(func.count(Execution.id)).filter(
-            Execution.account_id == acc.id
-        ).scalar() or 0
+        if should_reset:
+            acc.tokens_this_month = 0
+            acc.cost_this_month = 0.0
+            acc.executions_this_month = 0
+            acc.last_month_reset = current_month_start
+            db.commit()
+            db.refresh(acc)
         
+        executions_this_month = acc.executions_this_month or 0
+
+        # 総トークン数、総料金、総実行回数はAccountモデルから取得（保存された値を使用）
+        total_tokens = acc.total_tokens or 0
+        total_cost = float(acc.total_cost or 0.0)
+        total_executions = acc.total_executions or 0
+
+        # 今月のトークン数と料金も取得
+        tokens_this_month = acc.tokens_this_month or 0
+        cost_this_month = float(acc.cost_this_month or 0.0)
+
+        # API設定情報を取得（子アカウントのみ）
+        api_config_data = None
+        if str(acc.account_type) == AccountType.CHILD:
+            api_config = db.query(APIConfig).filter(APIConfig.account_id == acc.id).first()
+            if api_config:
+                api_config_data = {
+                    "openai_api_key": api_config.openai_api_key if api_config.openai_api_key else None,
+                    "gemini_api_key": api_config.gemini_api_key if api_config.gemini_api_key else None,
+                    "rate_limit_per_hour": api_config.rate_limit_per_hour or 100,
+                    "rate_limit_per_day": api_config.rate_limit_per_day or 1000,
+                    "is_enabled": api_config.is_enabled if api_config.is_enabled is not None else True
+                }
+
         items.append({
             "id": acc.id,
             "username": acc.username,
@@ -122,9 +172,15 @@ async def list_accounts(
             "account_type": acc.account_type,
             "is_active": acc.is_active,
             "prompt_count": prompt_count,
-            "execution_count": execution_count
+            "execution_count": total_executions,
+            "executions_this_month": executions_this_month,
+            "total_tokens": total_tokens,
+            "total_cost": total_cost,
+            "tokens_this_month": tokens_this_month,
+            "cost_this_month": cost_this_month,
+            "api_config": api_config_data
         })
-    
+
     return {
         "items": items,
         "total": total,
@@ -164,7 +220,7 @@ async def update_account(
             detail="アカウントが見つかりません"
         )
 
-    # 更新
+    # アカウント情報を更新
     if account_update.email:
         account.email = account_update.email
     if account_update.password:
@@ -174,6 +230,32 @@ async def update_account(
 
     db.commit()
     db.refresh(account)
+
+    # 子アカウントの場合、API設定も更新
+    if str(account.account_type) == AccountType.CHILD:
+        api_config = db.query(APIConfig).filter(APIConfig.account_id == account_id).first()
+
+        # API設定が存在しない場合は作成
+        if not api_config:
+            api_config = APIConfig(account_id=account_id)
+            db.add(api_config)
+
+        # API設定を更新（値が提供されている場合のみ更新）
+        if account_update.openai_api_key is not None:
+            # 空文字列の場合はNoneに設定（削除）
+            api_config.openai_api_key = account_update.openai_api_key.strip() if account_update.openai_api_key and account_update.openai_api_key.strip() else None
+        if account_update.gemini_api_key is not None:
+            # 空文字列の場合はNoneに設定（削除）
+            api_config.gemini_api_key = account_update.gemini_api_key.strip() if account_update.gemini_api_key and account_update.gemini_api_key.strip() else None
+        if account_update.rate_limit_per_hour is not None:
+            api_config.rate_limit_per_hour = account_update.rate_limit_per_hour
+        if account_update.rate_limit_per_day is not None:
+            api_config.rate_limit_per_day = account_update.rate_limit_per_day
+        if account_update.api_config_enabled is not None:
+            api_config.is_enabled = account_update.api_config_enabled
+
+        db.commit()
+
     return account
 
 
@@ -223,6 +305,7 @@ async def create_prompt(
         model_type=prompt.model_type,
         input_schema=input_schema_str,
         allows_file_output=prompt.allows_file_output,
+        enable_deep_think=prompt.enable_deep_think,
         created_by=current_user.id
     )
     db.add(db_prompt)
@@ -248,10 +331,10 @@ async def list_prompts(
     current_user: Account = Depends(get_current_active_parent)
 ):
     """全プロンプトを取得（ページネーション対応）"""
-    # 総件数を取得
-    total = db.query(Prompt).count()
-    
-    prompts = db.query(Prompt).order_by(Prompt.created_at.desc()).offset(skip).limit(limit).all()
+    # 総件数を取得（論理削除されていないもののみ）
+    total = db.query(Prompt).filter(Prompt.deleted_at.is_(None)).count()
+
+    prompts = db.query(Prompt).filter(Prompt.deleted_at.is_(None)).order_by(Prompt.created_at.desc()).offset(skip).limit(limit).all()
 
     # input_schemaをJSON文字列からdictに変換
     items = []
@@ -279,7 +362,7 @@ async def get_prompt(
     current_user: Account = Depends(get_current_active_parent)
 ):
     """特定のプロンプトを取得"""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+    prompt = db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.deleted_at.is_(None)).first()
     if not prompt:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -304,7 +387,7 @@ async def get_prompt_content(
     current_user: Account = Depends(get_current_active_parent)
 ):
     """プロンプトの内容を取得（復号化）- 管理者のみ"""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+    prompt = db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.deleted_at.is_(None)).first()
     if not prompt:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -324,7 +407,7 @@ async def update_prompt(
     current_user: Account = Depends(get_current_active_parent)
 ):
     """プロンプト情報を更新"""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+    prompt = db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.deleted_at.is_(None)).first()
     if not prompt:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -346,6 +429,8 @@ async def update_prompt(
         prompt.is_active = prompt_update.is_active
     if prompt_update.allows_file_output is not None:
         prompt.allows_file_output = prompt_update.allows_file_output
+    if prompt_update.enable_deep_think is not None:
+        prompt.enable_deep_think = prompt_update.enable_deep_think
 
     db.commit()
     db.refresh(prompt)
@@ -367,15 +452,18 @@ async def delete_prompt(
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """プロンプトを削除"""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+    """プロンプトを論理削除"""
+    prompt = db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.deleted_at.is_(None)).first()
     if not prompt:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="プロンプトが見つかりません"
         )
 
-    db.delete(prompt)
+    # 論理削除: deleted_atに現在時刻を設定
+    from datetime import datetime, timezone, timedelta
+    jst = timezone(timedelta(hours=9))
+    prompt.deleted_at = datetime.now(jst)
     db.commit()
 
 
@@ -395,8 +483,8 @@ async def assign_prompt_to_account(
             detail="アカウントが見つかりません"
         )
 
-    # プロンプトの存在確認
-    prompt = db.query(Prompt).filter(Prompt.id == assignment.prompt_id).first()
+    # プロンプトの存在確認（論理削除されていないもののみ）
+    prompt = db.query(Prompt).filter(Prompt.id == assignment.prompt_id, Prompt.deleted_at.is_(None)).first()
     if not prompt:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -461,7 +549,7 @@ async def get_account_prompts(
     for assignment in assignments:
         prompt = assignment.prompt
         assignment_id = assignment.id  # assignment_idを先に取得
-        
+
         # 必要なフィールドのみを明示的に取得
         prompt_dict = {
             'id': prompt.id,
@@ -483,7 +571,7 @@ async def get_account_prompts(
                 prompt_dict['input_schema'] = None
         else:
             prompt_dict['input_schema'] = None
-        
+
         result.append(prompt_dict)
 
     return result
@@ -500,7 +588,7 @@ async def list_executions(
     """全実行ログを取得"""
     # 総件数を取得
     total = db.query(Execution).count()
-    
+
     executions = db.query(Execution).order_by(
         Execution.executed_at.desc()
     ).offset(skip).limit(limit).all()
@@ -508,10 +596,21 @@ async def list_executions(
     items = []
     for execution in executions:
         prompt_name = execution.prompt.name if execution.prompt else None
-        items.append({
+        # 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
+        # 保存されていない場合はプロンプトの設定を参照（後方互換性のため）
+        enable_deep_think = getattr(execution, 'enable_deep_think', None)
+        if enable_deep_think is None and execution.prompt:
+            # 古い実行履歴の場合、プロンプトの設定を参照
+            enable_deep_think = getattr(execution.prompt, 'enable_deep_think', None)
+            if enable_deep_think is None:
+                enable_deep_think = True  # デフォルト値
+
+        execution_dict = {
             **execution.__dict__,
-            "prompt_name": prompt_name
-        })
+            "prompt_name": prompt_name,
+            "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
+        }
+        items.append(execution_dict)
 
     return {
         "items": items,

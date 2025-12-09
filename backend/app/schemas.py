@@ -29,12 +29,24 @@ class AccountBase(BaseModel):
 
 class AccountCreate(AccountBase):
     password: str
+    # API設定（オプション）
+    openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    rate_limit_per_hour: Optional[int] = 100
+    rate_limit_per_day: Optional[int] = 1000
+    api_config_enabled: Optional[bool] = True
 
 
 class AccountUpdate(BaseModel):
     email: Optional[EmailStr] = None
     password: Optional[str] = None
     is_active: Optional[bool] = None
+    # API設定（オプション）
+    openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    rate_limit_per_hour: Optional[int] = None
+    rate_limit_per_day: Optional[int] = None
+    api_config_enabled: Optional[bool] = None
 
 
 class AccountResponse(AccountBase):
@@ -53,6 +65,7 @@ class PromptBase(BaseModel):
     model_type: str
     input_schema: Optional[Dict[str, Any]] = None
     allows_file_output: bool = False  # ファイル出力を許可するか
+    enable_deep_think: bool = True  # Deep Think機能を有効にするか（Gemini 2.5/3系のみ、デフォルト: True）
 
 
 class PromptCreate(PromptBase):
@@ -67,6 +80,7 @@ class PromptUpdate(BaseModel):
     input_schema: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
     allows_file_output: Optional[bool] = None  # ファイル出力を許可するか
+    enable_deep_think: Optional[bool] = None  # Deep Think機能を有効にするか（Gemini 2.5/3系のみ）
 
 
 class PromptResponse(PromptBase):
@@ -87,6 +101,7 @@ class PromptListResponse(BaseModel):
     description: Optional[str] = None
     model_type: str
     allows_file_output: bool = False  # ファイル出力を許可するか
+    enable_deep_think: bool = True  # Deep Think機能を有効にするか
 
     class Config:
         from_attributes = True
@@ -120,14 +135,16 @@ class ExecutePromptRequest(BaseModel):
     input_data: Dict[str, Any]  # プロンプトのinput_schemaに従った入力
     output_format: Optional[str] = "txt"  # 出力形式: csv, pdf, docx, md, txt
     attachments: Optional[List[AttachmentFile]] = None  # 添付ファイル（オプション）
+    enable_deep_think: Optional[bool] = None  # Deep Think機能の有効/無効（Gemini 2.5/3系のみ、Noneの場合は自動判定）
 
 
 class ExecutePromptResponse(BaseModel):
-    output: str
-    model_used: str
-    tokens_used: Optional[int] = None
-    execution_time: int  # ミリ秒
+    execution_id: int
     status: str
+    output: Optional[str] = None
+    model_used: Optional[str] = None
+    tokens_used: Optional[int] = None
+    execution_time: Optional[int] = None  # ミリ秒
     file_output: Optional[Dict[str, Any]] = None  # ファイル出力情報（output_formatが指定された場合）
 
 
@@ -138,10 +155,10 @@ class ExecutionResponse(BaseModel):
     prompt_id: Optional[int]
     prompt_name: Optional[str] = None
     input_data: str
-    output_data: str
+    output_data: Optional[str] = None
     model_used: str
-    tokens_used: Optional[int]
-    execution_time: int
+    tokens_used: Optional[int] = None
+    execution_time: Optional[int] = None
     status: str
     error_message: Optional[str] = None
     executed_at: datetime
@@ -187,15 +204,13 @@ class DashboardStats(BaseModel):
     total_accounts: int
     total_prompts: int
     total_executions: int
-    executions_today: int
-    executions_this_month: int
 
 
 class UserDashboardStats(BaseModel):
     available_prompts: int  # 利用可能なプロンプト数
-    total_executions: int  # 総実行回数
-    executions_today: int  # 今日の実行回数
     executions_this_month: int  # 今月の実行回数
+    total_tokens_this_month: int  # 今月の総トークン数
+    total_cost_this_month: float  # 今月の総トークン料金（USD）
 
 
 class AccountWithPromptCount(BaseModel):

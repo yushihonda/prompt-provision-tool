@@ -227,7 +227,7 @@ function confirmAction(message) {
 // 日時フォーマット
 function formatDate(dateString) {
     const date = new Date(dateString);
-    return date.toLocaleString('ja-JP');
+    return date.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
 }
 
 // JSON整形

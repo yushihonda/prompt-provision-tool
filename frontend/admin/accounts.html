@@ -74,12 +74,15 @@
                             <th>ステータス</th>
                             <th>プロンプト数</th>
                             <th>実行回数</th>
+                            <th>トークン数</th>
+                            <th>料金</th>
+                            <th>API設定</th>
                             <th>アクション</th>
                         </tr>
                     </thead>
                     <tbody id="accounts-tbody">
                         <tr>
-                            <td colspan="8" style="text-align: center;">読み込み中...</td>
+                            <td colspan="11" style="text-align: center;">読み込み中...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -159,7 +162,7 @@
             const tbody = document.getElementById('accounts-tbody');
 
             if (accounts.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: rgba(255, 255, 255, 0.6);">アカウントがまだ登録されていません</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="11" style="text-align: center; color: rgba(255, 255, 255, 0.6);">アカウントがまだ登録されていません</td></tr>';
                 return;
             }
 
@@ -187,8 +190,79 @@
                             <span style="color: ${account.is_active ? '#28a745' : '#dc3545'}; font-weight: ${account.is_active ? 'bold' : 'normal'};">${account.is_active ? '有効' : '無効'}</span>
                         </div>
                     </td>
-                    <td>${account.prompt_count}</td>
-                    <td>${account.execution_count}</td>
+                    <td>
+                        ${account.account_type === 'CHILD' ? account.prompt_count : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
+                    </td>
+                    <td>
+                        ${account.account_type === 'CHILD' ? `
+                            <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: rgba(255, 255, 255, 0.7);">今月:</span>
+                                    <span style="color: rgba(255, 255, 255, 0.9);">${account.executions_this_month || 0}</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: rgba(255, 255, 255, 0.7);">全期間:</span>
+                                    <span style="color: rgba(255, 255, 255, 0.9);">${account.execution_count || 0}</span>
+                                </div>
+                            </div>
+                        ` : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
+                    </td>
+                    <td>
+                        ${account.account_type === 'CHILD' ? `
+                            <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: rgba(255, 255, 255, 0.7);">今月:</span>
+                                    <span style="color: rgba(255, 255, 255, 0.9);">${(account.tokens_this_month || 0).toLocaleString()}</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: rgba(255, 255, 255, 0.7);">全期間:</span>
+                                    <span style="color: rgba(255, 255, 255, 0.9);">${(account.total_tokens || 0).toLocaleString()}</span>
+                                </div>
+                            </div>
+                        ` : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
+                    </td>
+                    <td>
+                        ${account.account_type === 'CHILD' ? `
+                            <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: rgba(255, 255, 255, 0.7);">今月:</span>
+                                    <span style="color: rgba(255, 255, 255, 0.9);">$${(account.cost_this_month || 0).toFixed(2)}</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: rgba(255, 255, 255, 0.7);">全期間:</span>
+                                    <span style="color: rgba(255, 255, 255, 0.9);">$${(account.total_cost || 0).toFixed(2)}</span>
+                                </div>
+                            </div>
+                        ` : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
+                    </td>
+                    <td>
+                        ${account.account_type === 'CHILD' ? `
+                            <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: ${account.api_config && account.api_config.openai_api_key ? '#28a745' : 'rgba(255, 255, 255, 0.5)'};">
+                                        OpenAI: ${account.api_config && account.api_config.openai_api_key ? '✓' : '✗'}
+                                    </span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: ${account.api_config && account.api_config.gemini_api_key ? '#28a745' : 'rgba(255, 255, 255, 0.5)'};">
+                                        Gemini: ${account.api_config && account.api_config.gemini_api_key ? '✓' : '✗'}
+                                    </span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: rgba(255, 255, 255, 0.7);">
+                                        制限: ${account.api_config ? (account.api_config.rate_limit_per_hour || 100) : 100}/時, ${account.api_config ? (account.api_config.rate_limit_per_day || 1000) : 1000}/日
+                                    </span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: ${account.api_config ? (account.api_config.is_enabled !== false ? '#28a745' : '#dc3545') : '#28a745'};">
+                                        状態: ${account.api_config ? (account.api_config.is_enabled !== false ? '有効' : '無効') : '有効'}
+                                    </span>
+                                </div>
+                            </div>
+                        ` : `
+                            <span style="color: rgba(255, 255, 255, 0.5);">-</span>
+                        `}
+                    </td>
                     <td>
                         <div class="actions">
                             <button ${account.account_type === 'PARENT' ? 'disabled' : `onclick="showAssignModal(${account.id})"`} title="${account.account_type === 'PARENT' ? '管理者はプロンプト割り当てできません' : 'プロンプト割り当て'}" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; ${account.account_type === 'PARENT' ? 'cursor: not-allowed; opacity: 0.5;' : 'cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;'}">
@@ -222,12 +296,42 @@
                         <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">パスワード <span style="color: #ff6b6b;">*</span></label>
                         <input id="swal-account-password" class="swal2-input" type="password" placeholder="パスワードを入力してください" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
                     </div>
-                    <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
                         <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">アカウントタイプ <span style="color: #ff6b6b;">*</span></label>
-                        <select id="swal-account-type" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                        <select id="swal-account-type" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;" onchange="toggleApiConfigSection()">
                             <option value="CHILD" selected>子アカウント（ユーザー）</option>
                             <option value="PARENT">親アカウント（管理者）</option>
                         </select>
+                    </div>
+                    <div id="swal-api-config-section" style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box; padding: 15px; background: rgba(255, 255, 255, 0.05); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
+                        <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 15px; font-size: 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 8px;">API設定（オプション）</h4>
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">OpenAI API Key</label>
+                            <input id="swal-account-openai-key" class="swal2-input" type="password" placeholder="sk-..." style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">子アカウント用のOpenAI API Key（オプション）</small>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">Gemini API Key</label>
+                            <input id="swal-account-gemini-key" class="swal2-input" type="password" placeholder="AIza..." style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">子アカウント用のGemini API Key（オプション）</small>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">レート制限（1時間あたり）</label>
+                            <input id="swal-account-rate-limit-hour" class="swal2-input" type="number" min="1" value="100" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">1時間あたりの実行制限回数（デフォルト: 100）</small>
+                        </div>
+                        <div style="margin-bottom: 10px;">
+                            <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">レート制限（1日あたり）</label>
+                            <input id="swal-account-rate-limit-day" class="swal2-input" type="number" min="1" value="1000" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">1日あたりの実行制限回数（デフォルト: 1000）</small>
+                        </div>
+                        <div>
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="checkbox" id="swal-account-api-enabled" checked style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
+                                <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">API設定を有効にする</span>
+                            </label>
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このAPI設定が有効になります</small>
+                        </div>
                     </div>
                 `,
                 focusConfirm: false,
@@ -246,6 +350,28 @@
                     const email = document.getElementById('swal-account-email').value.trim();
                     const password = document.getElementById('swal-account-password').value.trim();
                     const accountType = document.getElementById('swal-account-type').value;
+
+                    const result = {
+                        username,
+                        email,
+                        password,
+                        accountType
+                    };
+
+                    // 子アカウントの場合のみAPI設定を取得
+                    if (accountType === 'CHILD') {
+                        const openaiKeyEl = document.getElementById('swal-account-openai-key');
+                        const geminiKeyEl = document.getElementById('swal-account-gemini-key');
+                        const rateLimitHourEl = document.getElementById('swal-account-rate-limit-hour');
+                        const rateLimitDayEl = document.getElementById('swal-account-rate-limit-day');
+                        const apiEnabledEl = document.getElementById('swal-account-api-enabled');
+
+                        if (openaiKeyEl) result.openaiKey = openaiKeyEl.value.trim();
+                        if (geminiKeyEl) result.geminiKey = geminiKeyEl.value.trim();
+                        if (rateLimitHourEl) result.rateLimitHour = parseInt(rateLimitHourEl.value) || 100;
+                        if (rateLimitDayEl) result.rateLimitDay = parseInt(rateLimitDayEl.value) || 1000;
+                        if (apiEnabledEl) result.apiEnabled = apiEnabledEl.checked;
+                    }
 
                     if (!username) {
                         Swal.showValidationMessage('ユーザー名は必須です');
@@ -266,12 +392,15 @@
                         return false;
                     }
 
-                    return {
-                        username,
-                        email,
-                        password,
-                        accountType
-                    };
+                    return result;
+                },
+                didOpen: () => {
+                    // アカウントタイプの変更を監視
+                    const typeSelect = document.getElementById('swal-account-type');
+                    if (typeSelect) {
+                        typeSelect.addEventListener('change', toggleApiConfigSection);
+                        toggleApiConfigSection(); // 初期状態を設定
+                    }
                 }
             });
 
@@ -301,13 +430,45 @@
                         <input id="swal-account-password" class="swal2-input" type="password" placeholder="変更しない場合は空欄のまま" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
                         <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">パスワードを変更しない場合は空欄のままにしてください</small>
                     </div>
-                    <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
+                    <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
                         <label style="display: flex; align-items: center; cursor: pointer;">
                             <input type="checkbox" id="swal-account-is-active" ${account.is_active ? 'checked' : ''} style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
                             <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">有効にする</span>
                         </label>
                         <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このアカウントが有効になります</small>
                     </div>
+                    ${account.account_type === 'CHILD' ? `
+                    <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box; padding: 15px; background: rgba(255, 255, 255, 0.05); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
+                        <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 15px; font-size: 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 8px;">API設定</h4>
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">OpenAI API Key</label>
+                            <input id="swal-account-edit-openai-key" class="swal2-input" type="password" placeholder="${account.api_config && account.api_config.openai_api_key ? '設定済み（変更する場合は新しいキーを入力）' : '未設定（設定する場合はキーを入力）'}" value="" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">${account.api_config && account.api_config.openai_api_key ? '現在設定済みです。変更する場合は新しいキーを入力してください。' : '未設定（設定する場合はキーを入力）'}</small>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">Gemini API Key</label>
+                            <input id="swal-account-edit-gemini-key" class="swal2-input" type="password" placeholder="${account.api_config && account.api_config.gemini_api_key ? '設定済み（変更する場合は新しいキーを入力）' : '未設定（設定する場合はキーを入力）'}" value="" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">${account.api_config && account.api_config.gemini_api_key ? '現在設定済みです。変更する場合は新しいキーを入力してください。' : '未設定（設定する場合はキーを入力）'}</small>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">レート制限（1時間あたり）</label>
+                            <input id="swal-account-edit-rate-limit-hour" class="swal2-input" type="number" min="1" value="${account.api_config ? (account.api_config.rate_limit_per_hour || 100) : 100}" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">1時間あたりの実行制限回数</small>
+                        </div>
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">レート制限（1日あたり）</label>
+                            <input id="swal-account-edit-rate-limit-day" class="swal2-input" type="number" min="1" value="${account.api_config ? (account.api_config.rate_limit_per_day || 1000) : 1000}" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">1日あたりの実行制限回数</small>
+                        </div>
+                        <div>
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="checkbox" id="swal-account-edit-api-enabled" ${account.api_config ? (account.api_config.is_enabled !== false ? 'checked' : '') : 'checked'} style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
+                                <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">API設定を有効にする</span>
+                            </label>
+                            <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このAPI設定が有効になります</small>
+                        </div>
+                    </div>
+                    ` : ''}
                 `,
                 focusConfirm: false,
                 showCancelButton: true,
@@ -325,16 +486,33 @@
                     const password = document.getElementById('swal-account-password').value.trim();
                     const isActive = document.getElementById('swal-account-is-active').checked;
 
+                    const result = {
+                        email,
+                        password,
+                        isActive
+                    };
+
+                    // 子アカウントの場合のみAPI設定を取得
+                    if (account.account_type === 'CHILD') {
+                        const openaiKeyEl = document.getElementById('swal-account-edit-openai-key');
+                        const geminiKeyEl = document.getElementById('swal-account-edit-gemini-key');
+                        const rateLimitHourEl = document.getElementById('swal-account-edit-rate-limit-hour');
+                        const rateLimitDayEl = document.getElementById('swal-account-edit-rate-limit-day');
+                        const apiEnabledEl = document.getElementById('swal-account-edit-api-enabled');
+
+                        if (openaiKeyEl) result.openaiKey = openaiKeyEl.value.trim();
+                        if (geminiKeyEl) result.geminiKey = geminiKeyEl.value.trim();
+                        if (rateLimitHourEl) result.rateLimitHour = parseInt(rateLimitHourEl.value) || 100;
+                        if (rateLimitDayEl) result.rateLimitDay = parseInt(rateLimitDayEl.value) || 1000;
+                        if (apiEnabledEl) result.apiEnabled = apiEnabledEl.checked;
+                    }
+
                     if (!email) {
                         Swal.showValidationMessage('メールアドレスは必須です');
                         return false;
                     }
 
-                    return {
-                        email,
-                        password,
-                        isActive
-                    };
+                    return result;
                 }
             });
 
@@ -345,7 +523,7 @@
 
         async function saveAccount(id, formValues) {
             const data = {};
-            
+
             if (id) {
                 // 更新
                 if (formValues.email) {
@@ -356,6 +534,29 @@
                 }
                 if (formValues.isActive !== undefined) {
                     data.is_active = formValues.isActive;
+                }
+
+                // API設定の更新（子アカウントの場合のみ）
+                const account = accounts.find(a => a.id === id);
+                if (account && account.account_type === 'CHILD') {
+                    // APIキーが入力されている場合のみ更新（空文字列の場合は更新しない）
+                    if (formValues.openaiKey && formValues.openaiKey.trim() !== '') {
+                        data.openai_api_key = formValues.openaiKey.trim();
+                    }
+
+                    if (formValues.geminiKey && formValues.geminiKey.trim() !== '') {
+                        data.gemini_api_key = formValues.geminiKey.trim();
+                    }
+
+                    if (formValues.rateLimitHour !== undefined) {
+                        data.rate_limit_per_hour = formValues.rateLimitHour;
+                    }
+                    if (formValues.rateLimitDay !== undefined) {
+                        data.rate_limit_per_day = formValues.rateLimitDay;
+                    }
+                    if (formValues.apiEnabled !== undefined) {
+                        data.api_config_enabled = formValues.apiEnabled;
+                    }
                 }
 
                 try {
@@ -385,6 +586,25 @@
                 data.email = formValues.email;
                 data.password = formValues.password;
                 data.account_type = formValues.accountType;
+
+                // API設定（子アカウントの場合のみ）
+                if (formValues.accountType === 'CHILD') {
+                    if (formValues.openaiKey) {
+                        data.openai_api_key = formValues.openaiKey;
+                    }
+                    if (formValues.geminiKey) {
+                        data.gemini_api_key = formValues.geminiKey;
+                    }
+                    if (formValues.rateLimitHour !== undefined) {
+                        data.rate_limit_per_hour = formValues.rateLimitHour;
+                    }
+                    if (formValues.rateLimitDay !== undefined) {
+                        data.rate_limit_per_day = formValues.rateLimitDay;
+                    }
+                    if (formValues.apiEnabled !== undefined) {
+                        data.api_config_enabled = formValues.apiEnabled;
+                    }
+                }
 
                 try {
                     await apiRequest('/api/admin/accounts', {
@@ -463,7 +683,7 @@
 
                 // 割り当て可能なプロンプト（有効なプロンプトのみ）
                 const availablePrompts = allPrompts.filter(p => !assignedIds.includes(p.id) && p.is_active);
-                
+
                 // 割り当て可能なプロンプトのHTML
                 const availablePromptsHTML = availablePrompts.length > 0
                     ? availablePrompts.map(p => `
@@ -605,6 +825,19 @@
             }
         }
 
+
+        // API設定セクションの表示/非表示を切り替える
+        function toggleApiConfigSection() {
+            const typeSelect = document.getElementById('swal-account-type');
+            const apiConfigSection = document.getElementById('swal-api-config-section');
+            if (typeSelect && apiConfigSection) {
+                if (typeSelect.value === 'PARENT') {
+                    apiConfigSection.style.display = 'none';
+                } else {
+                    apiConfigSection.style.display = 'block';
+                }
+            }
+        }
 
         // ページ読み込み時に実行
         (async () => {
