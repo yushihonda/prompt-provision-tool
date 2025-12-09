@@ -1,0 +1,53 @@
+# ============================================================
+# ローカル開発環境用 Docker Compose 設定
+# 本番環境（ConoHaVPS）では使用しません
+# ============================================================
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: ppt-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: ${DB_NAME:-prompttool}
+      MYSQL_USER: ${DB_USER:-prompt}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-promptpass}
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ppt-backend
+    restart: unless-stopped
+    depends_on:
+      - db
+    env_file:
+      - .env.local
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+    ports:
+      - "8000:8000"
+
+  web:
+    image: nginx:alpine
+    container_name: ppt-web
+    restart: unless-stopped
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./deployment/local/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
+
+volumes:
+  db_data:
+    driver: local
+
+

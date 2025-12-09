@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ユーザーダッシュボード - Prompt Provision Tool</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="user-theme">
+    <div class="container">
+        <div class="header">
+            <span class="tool-name">Prompt Provision Tool</span>
+            <div class="user-info">
+                <span id="username-display">-</span>
+                <button class="btn-logout" onclick="logout()">ログアウト</button>
+            </div>
+            <button class="hamburger-menu" onclick="toggleMobileMenu()">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+
+        <!-- モバイルメニュー -->
+        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
+        <div class="mobile-menu" id="mobile-menu">
+            <div class="mobile-menu-header">
+                <span class="tool-name">Prompt Provision Tool</span>
+                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+            </div>
+            <div class="mobile-menu-content">
+                <div class="nav">
+                    <button class="nav-item active" onclick="location.href='dashboard.html'">プロンプト一覧</button>
+                    <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
+                </div>
+                <div class="user-info">
+                    <span id="mobile-username-display">-</span>
+                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="content">
+            <h1 class="page-title">ダッシュボード</h1>
+            <div class="nav">
+                <button class="nav-item active" onclick="location.href='dashboard.html'">プロンプト一覧</button>
+                <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
+            </div>
+
+
+            <div class="dashboard-stats" id="stats-container">
+                <div class="stat-card">
+                    <h3>利用可能なプロンプト</h3>
+                    <div class="value" id="available-prompts">-</div>
+                </div>
+                <div class="stat-card">
+                    <h3>総実行回数</h3>
+                    <div class="value" id="total-executions">-</div>
+                </div>
+                <div class="stat-card">
+                    <h3>今日の実行</h3>
+                    <div class="value" id="executions-today">-</div>
+                </div>
+                <div class="stat-card">
+                    <h3>今月の実行</h3>
+                    <div class="value" id="executions-month">-</div>
+                </div>
+            </div>
+
+            <div id="prompts-container" class="prompts-grid">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>読み込み中...</p>
+                </div>
+            </div>
+            <div id="pagination-container" class="pagination" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script src="js/user-common.js"></script>
+    <script>
+        let prompts = [];
+        let currentPage = 1;
+        const itemsPerPage = 9;
+        let totalItems = 0;
+
+        async function loadDashboardStats() {
+            try {
+                const stats = await apiRequest('/api/user/dashboard');
+
+                document.getElementById('available-prompts').textContent = stats.available_prompts;
+                document.getElementById('total-executions').textContent = stats.total_executions;
+                document.getElementById('executions-today').textContent = stats.executions_today;
+                document.getElementById('executions-month').textContent = stats.executions_this_month;
+            } catch (error) {
+                showAlert('統計情報の読み込みに失敗しました', 'error');
+                console.error('Dashboard stats error:', error);
+            }
+        }
+
+        async function loadPrompts(page = 1) {
+            try {
+                const skip = (page - 1) * itemsPerPage;
+                const response = await apiRequest(`/api/user/prompts?skip=${skip}&limit=${itemsPerPage}`);
+                
+                prompts = response.items || response;
+                totalItems = response.total !== undefined ? response.total : (prompts.length === itemsPerPage ? page * itemsPerPage + 1 : page * itemsPerPage);
+                
+                currentPage = page;
+                renderPrompts();
+                renderPagination();
+            } catch (error) {
+                showAlert('プロンプトの読み込みに失敗しました', 'error');
+                console.error('Load prompts error:', error);
+            }
+        }
+
+        function renderPrompts() {
+            const container = document.getElementById('prompts-container');
+
+            if (prompts.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: rgba(255, 255, 255, 0.6);">利用可能なプロンプトがありません</p>';
+                return;
+            }
+
+            container.innerHTML = prompts.map(prompt => {
+                let modelDisplay = prompt.model_type;
+                if (prompt.model_type === 'gpt-5.1' || prompt.model_type === 'gemini-3-pro-preview') {
+                    modelDisplay = `${prompt.model_type}<span class="new-badge">NEW</span>`;
+                }
+                return `
+                <div class="card">
+                    <h3>${prompt.name}</h3>
+                    <p>${prompt.description || '説明なし'}</p>
+                    <p><strong>モデル:</strong> ${modelDisplay}</p>
+                    <div class="actions">
+                        <button class="btn btn-primary" onclick="location.href='execute.html?id=${prompt.id}'">実行</button>
+                    </div>
+                </div>
+            `;
+            }).join('');
+        }
+
+        function renderPagination() {
+            const container = document.getElementById('pagination-container');
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            
+            if (totalPages <= 1) {
+                container.style.display = 'none';
+                return;
+            }
+            
+            container.style.display = 'flex';
+            
+            let html = `
+                <button onclick="loadPrompts(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>前へ</button>
+            `;
+            
+            const startPage = Math.max(1, currentPage - 2);
+            const endPage = Math.min(totalPages, startPage + 4);
+            
+            for (let i = startPage; i <= endPage; i++) {
+                html += `<button class="page-number ${i === currentPage ? 'active' : ''}" onclick="loadPrompts(${i})">${i}</button>`;
+            }
+            
+            html += `
+                <span class="page-info">${currentPage} / ${totalPages}</span>
+                <button onclick="loadPrompts(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>次へ</button>
+            `;
+            
+            container.innerHTML = html;
+        }
+
+        // ページ読み込み時に実行
+        (async () => {
+            await checkAuth();
+            loadDashboardStats();
+            loadPrompts(1);
+        })();
+    </script>
+</body>
+</html>
+

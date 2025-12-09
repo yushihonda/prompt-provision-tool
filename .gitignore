@@ -1,55 +1,108 @@
-# 環境変数ファイル
-.env
-.env.local
-.env.production
-
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-venv/
-env/
-ENV/
-*.egg-info/
-dist/
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# ログファイル
-*.log
-app.log
-*.log.*
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
 
-# IDE
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
-*.sublime-project
-*.sublime-workspace
-
-# OS
+*~
 .DS_Store
-Thumbs.db
-*.tmp
 
-# その他
-*.zip
-prompt-provision-tool.zip
+# Environment Variables
+.env
+.env.local
+.env.*.local
 
-# データベース
+# Database
 *.db
 *.sqlite
 *.sqlite3
 
-# テスト
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
 .pytest_cache/
 .coverage
 htmlcov/
+.tox/
+.nox/
 
-# 一時ファイル
+# Alembic
+# Uncomment if you want to ignore migrations (not recommended)
+# backend/alembic/versions/*.py
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Backup files
 *.bak
 *.backup
-*~
+*.tmp
 
+# SSL Certificates (if stored locally)
+*.pem
+*.key
+*.crt
+
+# Nginx logs
+*.access.log
+*.error.log
+
+# Application specific
+backend/uploads/
+backend/temp/
+frontend/uploads/
+
+backend/.env
+backend/.env.local
+
+# Docker (ローカル開発環境用)
+# 注意: docker-compose.local.yml はリポジトリに含めますが、本番環境では使用しません
+.env.local
+# docker-compose.local.yml はリポジトリに含める（ローカル開発環境構築用）
+
+# ローカル開発用スクリプト
+# 注意: seed_test_data.py はローカル開発用ですが、リポジトリに含めます
+# （使用方法をドキュメント化するため）
