@@ -203,10 +203,8 @@
                     modelDisplay += `<span class="thinking-badge">Thinking</span>`;
                 }
 
-                // NEWバッジを追加
-                if (promptDetail.model_type === 'gpt-5.1' || promptDetail.model_type === 'gemini-3-pro-preview' || promptDetail.model_type === 'gemini-3-pro-preview-deep-think') {
-                    modelDisplay += `<span class="new-badge">NEW</span>`;
-                } else if (isThinkingModel || promptDetail.model_type === 'gpt-5.1-thinking') {
+                // NEWバッジを追加（gpt-5.2系のみ）
+                if (promptDetail.model_type === 'gpt-5.2' || promptDetail.model_type === 'gpt-5.2-pro' || promptDetail.model_type === 'gpt-5.2-thinking') {
                     modelDisplay += `<span class="new-badge">NEW</span>`;
                 }
                 document.getElementById('prompt-model').innerHTML = modelDisplay;
@@ -375,10 +373,8 @@
                 statModelDisplay += `<span class="thinking-badge">Thinking</span>`;
             }
 
-            // NEWバッジを追加
-            if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
-                statModelDisplay += `<span class="new-badge">NEW</span>`;
-            } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+            // NEWバッジを追加（gpt-5.2系のみ）
+            if (execution.model_used === 'gpt-5.2' || execution.model_used === 'gpt-5.2-pro' || execution.model_used === 'gpt-5.2-thinking') {
                 statModelDisplay += `<span class="new-badge">NEW</span>`;
             }
 
@@ -720,10 +716,8 @@
                                 modelDisplay += `<span class="thinking-badge">Thinking</span>`;
                             }
                             
-                            // NEWバッジを追加
-                            if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
-                                modelDisplay += `<span class="new-badge">NEW</span>`;
-                            } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                            // NEWバッジを追加（gpt-5.2系のみ）
+                            if (execution.model_used === 'gpt-5.2' || execution.model_used === 'gpt-5.2-pro' || execution.model_used === 'gpt-5.2-thinking') {
                                 modelDisplay += `<span class="new-badge">NEW</span>`;
                             }
                             
@@ -847,9 +841,8 @@
                                 }
                                 
                                 // NEWバッジを追加
-                                if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
-                                    modelDisplay += `<span class="new-badge">NEW</span>`;
-                                } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                                // NEWバッジを追加（gpt-5.2系のみ）
+                                if (execution.model_used === 'gpt-5.2' || execution.model_used === 'gpt-5.2-pro' || execution.model_used === 'gpt-5.2-thinking') {
                                     modelDisplay += `<span class="new-badge">NEW</span>`;
                                 }
                                 

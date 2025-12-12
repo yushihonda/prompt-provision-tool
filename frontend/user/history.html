@@ -156,10 +156,8 @@
                     modelDisplay += `<span class="thinking-badge">Thinking</span>`;
                 }
                 
-                // NEWバッジを追加
-                if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
-                    modelDisplay += `<span class="new-badge">NEW</span>`;
-                } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                // NEWバッジを追加（gpt-5.2系のみ）
+                if (execution.model_used === 'gpt-5.2' || execution.model_used === 'gpt-5.2-pro' || execution.model_used === 'gpt-5.2-thinking') {
                     modelDisplay += `<span class="new-badge">NEW</span>`;
                 }
                 return `
@@ -282,10 +280,8 @@
                                     modelDisplay += `<span class="thinking-badge">Thinking</span>`;
                                 }
                                 
-                                // NEWバッジを追加
-                                if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
-                                    modelDisplay += `<span class="new-badge">NEW</span>`;
-                                } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
+                                // NEWバッジを追加（gpt-5.2系のみ）
+                                if (execution.model_used === 'gpt-5.2' || execution.model_used === 'gpt-5.2-pro' || execution.model_used === 'gpt-5.2-thinking') {
                                     modelDisplay += `<span class="new-badge">NEW</span>`;
                                 }
                                 

@@ -14,12 +14,15 @@ class OpenAIService:
     # 推論モデル（Responses APIを使用）
     REASONING_MODELS = {
         "gpt-5-pro",  # 最上位モデル（Responses APIのみサポート）
+        "gpt-5.2-pro",  # GPT-5.2 Pro（Responses APIのみサポート）
     }
 
     # temperatureをサポートしないモデル
     NO_TEMPERATURE_MODELS = {
         "gpt-5",
         "gpt-5.1",  # Responses APIでtemperature非対応
+        "gpt-5.2",  # Responses APIでtemperature非対応
+        "gpt-5.2-pro",  # Responses APIでtemperature非対応
         "gpt-5-pro",  # Responses APIでtemperature非対応
     }
 
@@ -27,6 +30,7 @@ class OpenAIService:
     MAX_COMPLETION_TOKENS_MODELS = {
         "gpt-5",
         "gpt-5.1",
+        "gpt-5.2",
     }
 
     def __init__(self, api_key: Optional[str] = None):
@@ -53,8 +57,8 @@ class OpenAIService:
 
     def _is_reasoning_model(self, model_name: str) -> bool:
         """推論モデルかどうかを判定"""
-        # gpt-5.1-thinkingはgpt-5.1にreasoning_effort="high"を指定する形で使用
-        if model_name == "gpt-5.1-thinking":
+        # gpt-5.1-thinkingとgpt-5.2-thinkingはそれぞれgpt-5.1とgpt-5.2にreasoning_effort="high"を指定する形で使用
+        if model_name == "gpt-5.1-thinking" or model_name == "gpt-5.2-thinking":
             return True
         return model_name in self.REASONING_MODELS
 
@@ -64,11 +68,11 @@ class OpenAIService:
             return None
 
         m = model_name.lower()
-        # gpt-5.1-thinkingはhighを返す
-        if m == "gpt-5.1-thinking":
+        # gpt-5.1-thinkingとgpt-5.2-thinkingはhighを返す
+        if m == "gpt-5.1-thinking" or m == "gpt-5.2-thinking":
             return "high"
-        # gpt-5-proはreasoning_effortを必要としない
-        if "gpt-5-pro" in m:
+        # gpt-5-proとgpt-5.2-proはreasoning_effortを必要としない
+        if m == "gpt-5-pro" or m == "gpt-5.2-pro":
             return None
         if "nano" in m:
             return "low"
@@ -128,8 +132,13 @@ class OpenAIService:
 
         reasoning_effort = self._get_reasoning_effort(model_name)
         
-        # gpt-5.1-thinkingの場合は実際のAPI呼び出し時にはgpt-5.1を使用
-        actual_model = "gpt-5.1" if model_name == "gpt-5.1-thinking" else model_name
+        # gpt-5.1-thinkingとgpt-5.2-thinkingの場合は実際のAPI呼び出し時にはそれぞれgpt-5.1とgpt-5.2を使用
+        if model_name == "gpt-5.1-thinking":
+            actual_model = "gpt-5.1"
+        elif model_name == "gpt-5.2-thinking":
+            actual_model = "gpt-5.2"
+        else:
+            actual_model = model_name
 
         kwargs = {
             "model": actual_model,
@@ -140,7 +149,7 @@ class OpenAIService:
             kwargs["max_output_tokens"] = max_tokens
 
         # temperatureパラメータの追加（gpt-5-proなど、temperatureをサポートするモデル向け）
-        # gpt-5.1-thinking（実際にはgpt-5.1）はtemperatureをサポートしない
+        # gpt-5.1-thinking（実際にはgpt-5.1）とgpt-5.2-thinking（実際にはgpt-5.2）はtemperatureをサポートしない
         if model_name not in self.NO_TEMPERATURE_MODELS and actual_model not in self.NO_TEMPERATURE_MODELS:
             if temperature is not None:
                 kwargs["temperature"] = temperature

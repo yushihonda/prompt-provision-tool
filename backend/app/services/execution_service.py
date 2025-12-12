@@ -160,6 +160,9 @@ async def process_execution_background(
                 "gpt-5",
                 "gpt-5.1",
                 "gpt-5.1-thinking",
+                "gpt-5.2",
+                "gpt-5.2-pro",
+                "gpt-5.2-thinking",
                 "gpt-4o",
                 "gpt-4o-mini",
             }
@@ -442,7 +445,7 @@ async def process_execution_background(
                 # JST（日本時間）で現在の月の開始日時を取得
                 jst = timezone(timedelta(hours=9))
                 current_month = datetime.now(jst).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                
+
                 # last_month_resetがtimezone-naiveの場合はJSTとして解釈
                 should_reset = False
                 if account.last_month_reset is None:
@@ -454,10 +457,10 @@ async def process_execution_background(
                         last_reset_aware = account.last_month_reset.replace(tzinfo=jst)
                     else:
                         last_reset_aware = account.last_month_reset
-                    
+
                     if last_reset_aware < current_month:
                         should_reset = True
-                
+
                 if should_reset:
                     logger.info(f"Account {account.id}: Month changed, resetting monthly totals")
                     account.tokens_this_month = 0
