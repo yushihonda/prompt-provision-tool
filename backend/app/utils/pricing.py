@@ -31,6 +31,9 @@ def calculate_token_cost(model_type: str, tokens: int) -> float:
         "gpt-5-pro": 20.0,  # 仮の値
         "gpt-5.1": 25.0,  # 仮の値
         "gpt-5.1-thinking": 30.0,  # 仮の値（思考時間自動調整モデル）
+        "gpt-5.2": 28.0,  # 仮の値
+        "gpt-5.2-pro": 32.0,  # 仮の値
+        "gpt-5.2-thinking": 35.0,  # 仮の値（思考時間自動調整モデル）
     }
 
     # Geminiモデルの料金（1MトークンあたりのUSD）

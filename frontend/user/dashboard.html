@@ -174,10 +174,8 @@
                     modelDisplay += `<span class="thinking-badge">Thinking</span>`;
                 }
 
-                // NEWバッジを追加
-                if (prompt.model_type === 'gpt-5.1' || prompt.model_type === 'gemini-3-pro-preview' || prompt.model_type === 'gemini-3-pro-preview-deep-think') {
-                    modelDisplay += `<span class="new-badge">NEW</span>`;
-                } else if (isThinkingModel || prompt.model_type === 'gpt-5.1-thinking') {
+                // NEWバッジを追加（gpt-5.2系のみ）
+                if (prompt.model_type === 'gpt-5.2' || prompt.model_type === 'gpt-5.2-pro' || prompt.model_type === 'gpt-5.2-thinking') {
                     modelDisplay += `<span class="new-badge">NEW</span>`;
                 }
                 return `

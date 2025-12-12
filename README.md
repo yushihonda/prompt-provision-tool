@@ -8,10 +8,26 @@
 - JWT認証（PARENT/CHILDロール）
 - ガードレール注入・出力サニタイズ・ログ抑止（漏洩対策）
 - プロンプトの論理削除（物理削除なし、データ保持）
+- 実行中のプロンプトのキャンセル機能
 
 ## 対応モデル
-- OpenAI: gpt-5.1（最新モデル） / gpt-5-pro / gpt-5 / gpt-4o-mini
-- Google: gemini-3-pro-preview（最新モデル） / gemini-2.5-pro / gemini-2.5-flash / gemini-2.0-flash
+- **OpenAI**:
+  - gpt-5.2（最新モデル）
+  - gpt-5.2-pro（GPT-5.2 Pro）
+  - gpt-5.2-thinking（思考時間自動調整モデル）
+  - gpt-5.1
+  - gpt-5.1-thinking（思考時間自動調整モデル）
+  - gpt-5-pro
+  - gpt-5
+  - gpt-4o
+  - gpt-4o-mini
+- **Google**:
+  - gemini-3-pro-preview（最新モデル）
+  - gemini-3-pro-preview-deep-think（Deep Think対応）
+  - gemini-2.5-pro
+  - gemini-2.5-pro-deep-think（Deep Think対応）
+  - gemini-2.5-flash
+  - gemini-2.0-flash
 
 ## 環境変数（.env）
 ```
@@ -180,6 +196,14 @@ ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
 - **コスト保存**: `cost`カラム（Numeric(10, 6), USD、小数点以下6桁）
 - **Deep Think状態**: `enable_deep_think`カラムで実行時点のDeep Think設定を保存
 - **実行日時**: `executed_at`（JSTで保存）
+- **ステータス**: `status`カラム（success, error, cancelled, processing）
+
+#### 実行キャンセル機能
+- **APIエンドポイント**: `POST /api/execute/{execution_id}/cancel`
+- **機能**: 実行中のプロンプトをキャンセル可能
+- **制限**: 完了済み（success, error）の実行はキャンセル不可
+- **処理**: キャンセル時は`status`を`cancelled`に設定し、料金は0として記録
+- **実装**: バックグラウンド実行中に定期的にキャンセル状態をチェックし、キャンセルされた場合は処理を中断
 
 ### ガードレール・サニタイズ仕様
 
@@ -333,6 +357,7 @@ ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
   - GET /api/user/executions, GET /api/user/executions/{id}
 - 実行
   - POST /api/execute  { prompt_id, input_data }
+  - POST /api/execute/{execution_id}/cancel（実行中のプロンプトをキャンセル）
   - GET /api/execute/download/{execution_id}?output_format={format}
 
 ## ファイル出力機能
@@ -897,6 +922,7 @@ python -m app.init_admin
   - 実行中のローディング表示
   - 実行結果の表示
   - エラー時のエラーメッセージ表示
+  - **実行中のキャンセル機能**（実行中に停止ボタンでキャンセル可能）
 - **実行結果の操作**
   - 実行結果のコピー機能
   - ファイル出力がある場合はダウンロードリンクを表示
