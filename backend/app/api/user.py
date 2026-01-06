@@ -7,7 +7,8 @@ from app.auth import get_current_user
 from app.models import Account, Prompt, AccountPrompt, Execution
 from app.schemas import PromptListResponse, ExecutionResponse, UserDashboardStats
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List
 
 router = APIRouter(prefix="/api/user", tags=["ユーザー"])
 
@@ -70,6 +71,71 @@ async def get_user_dashboard_stats(
         "total_tokens_this_month": total_tokens_this_month,
         "total_cost_this_month": total_cost_this_month
     }
+
+
+@router.get("/dashboard/contribution-graph")
+async def get_contribution_graph(
+    year: int = None,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user)
+):
+    """
+    GitHub風のコントリビューショングラフ用データを取得
+    日ごとの実行回数を月別に返す（超軽量なdaily_execution_countsテーブルから取得）
+    """
+    from app.models import DailyExecutionCount
+    from datetime import date
+    
+    jst = timezone(timedelta(hours=9))
+    now = datetime.now(jst)
+    
+    # 年の指定がない場合は現在の年を使用
+    if year is None:
+        year = now.year
+    
+    # 指定年の1月1日から12月31日まで
+    start_date = date(year, 1, 1)
+    end_date = date(year, 12, 31)
+    
+    # 日ごとの実行回数を取得（超軽量）
+    daily_counts = db.query(DailyExecutionCount).filter(
+        DailyExecutionCount.account_id == current_user.id,
+        DailyExecutionCount.date >= start_date,
+        DailyExecutionCount.date <= end_date
+    ).all()
+    
+    # 日ごとの実行回数をマップに変換
+    count_map = {str(dc.date): dc.count for dc in daily_counts}
+    
+    # 月別にグループ化
+    result: Dict[str, List[Dict]] = {}
+    
+    # 指定年のすべての日を生成（空の日も含める）
+    current_date = start_date
+    while current_date <= end_date:
+        # 月のキー（YYYY-MM形式）
+        month_key = current_date.strftime("%Y-%m")
+        day_key = current_date.strftime("%Y-%m-%d")
+        
+        if month_key not in result:
+            result[month_key] = []
+        
+        # 実行回数を取得（存在しない場合は0）
+        count = count_map.get(day_key, 0)
+        
+        result[month_key].append({
+            "date": day_key,
+            "count": count
+        })
+        
+        # 次の日へ
+        current_date = current_date + timedelta(days=1)
+    
+    # 各月の日データをソート
+    for month_key in result:
+        result[month_key].sort(key=lambda x: x["date"])
+    
+    return result
 
 
 @router.get("/prompts")
@@ -216,8 +282,24 @@ async def list_my_executions(
             if enable_deep_think is None:
                 enable_deep_think = True  # デフォルト値
 
+        # output_formatを取得（モデルから直接取得）
+        output_format = getattr(execution, 'output_format', None)
+        if output_format is None:
+            output_format = 'txt'  # デフォルト値
+        
         execution_dict = {
-            **execution.__dict__,
+            "id": execution.id,
+            "account_id": execution.account_id,
+            "prompt_id": execution.prompt_id,
+            "input_data": execution.input_data,
+            "output_data": execution.output_data,
+            "model_used": execution.model_used,
+            "tokens_used": execution.tokens_used,
+            "execution_time": execution.execution_time,
+            "status": execution.status,
+            "error_message": execution.error_message,
+            "executed_at": execution.executed_at,
+            "output_format": output_format,  # output_formatを明示的に含める
             "prompt_name": prompt_name,
             "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
         }
@@ -262,9 +344,26 @@ async def get_execution_detail(
         if enable_deep_think is None:
             enable_deep_think = True  # デフォルト値
 
-    return {
-        **execution.__dict__,
-        "prompt_name": prompt_name,
-        "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
-    }
+    # output_formatを取得（モデルから直接取得）
+    output_format = getattr(execution, 'output_format', None)
+    if output_format is None:
+        output_format = 'txt'  # デフォルト値
+    
+    # ExecutionResponseスキーマに合致するフィールドのみを返す
+    # enable_deep_thinkはスキーマに定義されていないため除外
+    return ExecutionResponse(
+        id=execution.id,
+        account_id=execution.account_id,
+        prompt_id=execution.prompt_id,
+        input_data=execution.input_data,
+        output_data=execution.output_data,
+        model_used=execution.model_used,
+        tokens_used=execution.tokens_used,
+        execution_time=execution.execution_time,
+        status=execution.status,
+        error_message=execution.error_message,
+        executed_at=execution.executed_at,
+        output_format=output_format,  # output_formatを明示的に含める
+        prompt_name=prompt_name
+    )
 

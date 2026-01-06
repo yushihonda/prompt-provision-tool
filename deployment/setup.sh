@@ -29,6 +29,7 @@ sudo apt install -y \
     python3-pip \
     nginx \
     mysql-server \
+    redis-server \
     certbot \
     python3-certbot-nginx \
     git \
@@ -40,6 +41,11 @@ sudo ufw allow 22/tcp
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 sudo ufw --force enable
+
+# Redisの設定
+echo "Redisを設定中..."
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
 
 # MySQLのセキュア設定とデータベース作成
 echo "MySQLデータベースを設定中..."
@@ -69,8 +75,14 @@ pip install -r $APP_DIR/backend/requirements.txt
 # 環境変数ファイルの作成
 echo "環境変数ファイルを作成中..."
 if [ ! -f "$APP_DIR/backend/.env" ]; then
-    cp $APP_DIR/.env.example $APP_DIR/backend/.env
+    if [ -f "$APP_DIR/backend/.env.example" ]; then
+        cp $APP_DIR/backend/.env.example $APP_DIR/backend/.env
+    else
+        # .env.exampleが存在しない場合は空の.envファイルを作成
+        touch $APP_DIR/backend/.env
+    fi
     echo "⚠️  $APP_DIR/backend/.env を編集して、適切な値を設定してください"
+    echo "    README.mdの「環境変数（.env）」セクションを参照してください"
 fi
 
 # 暗号化キーの生成
@@ -99,9 +111,12 @@ sudo chown www-data:www-data /var/log/prompt-tool
 # systemdサービスの設定
 echo "systemdサービスを設定中..."
 sudo cp $APP_DIR/deployment/prompt-tool.service /etc/systemd/system/
+sudo cp $APP_DIR/deployment/prompt-tool-celery.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable prompt-tool
+sudo systemctl enable prompt-tool-celery
 sudo systemctl start prompt-tool
+sudo systemctl start prompt-tool-celery
 
 # Nginx設定
 echo "Nginxを設定中..."
@@ -118,19 +133,25 @@ echo "=========================================="
 echo ""
 echo "次のステップ:"
 echo "1. $APP_DIR/backend/.env を編集して、データベース情報とAPIキーを設定"
+echo "   - README.mdの「環境変数（.env）」セクションを参照"
+echo "   - 生成されたSECRET_KEYとENCRYPTION_KEYを設定"
 echo "2. deployment/nginx.conf のドメイン名を実際のドメインに変更"
 echo "3. SSL証明書の取得:"
 echo "   sudo certbot --nginx -d your-domain.com"
 echo "4. サービスの再起動:"
 echo "   sudo systemctl restart prompt-tool"
+echo "   sudo systemctl restart prompt-tool-celery"
 echo "   sudo systemctl restart nginx"
 echo ""
 echo "サービス状態の確認:"
 echo "   sudo systemctl status prompt-tool"
+echo "   sudo systemctl status prompt-tool-celery"
+echo "   sudo systemctl status redis-server"
 echo "   sudo systemctl status nginx"
 echo ""
 echo "ログの確認:"
 echo "   sudo tail -f /var/log/prompt-tool/app.log"
+echo "   sudo tail -f /var/log/prompt-tool/celery.log"
 echo "   sudo tail -f /var/log/nginx/prompt-tool-error.log"
 echo ""
 

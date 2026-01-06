@@ -109,6 +109,7 @@ def upgrade() -> None:
         sa.Column('error_message', sa.Text(), nullable=True),
         sa.Column('enable_deep_think', sa.Boolean(), nullable=True),  # 実行時点のDeep Think設定
         sa.Column('executed_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('output_format', sa.String(length=10), nullable=True, server_default='txt'),  # 出力形式
         sa.ForeignKeyConstraint(['account_id'], ['accounts.id'], ondelete='CASCADE'),
         sa.ForeignKeyConstraint(['prompt_id'], ['prompts.id'], ondelete='SET NULL'),
         sa.PrimaryKeyConstraint('id')
@@ -131,11 +132,32 @@ def upgrade() -> None:
         sa.UniqueConstraint('account_id')
     )
 
+    # daily_execution_counts テーブル（作成時点で最終形：created_at/updated_at なし）
+    op.create_table(
+        'daily_execution_counts',
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.Column('account_id', sa.Integer(), nullable=False),
+        sa.Column('date', sa.Date(), nullable=False),  # 日付のみ（時刻なし）
+        sa.Column('count', sa.Integer(), nullable=False, server_default='0'),
+        sa.ForeignKeyConstraint(['account_id'], ['accounts.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('account_id', 'date', name='uq_account_date')
+    )
+    # インデックス（高速検索用）
+    op.create_index(
+        'idx_daily_execution_counts_account_date',
+        'daily_execution_counts',
+        ['account_id', 'date']
+    )
+
 
 def downgrade() -> None:
     """
     すべてのテーブルを削除
     """
+    # daily_execution_counts 関連
+    op.drop_index('idx_daily_execution_counts_account_date', table_name='daily_execution_counts')
+    op.drop_table('daily_execution_counts')
     op.drop_table('api_configs')
     op.drop_table('executions')
     op.drop_table('account_prompts')

@@ -2,6 +2,10 @@
 
 プロンプト本文を外部に出さず、AI実行機能を提供するWebアプリケーション。
 
+## 📋 要件定義書 / 動作確認レポート
+
+Celery + Redis + ストリーミング + Web Worker まわりの要件定義と動作確認レポートは、もともと `REQUIREMENTS.md` / `VERIFICATION_REPORT.md` に分かれていましたが、内容はこの `README.md` に集約しました。
+
 ## 機能/セキュリティ（要点）
 - プロンプトは暗号化保存（Fernet）し、復号はサーバ側のみ
 - クライアントへ本文を送らず、完成プロンプトはAI APIにのみ送信
@@ -61,29 +65,81 @@ SANITIZE_SIMILARITY_THRESHOLD=0.6
 ```
 
 ## セットアップ（本番）
+
+### 自動セットアップ（推奨）
+
+`deployment/setup.sh`スクリプトを使用して自動セットアップできます：
+
+```bash
+# セットアップスクリプトを実行
+bash deployment/setup.sh
+```
+
+セットアップスクリプトは以下を自動的に実行します：
+- システムパッケージのインストール（Python、Nginx、MySQL、Redis等）
+- データベースの作成とユーザー設定
+- Python仮想環境の作成と依存パッケージのインストール
+- 環境変数ファイルの作成
+- セキュリティキーの生成
+- データベースマイグレーション
+- systemdサービスの設定（FastAPI、Celery Worker）
+- Nginx設定
+
+### 手動セットアップ
+
 1) 依存インストール
 ```
 cd backend
 pip install -r requirements.txt
 ```
-2) DB作成（MySQL 8.0）
+
+2) Redisのインストールと起動
+```
+sudo apt install -y redis-server
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+```
+
+3) DB作成（MySQL 8.0）
 ```
 CREATE DATABASE prompt_provision_db CHARACTER SET utf8mb4;
 CREATE USER 'prompt_tool_user'@'localhost' IDENTIFIED BY 'your_password';
 GRANT ALL PRIVILEGES ON prompt_provision_db.* TO 'prompt_tool_user'@'localhost';
 ```
-3) マイグレーション
+
+4) マイグレーション
 ```
 cd backend
 alembic upgrade head
 ```
-4) 管理者作成
+
+5) 管理者作成
 ```
 python -m app.init_admin
 ```
-5) 起動
+
+6) サービスの起動
+
+systemdサービスを使用する場合（推奨）：
+```bash
+# FastAPIアプリケーション
+sudo systemctl start prompt-tool
+
+# Celery Worker
+sudo systemctl start prompt-tool-celery
+
+# 自動起動を有効化
+sudo systemctl enable prompt-tool
+sudo systemctl enable prompt-tool-celery
 ```
+
+手動起動する場合：
+```bash
+# FastAPIアプリケーション（別ターミナル）
 ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# Celery Worker（別ターミナル）
+celery -A app.celery_app worker --loglevel=info
 ```
 
 ## システム仕様書
@@ -230,11 +286,25 @@ ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
 ### ファイル出力仕様
 
 #### 対応形式
-- **CSV**: テキストをCSV形式に変換（Excel対応、BOM付きUTF-8）
+- **CSV**: テキストをCSV形式に変換（Excel対応、BOM付きUTF-8、日本語文字化け対策済み）
 - **PDF**: ReportLabを使用してPDF生成（A4サイズ、日本語フォント対応）
+  - macOS: ヒラギノ角ゴシック
+  - Linux: Noto Sans CJK
+  - フォントが見つからない場合はHelveticaにフォールバック
 - **DOCX**: python-docxを使用してWord文書生成（Markdown見出し認識、日本語フォント対応）
-- **Markdown**: テキストをそのままMarkdown形式で出力
-- **TXT**: プレーンテキスト形式で出力
+  - 游ゴシックを使用（自動フォールバック対応）
+- **Markdown**: テキストをそのままMarkdown形式で出力（`charset=utf-8`指定）
+- **TXT**: プレーンテキスト形式で出力（`charset=utf-8`指定）
+
+#### 出力形式の保存と保持
+- **データベース保存**: `executions.output_format`カラムに実行時に選択した出力形式を保存
+- **実行画面での保持**: 実行完了後も選択した出力形式が保持される
+- **履歴からの復元**: 実行履歴から遷移した際、その実行で使用した出力形式が自動的に選択される
+- **履歴への表示**: 実行履歴のテーブルと詳細表示に出力形式を表示
+
+#### ファイル名と文字エンコーディング
+- **ファイル名**: RFC 5987準拠の`filename*`パラメータを使用して日本語ファイル名を正しく処理
+- **文字エンコーディング**: テキスト形式（CSV、MD、TXT）の`Content-Type`に`charset=utf-8`を明示的に指定
 
 #### 添付ファイル処理
 - **形式**: Base64エンコードまたはプレーンテキスト
@@ -356,8 +426,9 @@ ENVIRONMENT=production uvicorn app.main:app --host 0.0.0.0 --port 8000
   - GET /api/user/prompts/{id}
   - GET /api/user/executions, GET /api/user/executions/{id}
 - 実行
-  - POST /api/execute  { prompt_id, input_data }
-  - POST /api/execute/{execution_id}/cancel（実行中のプロンプトをキャンセル）
+  - POST /api/execute  { prompt_id, input_data }（Celeryタスクとしてキューに追加）
+  - POST /api/execute/{execution_id}/cancel（実行中のプロンプトをキャンセル、Celery revoke使用）
+  - GET /api/execute/{execution_id}/stream（SSEストリーミングエンドポイント）
   - GET /api/execute/download/{execution_id}?output_format={format}
 
 ## ファイル出力機能
@@ -557,11 +628,43 @@ pip install -r requirements.txt
 ```
 
 ## 運用
+
+### サービス管理
+
+```bash
+# サービス状態の確認
+sudo systemctl status prompt-tool          # FastAPIアプリケーション
+sudo systemctl status prompt-tool-celery   # Celery Worker
+sudo systemctl status redis-server         # Redis
+sudo systemctl status nginx                # Nginx
+
+# サービスの再起動
+sudo systemctl restart prompt-tool
+sudo systemctl restart prompt-tool-celery
+
+# サービスの停止
+sudo systemctl stop prompt-tool
+sudo systemctl stop prompt-tool-celery
+
+# サービスの起動
+sudo systemctl start prompt-tool
+sudo systemctl start prompt-tool-celery
+```
+
+### ログ確認
+
 - ヘルスチェック: GET /health
 - ログ: systemdやNginx設定は `deployment/` 参照
-- 本番要件
-  - APIキー設定必須（未設定時は実行エラー）
-  - `/docs` 非公開、入力詳細ログ非出力、完成プロンプトログ抑止
+- アプリケーションログ: `/var/log/prompt-tool/app.log`
+- Celery Workerログ: `/var/log/prompt-tool/celery.log`
+- エラーログ: `/var/log/prompt-tool/error.log`, `/var/log/prompt-tool/celery-error.log`
+
+### 本番要件
+
+- APIキー設定必須（未設定時は実行エラー）
+- `/docs` 非公開、入力詳細ログ非出力、完成プロンプトログ抑止
+- Redis必須（Celery Workerのメッセージブローカー）
+- Celery Worker必須（バックグラウンドタスク実行用）
 
 ## デプロイ（本番環境）
 
@@ -626,6 +729,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 alembic upgrade head
 sudo systemctl restart prompt-tool.service
+sudo systemctl restart prompt-tool-celery.service
 ```
 
 ### デプロイ前の確認事項
@@ -645,8 +749,14 @@ sudo tail -f /var/log/prompt-tool/app.log
 # エラーログ
 sudo tail -f /var/log/prompt-tool/error.log
 
+# Celery Workerログ
+sudo tail -f /var/log/prompt-tool/celery.log
+sudo tail -f /var/log/prompt-tool/celery-error.log
+
 # systemdサービスの状態
 sudo systemctl status prompt-tool
+sudo systemctl status prompt-tool-celery
+sudo systemctl status redis-server
 ```
 
 ## Git管理
@@ -726,15 +836,82 @@ prompt-provision-tool.zip
 ## 構成
 ```
 prompt-provision-tool/
-├── backend/        # FastAPI・アプリケーション
-├── frontend/       # 静的フロント（/static に配信）
-├── deployment/     # Nginx・systemd 等
-└── README.md       # 本ファイル
+├── backend/                    # FastAPI・アプリケーション
+│   ├── app/
+│   │   ├── celery_app.py       # Celeryアプリケーション初期化
+│   │   ├── tasks/              # Celeryタスク
+│   │   │   └── execution_tasks.py
+│   │   ├── services/
+│   │   │   └── redis_service.py  # Redis Stream操作
+│   │   └── utils/
+│   │       └── prompt_utils.py   # プロンプト関連ユーティリティ
+│   └── requirements.txt         # 依存関係（celery, redis含む）
+├── frontend/                    # 静的フロント（/static に配信）
+│   └── user/
+│       └── js/
+│           └── execution-worker.js  # Web Worker実装
+├── deployment/                  # Nginx・systemd 等
+├── docker-compose.local.yml     # ローカル開発用（Redis, Celery Worker含む）
+└── README.md                    # 本ファイル（要件定義・動作確認レポートも集約）
 ```
+
+## Celery + Redis + ストリーミング + Web Worker
+
+本ツールは、長時間実行されるプロンプト実行タスクを効率的に処理するため、Celery + Redis + ストリーミング + Web Workerアーキテクチャを採用しています。
+
+### アーキテクチャ概要（要件定義からの要約）
+
+- **Celery**: バックグラウンドタスクキュー（長時間実行タスク対応）
+- **Redis**: メッセージブローカー、結果バックエンド、ストリーミング用ストリーム
+- **SSE (Server-Sent Events)**: リアルタイムチャンク配信
+- **Web Worker**: クライアント側のSSE接続管理とUI更新の非同期処理
+
+### 主な機能
+
+- **非同期タスク実行**: プロンプト実行をCeleryタスクとしてキューに追加
+- **リアルタイムストリーミング**: AI APIからの応答をチャンク単位でリアルタイム配信
+- **長時間実行対応**: 最大60分（ソフトリミット）、65分（ハードリミット）のタスク実行に対応
+- **自動再接続**: Web WorkerによるSSE接続の自動再接続機能
+- **キャンセル機能**: 実行中のタスクをCelery revokeでキャンセル可能
+
+### 設定
+
+#### 環境変数（.env.local）
+
+```bash
+# Celery/Redis設定（docker-compose.local.ymlで自動設定）
+CELERY_BROKER_URL=redis://redis:6379/0
+CELERY_RESULT_BACKEND=redis://redis:6379/0
+```
+
+#### Docker Composeサービス
+
+- **redis**: Redisサーバー（ポート6379）
+- **celery-worker**: Celery Workerプロセス
+
+### 動作確認サマリー
+
+Docker Compose 環境（`ppt-backend` / `ppt-celery-worker` / `ppt-redis` / `ppt-mysql` / `ppt-web`）上で、以下を確認済みです（元の `VERIFICATION_REPORT.md` の内容を要約）:
+
+- Celery アプリ初期化・Worker 起動・Redis 接続が正常に動作
+- `execute_prompt_task` の登録と実行（タスク名: `app.tasks.execution_tasks.execute_prompt_task`）
+- Redis Stream への `publish_chunk` / `publish_complete` / `publish_error` / `publish_cancel`、および `subscribe_stream` / `is_cancelled` の動作
+- `POST /api/execute` が Celery タスク呼び出しに置き換えられていること
+- `POST /api/execute/{execution_id}/cancel` による Celery revoke + Redis Stream のキャンセル
+- `GET /api/execute/{execution_id}/stream` による SSE ストリーミングと 30 秒間隔のハートビート
+- Web Worker（`frontend/user/js/execution-worker.js`）による EventSource 管理・自動再接続・ハートビート監視
+
+タイムアウトや長時間実行対応などの詳細なパラメータは、本README内の設定値説明（Celery / Redis / SSE / Web Worker）に集約しています。
 
 ## Docker（ローカル専用）
 
 以下はローカル検証用です（本番は `deployment/` の systemd 構成を使用）。
+
+### Celery + Redis対応
+
+ローカル環境では、Docker Composeで以下のサービスが起動します：
+- **redis**: Redisサーバー（Celeryのメッセージブローカー）
+- **celery-worker**: Celery Worker（バックグラウンドタスク実行）
 
 1) 環境変数を用意（.env.local）
 - リポジトリ直下に `.env.local` を作成し、以下を参考に値を設定
@@ -766,8 +943,12 @@ DB_ROOT_PASSWORD=rootpass
 docker compose -f docker-compose.local.yml up --build
 ```
 
+**注意**: Celery WorkerとRedisが自動的に起動します。バックグラウンドタスク実行にはこれらが必要です。
+
 3) 確認
 - Backend: `http://127.0.0.1:8000/health`
+- Celery Worker: `docker compose -f docker-compose.local.yml logs celery-worker`
+- Redis: `docker compose -f docker-compose.local.yml exec redis redis-cli ping`
 
 4) 停止
 ```
@@ -787,6 +968,129 @@ python -m app.init_admin
 - DB初期化/マイグレーションが必要な場合は、コンテナ内で `alembic upgrade head` を実行してください。
 
 ## 更新履歴
+
+### 2025年12月 - Celery + Redis + ストリーミング + Web Worker移行
+
+#### アーキテクチャ変更
+- **asyncio.TaskからCeleryタスクへ移行**
+  - バックグラウンドタスク実行をCeleryに移行
+  - 長時間実行タスク（最大60分）に対応
+  - タスクの分散実行とスケーラビリティ向上
+
+- **Redis統合**
+  - CeleryのメッセージブローカーとしてRedisを使用
+  - Redis Streamによるリアルタイムチャンク配信
+  - タスク結果のバックエンドとしてRedisを使用
+
+- **リアルタイムストリーミング（SSE）**
+  - Server-Sent Eventsによるリアルタイムチャンク配信
+  - ポーリング方式からストリーミング方式に変更
+  - プロンプト本文は送信せず、チャンクのみを配信（セキュリティ維持）
+
+- **Web Worker実装**
+  - クライアント側のSSE接続管理をWeb Workerで実装
+  - メインスレッドのブロッキングを防止
+  - 自動再接続とハートビート監視機能
+
+#### 技術的改善
+- **循環インポート解決**: `replace_placeholders`と`sanitize_output`を`app.utils.prompt_utils`に移動
+- **エラーハンドリング**: Celery/Redisが利用できない場合でもアプリケーションが起動可能
+- **依存関係**: `celery==5.3.4`、`redis==4.6.0`を追加
+
+#### セキュリティ
+- プロンプト本文はRedis Streamに送信されない（チャンクのみ）
+- 既存の暗号化、ガードレール、サニタイズ機能を維持
+
+#### ファイル構成
+- `backend/app/celery_app.py`: Celeryアプリケーション初期化
+- `backend/app/tasks/execution_tasks.py`: Celeryタスク実装
+- `backend/app/services/redis_service.py`: Redis Stream操作サービス
+- `backend/app/utils/prompt_utils.py`: プロンプト関連ユーティリティ（循環インポート解決）
+- `frontend/user/js/execution-worker.js`: Web Worker実装
+
+詳細は [REQUIREMENTS.md](./REQUIREMENTS.md) と [VERIFICATION_REPORT.md](./VERIFICATION_REPORT.md) を参照してください。
+
+### 2025年1月 - 機能追加と改善
+
+#### 実行方式の最適化
+- **PRO/THINKINGモデルでのポーリング方式への変更**
+  - PRO/THINKINGモデル（`gemini-2.5-pro-deep-think`、`gemini-3-pro-preview-deep-think`など）では、リアルタイムストリーミングをスキップ
+  - ポーリング方式で実行結果を取得し、実行完了後に結果を表示
+  - 完了時にポップアップを表示してユーザーに通知
+
+#### 入力フィールドの拡張
+- **コード入力フィールドの実装**
+  - 入力スキーマで`type: 'code'`または`format: 'code'`が指定された場合、専用のコード入力フィールドを表示
+  - タブキーによるインデント機能を実装（Shift+Tabでアンインデント）
+  - 複数行選択時の一括インデント/アンインデントに対応
+  - モノスペースフォントで表示し、コード編集を容易に
+
+#### 実行詳細の表示改善
+- **HTML出力の表示対応**
+  - 実行詳細の出力データでHTMLがそのまま表示されるように改善
+  - テーブル、リスト、リンクなどのHTML要素が正しくレンダリングされる
+  - プレーンテキストとHTMLの両方に対応
+
+#### フロントエンドのリファクタリング
+- **コードの重複削減**
+  - 重複していた関数を共通化（`escapeHtml`、`formatModelDisplay`、`updateOutputContent`など）
+  - Web Workerメッセージハンドリングの一元化
+  - コードの保守性と可読性を向上
+
+#### バックエンドの改善
+- **プレースホルダー置換のデバッグ強化**
+  - `replace_placeholders`関数に詳細なログを追加
+  - プレースホルダーが見つからない場合の警告を改善
+  - 入力データのキーと値の検証を強化
+- **長時間実行警告の実装**
+  - タスク実行が30分（1800秒）を超えた場合にWARNINGログを出力
+  - 同じタスクで複数回出力されないようにフラグで制御
+  - 長時間実行タスクの早期発見に貢献
+- **Celeryタスクのリトライ処理の実装**
+  - リトライ可能なエラー（ネットワークエラー、タイムアウト、レート制限など）に対して自動リトライ
+  - 最大3回までリトライ（リトライ間隔: 60秒）
+  - リトライ不可能なエラー（認証エラー、バリデーションエラーなど）は即座にエラーとして処理
+  - エラーの種類を判定して適切に処理
+
+#### フロントエンドの改善
+- **SSE再接続間隔の修正**
+  - Web Workerの再接続遅延を5秒から3秒に変更（要件定義に合わせて修正）
+  - 接続切断時の復旧時間を短縮
+
+#### 監視機能の追加
+- **Celery Worker監視エンドポイント** (`GET /api/admin/monitor/celery`)
+  - Worker一覧（名前、ステータス、実行中タスク数、待機中タスク数）
+  - 総Worker数、総実行中タスク数、総待機中タスク数
+  - タスク統計（完了数、失敗数）
+- **Redis監視エンドポイント** (`GET /api/admin/monitor/redis`)
+  - 接続状態（connected/disconnected）
+  - メモリ使用量（使用量、最大値、使用率）
+  - Stream数（総数、アクティブなStream一覧）
+- **タスク統計エンドポイント** (`GET /api/admin/monitor/tasks?hours=24`)
+  - 期間内の総実行数、成功数、失敗数、キャンセル数
+  - 成功率、エラー率
+  - 平均実行時間、最大実行時間
+- **認証**: すべての監視エンドポイントは管理者のみアクセス可能
+
+#### ファイル出力機能の改善
+- **出力形式の保持機能**
+  - 実行画面で選択した出力形式が実行完了後も保持される
+  - 実行履歴から遷移した際、その実行で使用した出力形式が自動的に選択される
+  - 入力データの復元時に出力形式も同時に復元
+- **実行履歴への出力形式表示**
+  - 実行画面の履歴テーブルに「出力形式」列を追加
+  - 実行履歴ページ（`history.html`）のテーブルに「出力形式」列を追加
+  - 実行履歴の詳細表示に出力形式を追加
+  - 出力形式は大文字で表示（例: CSV、PDF、DOCX、MD、TXT）
+- **データベースへの出力形式保存**
+  - `executions`テーブルに`output_format`カラムを追加
+  - 実行時に選択した出力形式をデータベースに保存
+  - 実行履歴から遷移した際も正しい出力形式でダウンロード可能
+- **日本語文字化けの修正**
+  - PDF生成時の日本語フォント対応（macOS: ヒラギノ角ゴシック、Linux: Noto Sans CJK）
+  - DOCX生成時の日本語フォント対応（游ゴシック）
+  - ファイル名の日本語文字化け修正（RFC 5987準拠の`filename*`パラメータ使用）
+  - テキスト形式（CSV、MD、TXT）の`Content-Type`に`charset=utf-8`を明示的に指定
 
 ### 2024年11月 - 機能追加と改善
 
