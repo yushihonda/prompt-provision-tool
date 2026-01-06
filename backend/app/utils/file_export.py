@@ -144,6 +144,29 @@ def export_to_pdf(content: str, filename: Optional[str] = None) -> tuple:
             bottomMargin=20*mm
         )
 
+        # 日本語フォントの登録を試行（利用可能な場合）
+        japanese_font_registered = False
+        try:
+            # システムに存在する可能性のある日本語フォントを試行
+            font_paths = [
+                '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc',  # macOS
+                '/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc',  # macOS
+                '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',  # Linux
+                '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',  # Linux
+            ]
+            for font_path in font_paths:
+                if os.path.exists(font_path):
+                    try:
+                        pdfmetrics.registerFont(TTFont('JapaneseFont', font_path))
+                        japanese_font_registered = True
+                        logger.info(f"日本語フォントを登録しました: {font_path}")
+                        break
+                    except Exception as font_error:
+                        logger.warning(f"フォントファイルの読み込みに失敗しました ({font_path}): {str(font_error)}")
+                        continue
+        except Exception as e:
+            logger.warning(f"日本語フォントの登録に失敗しました: {str(e)}")
+
         # スタイル設定
         styles = getSampleStyleSheet()
         normal_style = ParagraphStyle(
@@ -151,6 +174,7 @@ def export_to_pdf(content: str, filename: Optional[str] = None) -> tuple:
             parent=styles['Normal'],
             fontSize=10,
             leading=14,
+            fontName='JapaneseFont' if japanese_font_registered else 'Helvetica',
         )
 
         # コンテンツを段落に分割
@@ -159,7 +183,7 @@ def export_to_pdf(content: str, filename: Optional[str] = None) -> tuple:
 
         for line in lines:
             if line.strip():
-                # HTMLエスケープ処理
+                # HTMLエスケープ処理（日本語対応）
                 line_escaped = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                 story.append(Paragraph(line_escaped, normal_style))
             else:
@@ -209,10 +233,12 @@ def export_to_docx(content: str, filename: Optional[str] = None) -> tuple:
         # ドキュメント作成
         doc = Document()
 
-        # スタイル設定
+        # スタイル設定（日本語フォント対応）
         style = doc.styles['Normal']
         font = style.font
-        font.name = '游ゴシック'
+        # 日本語フォントを試行（存在しない場合はシステムのデフォルトフォントを使用）
+        japanese_fonts = ['游ゴシック', 'Yu Gothic', 'MS Gothic', 'Hiragino Sans', 'Noto Sans CJK JP']
+        font.name = japanese_fonts[0]  # 最初のフォントを試行
         font.size = Pt(10)
 
         # コンテンツを行ごとに追加

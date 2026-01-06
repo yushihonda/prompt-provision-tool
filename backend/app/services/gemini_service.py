@@ -622,6 +622,9 @@ class GeminiService:
 
             chunk_count = 0
             total_length = 0
+            tokens_used = 0
+            last_chunk = None
+            
             for chunk in response:
                 # 複数の方法でテキストを取得
                 text = None
@@ -656,7 +659,27 @@ class GeminiService:
                     total_length += len(text)
                     yield text
 
-            logger.info(f"✓ ストリーミング完了 ({chunk_count} チャンク, 合計 {total_length} 文字)")
+                # 最後のチャンクを保持（usage情報が含まれる可能性がある）
+                last_chunk = chunk
+                
+                # usage情報が含まれている場合は取得
+                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                    usage = chunk.usage_metadata
+                    if hasattr(usage, "total_token_count"):
+                        tokens_used = usage.total_token_count
+                    elif isinstance(usage, dict):
+                        tokens_used = usage.get("total_token_count", 0)
+
+            # 最後のチャンクからusage情報を取得（まだ取得できていない場合）
+            if tokens_used == 0 and last_chunk:
+                if hasattr(last_chunk, "usage_metadata") and last_chunk.usage_metadata:
+                    usage = last_chunk.usage_metadata
+                    if hasattr(usage, "total_token_count"):
+                        tokens_used = usage.total_token_count
+                    elif isinstance(usage, dict):
+                        tokens_used = usage.get("total_token_count", 0)
+
+            logger.info(f"✓ ストリーミング完了 ({chunk_count} チャンク, 合計 {total_length} 文字, トークン: {tokens_used})")
             logger.info(f"{'='*60}")
 
         except Exception as e:

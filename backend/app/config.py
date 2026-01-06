@@ -46,6 +46,28 @@ class Settings(BaseSettings):
     SANITIZE_MIN_MATCH_LEN: int = 60
     SANITIZE_SIMILARITY_THRESHOLD: float = 0.6
 
+    # Celery
+    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    CELERY_TASK_SERIALIZER: str = "json"
+    CELERY_RESULT_SERIALIZER: str = "json"
+    CELERY_ACCEPT_CONTENT: List[str] = ["json"]
+    CELERY_TIMEZONE: str = "Asia/Tokyo"
+    CELERY_TASK_TIME_LIMIT: int = 3900  # 65分（ハードリミット）
+    CELERY_TASK_SOFT_TIME_LIMIT: int = 3600  # 60分（ソフトリミット）
+    CELERY_WORKER_MAX_MEMORY_PER_CHILD: int = 500000  # 500MB
+    CELERY_WORKER_MAX_TASKS_PER_CHILD: int = 50
+    CELERY_TASK_MAX_RETRIES: int = 3
+    CELERY_TASK_DEFAULT_RETRY_DELAY: int = 60  # 60秒
+
+    # Redis Stream
+    REDIS_STREAM_TTL: int = 7200  # 2時間（秒）
+    REDIS_STREAM_MAX_LENGTH: int = 10000  # 最大チャンク数
+
+    # SSE
+    SSE_CONNECTION_TIMEOUT: int = 5400  # 90分
+    SSE_HEARTBEAT_INTERVAL: int = 30  # 30秒
+
     @property
     def database_url(self) -> str:
         """データベース接続URL"""

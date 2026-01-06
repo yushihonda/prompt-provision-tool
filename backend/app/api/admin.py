@@ -9,10 +9,24 @@ from app.schemas import (
     AccountCreate, AccountResponse, AccountUpdate, AccountWithPromptCount,
     PromptCreate, PromptResponse, PromptUpdate,
     AccountPromptAssign, AccountPromptResponse,
-    DashboardStats, ExecutionResponse
+    DashboardStats, ExecutionResponse,
+    CeleryWorkerStats, CeleryWorkerInfo, RedisStats, TaskStats
 )
 from app.encryption import encryption_service
 import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Celery/Redis監視用の遅延インポート
+try:
+    from app.celery_app import celery_app
+    from app.services.redis_service import get_redis_client
+    CELERY_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Celery/Redis not available: {str(e)}")
+    CELERY_AVAILABLE = False
+    celery_app = None
 
 router = APIRouter(prefix="/api/admin", tags=["管理者"])
 
@@ -313,14 +327,27 @@ async def create_prompt(
     db.refresh(db_prompt)
 
     # input_schemaをJSON文字列からdictに変換
-    prompt_dict = db_prompt.__dict__.copy()
+    input_schema = None
     if db_prompt.input_schema:
         try:
-            prompt_dict['input_schema'] = json.loads(db_prompt.input_schema)
+            input_schema = json.loads(db_prompt.input_schema)
         except:
-            prompt_dict['input_schema'] = None
+            input_schema = None
 
-    return prompt_dict
+    # PromptResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
+    return PromptResponse(
+        id=db_prompt.id,
+        name=db_prompt.name,
+        description=db_prompt.description,
+        model_type=db_prompt.model_type,
+        input_schema=input_schema,
+        allows_file_output=db_prompt.allows_file_output,
+        enable_deep_think=db_prompt.enable_deep_think,
+        is_active=db_prompt.is_active,
+        created_by=db_prompt.created_by,
+        created_at=db_prompt.created_at,
+        updated_at=db_prompt.updated_at
+    )
 
 
 @router.get("/prompts")
@@ -339,13 +366,27 @@ async def list_prompts(
     # input_schemaをJSON文字列からdictに変換
     items = []
     for prompt in prompts:
-        prompt_dict = prompt.__dict__.copy()
+        input_schema = None
         if prompt.input_schema:
             try:
-                prompt_dict['input_schema'] = json.loads(prompt.input_schema)
+                input_schema = json.loads(prompt.input_schema)
             except:
-                prompt_dict['input_schema'] = None
-        items.append(prompt_dict)
+                input_schema = None
+        
+        # PromptResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
+        items.append(PromptResponse(
+            id=prompt.id,
+            name=prompt.name,
+            description=prompt.description,
+            model_type=prompt.model_type,
+            input_schema=input_schema,
+            allows_file_output=prompt.allows_file_output,
+            enable_deep_think=prompt.enable_deep_think,
+            is_active=prompt.is_active,
+            created_by=prompt.created_by,
+            created_at=prompt.created_at,
+            updated_at=prompt.updated_at
+        ))
 
     return {
         "items": items,
@@ -370,14 +411,27 @@ async def get_prompt(
         )
 
     # input_schemaをJSON文字列からdictに変換
-    prompt_dict = prompt.__dict__.copy()
+    input_schema = None
     if prompt.input_schema:
         try:
-            prompt_dict['input_schema'] = json.loads(prompt.input_schema)
+            input_schema = json.loads(prompt.input_schema)
         except:
-            prompt_dict['input_schema'] = None
+            input_schema = None
 
-    return prompt_dict
+    # PromptResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
+    return PromptResponse(
+        id=prompt.id,
+        name=prompt.name,
+        description=prompt.description,
+        model_type=prompt.model_type,
+        input_schema=input_schema,
+        allows_file_output=prompt.allows_file_output,
+        enable_deep_think=prompt.enable_deep_think,
+        is_active=prompt.is_active,
+        created_by=prompt.created_by,
+        created_at=prompt.created_at,
+        updated_at=prompt.updated_at
+    )
 
 
 @router.get("/prompts/{prompt_id}/content")
@@ -444,14 +498,27 @@ async def update_prompt(
     db.refresh(prompt)
 
     # input_schemaをJSON文字列からdictに変換
-    prompt_dict = prompt.__dict__.copy()
+    input_schema = None
     if prompt.input_schema:
         try:
-            prompt_dict['input_schema'] = json.loads(prompt.input_schema)
+            input_schema = json.loads(prompt.input_schema)
         except:
-            prompt_dict['input_schema'] = None
+            input_schema = None
 
-    return prompt_dict
+    # PromptResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
+    return PromptResponse(
+        id=prompt.id,
+        name=prompt.name,
+        description=prompt.description,
+        model_type=prompt.model_type,
+        input_schema=input_schema,
+        allows_file_output=prompt.allows_file_output,
+        enable_deep_think=prompt.enable_deep_think,
+        is_active=prompt.is_active,
+        created_by=prompt.created_by,
+        created_at=prompt.created_at,
+        updated_at=prompt.updated_at
+    )
 
 
 @router.delete("/prompts/{prompt_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -613,9 +680,26 @@ async def list_executions(
             if enable_deep_think is None:
                 enable_deep_think = True  # デフォルト値
 
+        # output_formatを取得（モデルから直接取得）
+        output_format = getattr(execution, 'output_format', None)
+        if output_format is None:
+            output_format = 'txt'  # デフォルト値
+
+        # ExecutionResponseスキーマに合致するフィールドのみを返す（encrypted_contentやリレーションオブジェクトは含めない）
         execution_dict = {
-            **execution.__dict__,
+            "id": execution.id,
+            "account_id": execution.account_id,
+            "prompt_id": execution.prompt_id,
             "prompt_name": prompt_name,
+            "input_data": execution.input_data,
+            "output_data": execution.output_data,
+            "model_used": execution.model_used,
+            "tokens_used": execution.tokens_used,
+            "execution_time": execution.execution_time,
+            "status": execution.status,
+            "error_message": execution.error_message,
+            "executed_at": execution.executed_at,
+            "output_format": output_format,
             "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
         }
         items.append(execution_dict)
@@ -626,4 +710,195 @@ async def list_executions(
         "skip": skip,
         "limit": limit
     }
+
+
+# ==================== 監視機能 ====================
+@router.get("/monitor/celery", response_model=CeleryWorkerStats)
+async def get_celery_worker_stats(
+    current_user: Account = Depends(get_current_active_parent)
+):
+    """Celery Workerの監視情報を取得"""
+    if not CELERY_AVAILABLE or not celery_app:
+        return CeleryWorkerStats(
+            workers=[],
+            total_workers=0,
+            total_active_tasks=0,
+            total_reserved_tasks=0,
+            celery_available=False
+        )
+    
+    try:
+        inspect = celery_app.control.inspect()
+        
+        # 実行中のタスク
+        active_tasks = inspect.active() or {}
+        
+        # 待機中のタスク
+        reserved_tasks = inspect.reserved() or {}
+        
+        # Worker統計情報
+        stats = inspect.stats() or {}
+        
+        # Worker一覧を構築
+        workers = []
+        total_active = 0
+        total_reserved = 0
+        
+        # すべてのWorker名を取得（active, reserved, statsのキーから）
+        all_worker_names = set()
+        all_worker_names.update(active_tasks.keys())
+        all_worker_names.update(reserved_tasks.keys())
+        all_worker_names.update(stats.keys())
+        
+        for worker_name in all_worker_names:
+            worker_active = active_tasks.get(worker_name, [])
+            worker_reserved = reserved_tasks.get(worker_name, [])
+            worker_stats = stats.get(worker_name, {})
+            
+            active_count = len(worker_active)
+            reserved_count = len(worker_reserved)
+            total_active += active_count
+            total_reserved += reserved_count
+            
+            workers.append(CeleryWorkerInfo(
+                name=worker_name,
+                status="online" if worker_name in stats else "offline",
+                active_tasks=active_count,
+                reserved_tasks=reserved_count,
+                total_tasks_completed=worker_stats.get("total", {}).get("tasks.succeeded", 0) if isinstance(worker_stats.get("total"), dict) else None,
+                total_tasks_failed=worker_stats.get("total", {}).get("tasks.failed", 0) if isinstance(worker_stats.get("total"), dict) else None
+            ))
+        
+        return CeleryWorkerStats(
+            workers=workers,
+            total_workers=len(workers),
+            total_active_tasks=total_active,
+            total_reserved_tasks=total_reserved,
+            celery_available=True
+        )
+    except Exception as e:
+        logger.error(f"Failed to get Celery worker stats: {str(e)}")
+        return CeleryWorkerStats(
+            workers=[],
+            total_workers=0,
+            total_active_tasks=0,
+            total_reserved_tasks=0,
+            celery_available=False
+        )
+
+
+@router.get("/monitor/redis", response_model=RedisStats)
+async def get_redis_stats(
+    current_user: Account = Depends(get_current_active_parent)
+):
+    """Redisの監視情報を取得"""
+    if not CELERY_AVAILABLE:
+        return RedisStats(
+            connection_status="disconnected",
+            stream_count=0,
+            active_streams=[]
+        )
+    
+    try:
+        redis_client = get_redis_client()
+        
+        # 接続確認
+        try:
+            redis_client.ping()
+            connection_status = "connected"
+        except Exception:
+            connection_status = "disconnected"
+            return RedisStats(
+                connection_status=connection_status,
+                stream_count=0,
+                active_streams=[]
+            )
+        
+        # メモリ情報
+        memory_info = redis_client.info('memory')
+        memory_used = memory_info.get('used_memory', 0) / (1024 * 1024)  # MB
+        memory_max = memory_info.get('maxmemory', 0) / (1024 * 1024) if memory_info.get('maxmemory', 0) > 0 else None  # MB
+        memory_usage_percent = (memory_used / memory_max * 100) if memory_max and memory_max > 0 else None
+        
+        # Stream一覧（execution:*パターン）
+        stream_keys = redis_client.keys('execution:*')
+        stream_count = len(stream_keys)
+        # アクティブなStream一覧（最大10件）
+        active_streams = [key.replace('execution:', '') for key in stream_keys[:10]]
+        
+        return RedisStats(
+            connection_status=connection_status,
+            memory_used_mb=memory_used,
+            memory_max_mb=memory_max,
+            memory_usage_percent=memory_usage_percent,
+            stream_count=stream_count,
+            active_streams=active_streams
+        )
+    except Exception as e:
+        logger.error(f"Failed to get Redis stats: {str(e)}")
+        return RedisStats(
+            connection_status="disconnected",
+            stream_count=0,
+            active_streams=[]
+        )
+
+
+@router.get("/monitor/tasks", response_model=TaskStats)
+async def get_task_stats(
+    hours: int = 24,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent)
+):
+    """タスクの実行統計を取得"""
+    from datetime import datetime, timedelta, timezone
+    
+    try:
+        # 期間の開始時刻を計算（JST）
+        jst = timezone(timedelta(hours=9))
+        now = datetime.now(jst)
+        start_time = now - timedelta(hours=hours)
+        
+        # 期間内の実行を取得
+        executions = db.query(Execution).filter(
+            Execution.executed_at >= start_time
+        ).all()
+        
+        total_executions = len(executions)
+        successful = sum(1 for e in executions if e.status == "success")
+        failed = sum(1 for e in executions if e.status == "error")
+        cancelled = sum(1 for e in executions if e.status == "cancelled")
+        
+        # 成功率・エラー率
+        success_rate = successful / total_executions if total_executions > 0 else 0.0
+        error_rate = failed / total_executions if total_executions > 0 else 0.0
+        
+        # 実行時間の統計
+        execution_times = [e.execution_time for e in executions if e.execution_time is not None]
+        average_execution_time_ms = sum(execution_times) / len(execution_times) if execution_times else None
+        max_execution_time_ms = max(execution_times) if execution_times else None
+        
+        return TaskStats(
+            period_hours=hours,
+            total_executions=total_executions,
+            successful=successful,
+            failed=failed,
+            cancelled=cancelled,
+            success_rate=success_rate,
+            error_rate=error_rate,
+            average_execution_time_ms=average_execution_time_ms,
+            max_execution_time_ms=max_execution_time_ms
+        )
+    except Exception as e:
+        logger.error(f"Failed to get task stats: {str(e)}")
+        return TaskStats(
+            period_hours=hours,
+            total_executions=0,
+            successful=0,
+            failed=0,
+            cancelled=0,
+            success_rate=0.0,
+            error_rate=0.0,
+            average_execution_time_ms=None,
+            max_execution_time_ms=None
+        )
 
