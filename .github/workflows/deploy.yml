@@ -15,16 +15,15 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SERVER_HOST }} # secrets.HOST -> SERVER_HOST
-          username: ${{ secrets.SERVER_USER }} # secrets.USERNAME -> SERVER_USER
-          key: ${{ secrets.SSH_PRIVATE_KEY }} # そのまま
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
             # 1. アプリケーションディレクトリへ移動
             cd /opt/prompt-provision-tool
 
-            # 2. 最新のコードを強制的に取得 (Reset -> Pull)
-            # ※ 注意: サーバー上の未コミット変更は消えます
+            # 2. 最新のコードを取得
             git fetch origin
             git reset --hard origin/main
 
@@ -38,8 +37,7 @@ jobs:
             cd backend
             alembic upgrade head
 
-            # 6. サービスの再起動（権限が必要なためsudoを使用）
-            # sudoersでパスワードなし許可設定が必要な場合があります
+            # 6. サービスの再起動
             echo "Restarting services..."
             sudo systemctl restart prompt-tool
             sudo systemctl restart prompt-tool-celery
