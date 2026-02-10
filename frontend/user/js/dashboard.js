@@ -5,6 +5,8 @@ let currentPage = 1;
 const itemsPerPage = 9;
 let totalItems = 0;
 
+let userWorkflows = [];
+
 async function loadDashboardStats() {
     try {
         const stats = await apiRequest('/api/user/dashboard');
@@ -38,6 +40,62 @@ async function loadPrompts(page = 1) {
         showAlert('プロンプトの読み込みに失敗しました', 'error');
         console.error('Load prompts error:', error);
     }
+}
+
+async function loadUserWorkflows() {
+    try {
+        const response = await apiRequest('/api/user/workflows');
+        userWorkflows = response || [];
+        renderUserWorkflows();
+    } catch (error) {
+        console.error('Load user workflows error:', error);
+        const tbody = document.getElementById('user-workflows-tbody');
+        if (tbody) {
+            tbody.innerHTML =
+                '<tr><td colspan="5" style="text-align:center; color: rgba(255,255,255,0.6);">ワークフローの読み込みに失敗しました</td></tr>';
+        }
+    }
+}
+
+function renderUserWorkflows() {
+    const container = document.getElementById('workflows-container');
+    if (!container) return;
+
+    if (!userWorkflows.length) {
+        container.innerHTML =
+            '<p style="text-align:center; color: rgba(255,255,255,0.6);">利用可能なワークフローがありません</p>';
+        return;
+    }
+
+    container.innerHTML = userWorkflows
+        .map((item) => {
+            const wf = item.workflow;
+            const skillCount = (item.skills || []).length;
+            return `
+                <div class="card" data-workflow-id="${wf.id}">
+                    <div class="card-content">
+                        <h3>${wf.name}</h3>
+                        <p>${wf.description || '説明なし'}</p>
+                        <p><strong>ステップ数:</strong> ${skillCount}</p>
+                        <p>
+                            <strong>ステータス:</strong>
+                            <span style="color: ${wf.is_active ? '#28a745' : '#dc3545'}; font-weight: ${
+                                wf.is_active ? 'bold' : 'normal'
+                            };">
+                                ${wf.is_active ? '有効' : '無効'}
+                            </span>
+                        </p>
+                    </div>
+                    <div class="card-corner">
+                        <button class="btn btn-primary"
+                                onclick="location.href='workflow-execute.html?id=${wf.id}'">
+                            実行
+                        </button>
+                    </div>
+                </div>
+            `;
+        })
+        .join('');
 }
 
 function renderPrompts() {
@@ -376,6 +434,7 @@ function renderContributionGraph(data, year) {
     await checkAuth();
     loadDashboardStats();
     loadPrompts(1);
+    loadUserWorkflows();
     initializeYearSelect();
     loadContributionGraph();
 })();

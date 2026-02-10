@@ -28,23 +28,54 @@ def replace_placeholders(prompt_template: str, input_data: dict) -> str:
 
     result = prompt_template
     for key, value in input_data.items():
-        placeholder = f"{{{key}}}"
-        logger.info(f"Processing placeholder: {placeholder}, value type: {type(value)}, value length: {len(str(value)) if value else 0}")
+        # サポートするプレースホルダー形式:
+        # - {key}
+        # - {{key}}  （既存プロンプトとの互換性のため）
+        placeholder_single = f"{{{key}}}"
+        placeholder_double = f"{{{{{key}}}}}"
+        logger.info(
+            f"Processing placeholder: single={placeholder_single}, double={placeholder_double}, "
+            f"value type: {type(value)}, value length: {len(str(value)) if value else 0}"
+        )
 
         # 値がNone、空文字列、または空白のみの場合は空文字列に置換
         if value is None or (isinstance(value, str) and value.strip() == ""):
             # オプショナルフィールドの行全体を削除（行末まで）
             # プレースホルダーを含む行を削除（オプション表記がある場合）
-            pattern = rf".*{re.escape(placeholder)}.*\n?"
-            result = re.sub(pattern, "", result)
-            logger.info(f"Removed placeholder {placeholder} (empty value)")
+            # 単一波括弧/二重波括弧のどちらにも対応
+            pattern_single = rf".*{re.escape(placeholder_single)}.*\n?"
+            pattern_double = rf".*{re.escape(placeholder_double)}.*\n?"
+            before_len = len(result)
+            result = re.sub(pattern_single, "", result)
+            result = re.sub(pattern_double, "", result)
+            logger.info(
+                f"Removed placeholder {placeholder_single}/{placeholder_double} (empty value), "
+                f"length {before_len} -> {len(result)}"
+            )
         else:
             # プレースホルダーがテンプレートに存在するか確認
-            if placeholder in result:
-                result = result.replace(placeholder, str(value))
-                logger.info(f"Replaced placeholder {placeholder} with value (length: {len(str(value))})")
-            else:
-                logger.warning(f"⚠️ Placeholder {placeholder} not found in template! Available placeholders in template: {re.findall(r'\{([^}]+)\}', prompt_template)}")
+            replaced_any = False
+            if placeholder_single in result:
+                result = result.replace(placeholder_single, str(value))
+                replaced_any = True
+                logger.info(
+                    f"Replaced placeholder {placeholder_single} with value "
+                    f"(length: {len(str(value))})"
+                )
+            if placeholder_double in result:
+                result = result.replace(placeholder_double, str(value))
+                replaced_any = True
+                logger.info(
+                    f"Replaced placeholder {placeholder_double} with value "
+                    f"(length: {len(str(value))})"
+                )
+
+            if not replaced_any:
+                logger.warning(
+                    f"⚠️ Placeholders {placeholder_single}/{placeholder_double} not found in template! "
+                    f"Available single-brace placeholders in template: "
+                    f"{re.findall(r'\\{([^}]+)\\}', prompt_template)}"
+                )
 
     # 連続する空行を1つにまとめる
     result = re.sub(r'\n\s*\n\s*\n+', '\n\n', result)

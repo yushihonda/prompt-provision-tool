@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 
 
 class Settings(BaseSettings):
@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # SSE
     SSE_CONNECTION_TIMEOUT: int = 5400  # 90分
     SSE_HEARTBEAT_INTERVAL: int = 30  # 30秒
+
+    # Workflow / Leader Agent
+    # 全てのワークフロー実行の最後に必ず呼び出される「リーダー用プロンプト」のID
+    # 未設定の場合はワークフロー完了時にエラーとして扱う
+    WORKFLOW_LEADER_PROMPT_ID: Optional[int] = None
 
     @property
     def database_url(self) -> str:

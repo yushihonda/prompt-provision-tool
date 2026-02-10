@@ -7,9 +7,10 @@ import base64
 import logging
 import asyncio
 from typing import Optional
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 from app.celery_app import celery_app
-from app.models import Execution, Prompt, Account, APIConfig, AccountType
+from app.models import Execution, Prompt, Account, APIConfig, AccountType, WorkflowExecution, WorkflowSkill, Workflow
 from app.encryption import encryption_service
 from app.services.openai_service import openai_service, OpenAIService
 from app.services.gemini_service import gemini_service, GeminiService
@@ -185,8 +186,9 @@ def execute_prompt_task(
             is_gemini = model_str in gemini_models
 
             # 非同期処理を実行（asyncio.run()を使用）
-            async def run_streaming_execution():
+            async def run_streaming_execution(start_time_param):
                 """非同期ストリーミング実行"""
+                import time as time_module  # 明示的にインポートしてローカル変数の問題を回避
                 output_chunks = []
                 long_running_warning_sent = False  # 長時間実行警告の送信フラグ
                 LONG_RUNNING_THRESHOLD = 1800  # 30分（秒）
@@ -195,6 +197,10 @@ def execute_prompt_task(
                     # キャンセルチェック
                     if is_cancelled(execution_id):
                         raise asyncio.CancelledError("Execution was cancelled")
+                    
+                    # ツール設定の取得（プロンプトから）
+                    enable_code_interpreter = getattr(prompt, 'enable_code_interpreter', False)
+                    enable_file_search = getattr(prompt, 'enable_file_search', False)
                     
                     # 推論モデルかどうかを判定
                     is_reasoning_model = user_openai_service._is_reasoning_model(model_str)
@@ -209,7 +215,9 @@ def execute_prompt_task(
                         chunk_count = 0
                         async for chunk in user_openai_service.execute_streaming(
                             prompt=final_prompt,
-                            model=model_str
+                            model=model_str,
+                            enable_code_interpreter=enable_code_interpreter,
+                            enable_file_search=enable_file_search
                         ):
                             # キャンセルチェック
                             if is_cancelled(execution_id):
@@ -218,7 +226,7 @@ def execute_prompt_task(
                             
                             # 長時間実行警告チェック（30分以上）
                             if not long_running_warning_sent:
-                                elapsed_time = time.time() - start_time
+                                elapsed_time = time_module.time() - start_time_param
                                 if elapsed_time >= LONG_RUNNING_THRESHOLD:
                                     logger.warning(f"Execution {execution_id}: 長時間実行中（{elapsed_time/60:.1f}分経過）。通常の実行時間を超過しています。")
                                     long_running_warning_sent = True
@@ -240,8 +248,7 @@ def execute_prompt_task(
                         # 最後のチャンク送信後に少し待機してから完了イベントを送信する
                         # これにより、フロントエンドが最後のチャンクを受信してから完了イベントを受信できる
                         if all_output:
-                            import time
-                            time.sleep(0.1)  # 100ms待機
+                            await asyncio.sleep(0.1)  # 100ms待機
                             logger.info(f"Execution {execution_id}: All chunks published, waiting before complete event")
                         else:
                             logger.warning(f"Execution {execution_id}: No output to publish (chunk_count: {chunk_count})")
@@ -249,7 +256,9 @@ def execute_prompt_task(
                         # 通常のストリーミングモデル（gpt-4oなど）の場合は、チャンクをそのまま送信
                         async for chunk in user_openai_service.execute_streaming(
                             prompt=final_prompt,
-                            model=model_str
+                            model=model_str,
+                            enable_code_interpreter=enable_code_interpreter,
+                            enable_file_search=enable_file_search
                         ):
                             # キャンセルチェック
                             if is_cancelled(execution_id):
@@ -258,7 +267,7 @@ def execute_prompt_task(
                             
                             # 長時間実行警告チェック（30分以上）
                             if not long_running_warning_sent:
-                                elapsed_time = time.time() - start_time
+                                elapsed_time = time_module.time() - start_time_param
                                 if elapsed_time >= LONG_RUNNING_THRESHOLD:
                                     logger.warning(f"Execution {execution_id}: 長時間実行中（{elapsed_time/60:.1f}分経過）。通常の実行時間を超過しています。")
                                     long_running_warning_sent = True
@@ -269,8 +278,7 @@ def execute_prompt_task(
                         
                         # 通常のストリーミングモデルでは、最後のチャンク送信後に少し待機
                         # これにより、フロントエンドが最後のチャンクを受信してから完了イベントを受信できる
-                        import time
-                        time.sleep(0.1)  # 100ms待機
+                        await asyncio.sleep(0.1)  # 100ms待機
                     
                     # 結果を結合
                     output = "".join(output_chunks)
@@ -312,13 +320,21 @@ def execute_prompt_task(
                     else:
                         deep_think_enabled = getattr(prompt, 'enable_deep_think', True)
                     
+                    # ツール設定の取得（プロンプトから）
+                    enable_web_search = getattr(prompt, 'enable_web_search', True)  # デフォルトはTrue（google_search）
+                    enable_code_interpreter = getattr(prompt, 'enable_code_interpreter', False)
+                    enable_file_search = getattr(prompt, 'enable_file_search', False)
+                    
                     # Geminiストリーミング実行
                     # Geminiは通常ストリーミングをサポートしているが、大きなチャンクが来る可能性があるため、
                     # チャンクをそのまま送信する（リアルタイム表示）
                     async for chunk in user_gemini_service.execute_streaming(
                         prompt=final_prompt,
                         model=model_str,
-                        enable_deep_think=deep_think_enabled
+                        enable_deep_think=deep_think_enabled,
+                        enable_web_search=enable_web_search,
+                        enable_code_interpreter=enable_code_interpreter,
+                        enable_file_search=enable_file_search
                     ):
                         # キャンセルチェック
                         if is_cancelled(execution_id):
@@ -327,7 +343,7 @@ def execute_prompt_task(
                         
                         # 長時間実行警告チェック（30分以上）
                         if not long_running_warning_sent:
-                            elapsed_time = time.time() - start_time
+                            elapsed_time = time_module.time() - start_time_param
                             if elapsed_time >= LONG_RUNNING_THRESHOLD:
                                 logger.warning(f"Execution {execution_id}: 長時間実行中（{elapsed_time/60:.1f}分経過）。通常の実行時間を超過しています。")
                                 long_running_warning_sent = True
@@ -338,8 +354,7 @@ def execute_prompt_task(
                     
                     # 最後のチャンク送信後に少し待機してから完了イベントを送信する
                     # これにより、フロントエンドが最後のチャンクを受信してから完了イベントを受信できる
-                    import time
-                    time.sleep(0.1)  # 100ms待機
+                    await asyncio.sleep(0.1)  # 100ms待機
                     
                     # 結果を結合
                     output = "".join(output_chunks)
@@ -389,7 +404,7 @@ def execute_prompt_task(
                 }
             
             # 非同期処理を実行
-            result = asyncio.run(run_streaming_execution())
+            result = asyncio.run(run_streaming_execution(start_time))
             
             output = result["output"]
             model_used = result["model"]
@@ -524,6 +539,29 @@ def execute_prompt_task(
 
         logger.info(f"Execution {execution_id} completed with status: {status_result}")
 
+        # ワークフロー実行の場合、次のステップを起動
+        if execution.workflow_execution_id and status_result == "success":
+            # リーダーステップ（workflow_skill_idがNone）の場合は、ワークフロー全体を完了としてマーク
+            if execution.workflow_skill_id is None:
+                try:
+                    db.refresh(execution)
+                    wf_exec = db.query(WorkflowExecution).filter(
+                        WorkflowExecution.id == execution.workflow_execution_id
+                    ).first()
+                    if wf_exec:
+                        wf_exec.status = "success"
+                        wf_exec.completed_at = datetime.now(timezone(timedelta(hours=9)))
+                        db.commit()
+                        logger.info(f"WorkflowExecution {execution.workflow_execution_id} completed (leader step finished)")
+                except Exception as wf_error:
+                    logger.error(f"Failed to mark workflow execution as completed: {str(wf_error)}")
+            else:
+                # 通常のステップの場合は次のステップを起動
+                try:
+                    continue_workflow_execution.delay(execution.workflow_execution_id, execution.step_order)
+                except Exception as wf_error:
+                    logger.error(f"Failed to continue workflow execution: {str(wf_error)}")
+
     except Exception as e:
         logger.error(f"Task execution error: {str(e)}")
         import traceback
@@ -631,6 +669,324 @@ def execute_prompt_task(
                 publish_error(execution_id, execution.error_message)
             except Exception as db_error:
                 logger.error(f"Failed to update execution status: {str(db_error)}")
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    bind=True,
+    time_limit=300,  # 5分
+    soft_time_limit=240,  # 4分
+    max_retries=3,
+    default_retry_delay=30
+)
+def continue_workflow_execution(
+    self,
+    workflow_execution_id: int,
+    completed_step_order: int
+):
+    """
+    ワークフロー実行の次のステップを起動
+    
+    Args:
+        workflow_execution_id: ワークフロー実行ID
+        completed_step_order: 完了したステップの順序
+    """
+    db = SessionLocal()
+    try:
+        # ワークフロー実行を取得
+        wf_exec = db.query(WorkflowExecution).filter(
+            WorkflowExecution.id == workflow_execution_id
+        ).first()
+        
+        if not wf_exec:
+            logger.error(f"WorkflowExecution {workflow_execution_id} not found")
+            return
+        
+        # キャンセルチェック
+        if wf_exec.status == "cancelled":
+            logger.info(f"WorkflowExecution {workflow_execution_id} is cancelled")
+            return
+        
+        # 次のステップを取得
+        next_step_order = completed_step_order + 1
+        wf_skill = (
+            db.query(WorkflowSkill)
+            .join(Prompt, Prompt.id == WorkflowSkill.prompt_id)
+            .filter(
+                WorkflowSkill.workflow_id == wf_exec.workflow_id,
+                WorkflowSkill.step_order == next_step_order,
+                Prompt.deleted_at.is_(None),
+                Prompt.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        
+        # 前ステップの出力を取得
+        previous_execution = (
+            db.query(Execution)
+            .filter(
+                Execution.workflow_execution_id == workflow_execution_id,
+                Execution.step_order == completed_step_order,
+                Execution.status == "success"
+            )
+            .first()
+        )
+
+        # グローバル入力データを取得
+        global_input = {}
+        if wf_exec.global_input_data:
+            try:
+                global_input = json.loads(wf_exec.global_input_data) if isinstance(wf_exec.global_input_data, str) else wf_exec.global_input_data
+            except (json.JSONDecodeError, TypeError):
+                global_input = {}
+        
+        # 前ステップの出力をマージ（前ステップの出力を"previous_output"として追加）
+        merged_input = dict(global_input)
+        if previous_execution and previous_execution.output_data:
+            try:
+                previous_output = json.loads(previous_execution.output_data) if isinstance(previous_execution.output_data, str) else previous_execution.output_data
+                merged_input["previous_output"] = previous_output
+                merged_input["previous_step_result"] = previous_output  # 互換性のため
+            except (json.JSONDecodeError, TypeError):
+                # 出力がJSONでない場合は文字列として追加
+                previous_output = previous_execution.output_data
+                merged_input["previous_output"] = previous_output
+                merged_input["previous_step_result"] = previous_output
+
+            # 既存のプロンプトテンプレートとの互換性のためのエイリアス
+            # 例: 解析ステップで {{research_data}} / {{analysis_result}} を参照しているケース
+            try:
+                if "research_data" not in merged_input:
+                    merged_input["research_data"] = previous_output
+                if "analysis_result" not in merged_input:
+                    merged_input["analysis_result"] = previous_output
+            except Exception:
+                # previous_output がシリアライズ不可な型でもワークフロー自体は継続させる
+                pass
+
+        # これまでの全ステップ結果もまとめて渡す
+        # リーダー用の最終ステップなどで、サブエージェントの出力一覧を精査できるようにする
+        all_step_results = []
+        try:
+            # WorkflowExecution.executions は step_order 順で並ぶリレーション
+            for exec_obj in wf_exec.executions:
+                if exec_obj.status != "success":
+                    continue
+
+                raw_output = exec_obj.output_data
+                parsed_output = raw_output
+                if raw_output:
+                    try:
+                        parsed_output = json.loads(raw_output) if isinstance(raw_output, str) else raw_output
+                    except (json.JSONDecodeError, TypeError):
+                        # JSONでなければそのまま文字列として保持
+                        parsed_output = raw_output
+
+                all_step_results.append({
+                    "step_order": exec_obj.step_order,
+                    "workflow_skill_id": exec_obj.workflow_skill_id,
+                    "prompt_id": exec_obj.prompt_id,
+                    "output": parsed_output,
+                })
+        except Exception as hist_err:
+            logger.warning(f"Failed to build all_step_results for workflow_execution {workflow_execution_id}: {str(hist_err)}")
+
+        # ワークフロープロンプトからは
+        # - previous_output / previous_step_result: 直前ステップの結果
+        # - all_step_results: これまでの全成功ステップの結果一覧
+        # - global_input_data: ワークフロー全体の入力データ（互換性用）
+        # を利用できる
+        merged_input["all_step_results"] = all_step_results
+        # 互換性のため、ワークフロー全体の入力データもそのまま渡しておく
+        merged_input.setdefault("global_input_data", global_input)
+
+        # ここから先は「次にどのステップを起動するか」の分岐
+        if not wf_skill:
+            # ユーザー定義のStepは全て完了。
+            # ここで「ワークフロー専用の統合プロンプト（リーダー）」を最後に1ステップとして実行する。
+            # 各Workflowごとに leader_prompt_id を持たせており、それを必ず利用する。
+
+            if not wf_exec.workflow or not wf_exec.workflow.leader_prompt_id:
+                # 統合プロンプトが設定されていない場合はエラー扱い
+                wf_exec.status = "error"
+                wf_exec.error_message = "このワークフローには統合用プロンプト（leader_prompt_id）が設定されていません。管理画面から設定してください。"
+                wf_exec.completed_at = datetime.now(timezone(timedelta(hours=9)))
+                db.commit()
+                logger.error(
+                    f"WorkflowExecution {workflow_execution_id} error: leader_prompt_id is not configured "
+                    f"for workflow_id={wf_exec.workflow_id}"
+                )
+                return
+
+            leader_prompt_id = wf_exec.workflow.leader_prompt_id
+
+            leader_prompt = (
+                db.query(Prompt)
+                .filter(
+                    Prompt.id == leader_prompt_id,
+                    Prompt.deleted_at.is_(None),
+                    Prompt.is_active == True,  # noqa: E712
+                )
+                .first()
+            )
+
+            if not leader_prompt:
+                wf_exec.status = "error"
+                wf_exec.error_message = f"統合用プロンプト（ID={leader_prompt_id}）が見つからないか、利用できません。"
+                wf_exec.completed_at = datetime.now(timezone(timedelta(hours=9)))
+                db.commit()
+                logger.error(
+                    f"WorkflowExecution {workflow_execution_id} error: Leader prompt {leader_prompt_id} not found or inactive"
+                )
+                return
+
+            # リーダー用Executionを作成（workflow_skill_idはNone）
+            jst = timezone(timedelta(hours=9))
+            leader_step_order = completed_step_order + 1
+
+            leader_execution = Execution(
+                account_id=wf_exec.account_id,
+                prompt_id=leader_prompt.id,
+                workflow_execution_id=workflow_execution_id,
+                workflow_skill_id=None,
+                step_order=leader_step_order,
+                input_data=json.dumps(merged_input, ensure_ascii=False),
+                status="pending",
+                model_used=leader_prompt.model_type,
+                enable_deep_think=bool(getattr(leader_prompt, "enable_deep_think", True)),
+                output_format=wf_exec.executions[0].output_format if wf_exec.executions else "txt",
+                executed_at=datetime.now(jst),
+            )
+            db.add(leader_execution)
+
+            # ワークフロー実行側のメタ情報も更新（総ステップ数 +1 / 現在ステップをリーダーに）
+            wf_exec.status = "processing"
+            wf_exec.current_step = leader_step_order
+            wf_exec.total_steps = (wf_exec.total_steps or leader_step_order)
+            db.commit()
+            db.refresh(leader_execution)
+
+            # リーダーステップのCeleryタスクを起動
+            execute_prompt_task.delay(
+                execution_id=leader_execution.id,
+                prompt_id=leader_prompt.id,
+                input_data=merged_input,
+                output_format=leader_execution.output_format,
+                attachments=None,
+                enable_deep_think=getattr(leader_prompt, "enable_deep_think", True),
+            )
+
+            logger.info(f"Started leader step (prompt_id={leader_prompt.id}) for WorkflowExecution {workflow_execution_id}")
+
+            # 最後のサブエージェントのストリームに「リーダー開始」の通知を送る
+            if previous_execution:
+                try:
+                    from app.services.redis_service import publish_workflow_next_step
+                    workflow_name = None
+                    if wf_exec:
+                        workflow = db.query(Workflow).filter(Workflow.id == wf_exec.workflow_id).first()
+                        if workflow:
+                            workflow_name = workflow.name
+
+                    publish_workflow_next_step(
+                        previous_execution.id,
+                        {
+                            "next_execution_id": leader_execution.id,
+                            "next_step_order": leader_step_order,
+                            "step_name": "Leader",
+                            "workflow_name": workflow_name,
+                            "prompt_name": "Leader"
+                        }
+                    )
+                except Exception as notify_error:
+                    logger.warning(f"Failed to notify leader step start: {str(notify_error)}")
+
+            return
+
+        # ここから先は通常の「次のWorkflowSkillステップ」を起動する処理
+        # 次のステップのExecutionレコードを作成
+        prompt = wf_skill.prompt
+        final_enable_deep_think = getattr(prompt, "enable_deep_think", True)
+        if final_enable_deep_think is None:
+            final_enable_deep_think = True
+        
+        jst = timezone(timedelta(hours=9))
+        execution = Execution(
+            account_id=wf_exec.account_id,
+            prompt_id=prompt.id,
+            workflow_execution_id=workflow_execution_id,
+            workflow_skill_id=wf_skill.id,
+            step_order=next_step_order,
+            input_data=json.dumps(merged_input, ensure_ascii=False),
+            status="pending",
+            model_used=prompt.model_type,
+            enable_deep_think=bool(final_enable_deep_think),
+            output_format=wf_exec.executions[0].output_format if wf_exec.executions else "txt",
+            executed_at=datetime.now(jst),
+        )
+        db.add(execution)
+        
+        # ワークフロー実行のステータスと現在のステップを更新
+        wf_exec.status = "processing"
+        wf_exec.current_step = next_step_order
+        db.commit()
+        db.refresh(execution)
+        
+        # 次のステップのCeleryタスクを起動
+        execute_prompt_task.delay(
+            execution_id=execution.id,
+            prompt_id=prompt.id,
+            input_data=merged_input,
+            output_format=execution.output_format,
+            attachments=None,
+            enable_deep_think=final_enable_deep_think,
+        )
+        
+        logger.info(f"Started next step {next_step_order} for WorkflowExecution {workflow_execution_id}")
+        
+        # 前ステップのストリームに「次のステップが起動された」というイベントを送信
+        # これにより、フロントエンドが次のステップをバックグラウンドパネルに追加できる
+        if previous_execution:
+            try:
+                from app.services.redis_service import publish_workflow_next_step
+                # ワークフロー名を取得
+                workflow_name = None
+                if wf_exec:
+                    workflow = db.query(Workflow).filter(Workflow.id == wf_exec.workflow_id).first()
+                    if workflow:
+                        workflow_name = workflow.name
+                step_name = wf_skill.step_name or f"Step {next_step_order}"
+                prompt_name = prompt.name if prompt else step_name
+                publish_workflow_next_step(
+                    previous_execution.id,
+                    {
+                        "next_execution_id": execution.id,
+                        "next_step_order": next_step_order,
+                        "step_name": step_name,
+                        "workflow_name": workflow_name,
+                        "prompt_name": prompt_name
+                    }
+                )
+            except Exception as notify_error:
+                logger.warning(f"Failed to notify next step start: {str(notify_error)}")
+        
+    except Exception as e:
+        logger.error(f"Error continuing workflow execution: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # ワークフロー実行をエラー状態に更新
+        try:
+            wf_exec = db.query(WorkflowExecution).filter(
+                WorkflowExecution.id == workflow_execution_id
+            ).first()
+            if wf_exec:
+                wf_exec.status = "error"
+                wf_exec.error_message = f"ステップ {completed_step_order + 1} の起動に失敗: {str(e)}"
+                db.commit()
+        except Exception as db_error:
+            logger.error(f"Failed to update workflow execution status: {str(db_error)}")
     finally:
         db.close()
 

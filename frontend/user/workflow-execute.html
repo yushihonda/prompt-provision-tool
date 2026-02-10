@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ワークフロー実行 - Prompt Provision Tool</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="user-theme">
+    <div class="container">
+        <div class="header">
+            <span class="tool-name">Prompt Provision Tool</span>
+            <div class="user-info">
+                <span id="username-display">-</span>
+                <button class="btn-logout" onclick="logout()">ログアウト</button>
+            </div>
+            <button class="hamburger-menu" onclick="toggleMobileMenu()">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+
+        <!-- モバイルメニュー -->
+        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
+        <div class="mobile-menu" id="mobile-menu">
+            <div class="mobile-menu-header">
+                <span class="tool-name">Prompt Provision Tool</span>
+                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+            </div>
+            <div class="mobile-menu-content">
+                <div class="nav">
+                    <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト/ワークフロー一覧</button>
+                    <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
+                </div>
+                <div class="user-info">
+                    <span id="mobile-username-display">-</span>
+                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="page-title-container">
+                <h1 class="page-title">ワークフロー実行</h1>
+            </div>
+            <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; gap: 10px;">
+                    <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト/ワークフロー一覧</button>
+                    <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
+                </div>
+                <button class="btn btn-secondary" onclick="location.href='dashboard.html'" style="display: inline-flex; align-items: center; gap: 5px; padding: 10px 20px;">
+                    ← 一覧に戻る
+                </button>
+            </div>
+
+            <div class="card">
+                <h2 id="workflow-name">-</h2>
+                <p id="workflow-description">-</p>
+            </div>
+
+            <div class="execute-layout">
+                <div class="execute-input-panel">
+                    <h3>入力</h3>
+                    <form id="workflow-execute-form">
+                        <div id="workflow-input-fields-container">
+                            <!-- ワークフロー/Skill用の入力フィールドを動的生成 -->
+                        </div>
+
+                        <div class="form-group" style="margin-top: 12px;">
+                            <label for="workflow-output-format">出力形式</label>
+                            <select id="workflow-output-format">
+                                <option value="txt">テキスト (TXT)</option>
+                                <option value="csv">CSV</option>
+                                <option value="pdf">PDF</option>
+                                <option value="docx">Word (DOCX)</option>
+                                <option value="md">Markdown (MD)</option>
+                            </select>
+                            <small style="color: rgba(255, 255, 255, 0.6);">各ステップの出力形式（現状はメタ情報としてのみ利用）</small>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" id="workflow-execute-btn" style="display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 16px;">
+                            <span id="workflow-execute-btn-text">ワークフロー実行</span>
+                            <span id="workflow-execute-btn-spinner" style="display: none;">
+                                <div class="spinner" style="display: inline-block; width: 16px; height: 16px; border-width: 2px; vertical-align: middle;"></div>
+                            </span>
+                        </button>
+                    </form>
+                </div>
+
+                <div class="execute-output-panel">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
+                        <h3 style="margin: 0;">実行結果（ステップ一覧）</h3>
+                    </div>
+                    <div id="workflow-result-container">
+                        <div class="output-box" id="workflow-output-content">
+                            ワークフローを実行すると、各ステップの実行結果がここに表示されます
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 実行履歴セクション -->
+            <div class="card" style="margin-top: 20px;">
+                <h3 style="margin-bottom: 20px;">実行履歴</h3>
+                <div id="history-container">
+                    <p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">読み込み中...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/user-common.js"></script>
+    <script src="js/workflow-execute.js"></script>
+</body>
+</html>
+
+

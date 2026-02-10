@@ -4,13 +4,30 @@ from sqlalchemy import func
 from typing import List
 from app.database import get_db
 from app.auth import get_current_active_parent, get_password_hash
-from app.models import Account, Prompt, AccountPrompt, Execution, APIConfig, AccountType
+from app.models import Account, Prompt, AccountPrompt, Execution, APIConfig, AccountType, Workflow, WorkflowSkill
 from app.schemas import (
-    AccountCreate, AccountResponse, AccountUpdate, AccountWithPromptCount,
-    PromptCreate, PromptResponse, PromptUpdate,
-    AccountPromptAssign, AccountPromptResponse,
-    DashboardStats, ExecutionResponse,
-    CeleryWorkerStats, CeleryWorkerInfo, RedisStats, TaskStats
+    AccountCreate,
+    AccountResponse,
+    AccountUpdate,
+    AccountWithPromptCount,
+    PromptCreate,
+    PromptResponse,
+    PromptUpdate,
+    AccountPromptAssign,
+    AccountPromptResponse,
+    DashboardStats,
+    ExecutionResponse,
+    CeleryWorkerStats,
+    CeleryWorkerInfo,
+    RedisStats,
+    TaskStats,
+    WorkflowCreate,
+    WorkflowCreateWithPrompt,
+    WorkflowUpdate,
+    WorkflowResponse,
+    WorkflowSkillItem,
+    WorkflowSkillsUpdateRequest,
+    WorkflowListItem,
 )
 from app.encryption import encryption_service
 import json
@@ -318,8 +335,12 @@ async def create_prompt(
         encrypted_content=encrypted_content,
         model_type=prompt.model_type,
         input_schema=input_schema_str,
+        is_active=True,
         allows_file_output=prompt.allows_file_output,
         enable_deep_think=prompt.enable_deep_think,
+        enable_web_search=prompt.enable_web_search,
+       enable_code_interpreter=prompt.enable_code_interpreter,
+        enable_file_search=prompt.enable_file_search,
         created_by=current_user.id
     )
     db.add(db_prompt)
@@ -343,6 +364,9 @@ async def create_prompt(
         input_schema=input_schema,
         allows_file_output=db_prompt.allows_file_output,
         enable_deep_think=db_prompt.enable_deep_think,
+        enable_web_search=db_prompt.enable_web_search,
+        enable_code_interpreter=db_prompt.enable_code_interpreter,
+        enable_file_search=db_prompt.enable_file_search,
         is_active=db_prompt.is_active,
         created_by=db_prompt.created_by,
         created_at=db_prompt.created_at,
@@ -374,19 +398,24 @@ async def list_prompts(
                 input_schema = None
         
         # PromptResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
-        items.append(PromptResponse(
-            id=prompt.id,
-            name=prompt.name,
-            description=prompt.description,
-            model_type=prompt.model_type,
-            input_schema=input_schema,
-            allows_file_output=prompt.allows_file_output,
-            enable_deep_think=prompt.enable_deep_think,
-            is_active=prompt.is_active,
-            created_by=prompt.created_by,
-            created_at=prompt.created_at,
-            updated_at=prompt.updated_at
-        ))
+        items.append(
+            PromptResponse(
+                id=prompt.id,
+                name=prompt.name,
+                description=prompt.description,
+                model_type=prompt.model_type,
+                input_schema=input_schema,
+                allows_file_output=prompt.allows_file_output,
+                enable_deep_think=prompt.enable_deep_think,
+                enable_web_search=prompt.enable_web_search,
+                enable_code_interpreter=prompt.enable_code_interpreter,
+                enable_file_search=prompt.enable_file_search,
+                is_active=prompt.is_active,
+                created_by=prompt.created_by,
+                created_at=prompt.created_at,
+                updated_at=prompt.updated_at,
+            )
+        )
 
     return {
         "items": items,
@@ -394,6 +423,406 @@ async def list_prompts(
         "skip": skip,
         "limit": limit
     }
+
+
+# ==================== ワークフロー管理 ====================
+
+
+@router.get("/workflows")
+async def list_workflows(
+    skip: int = 0,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """ワークフロー一覧を取得（論理削除されていないもののみ）"""
+    query = db.query(Workflow).filter(Workflow.deleted_at.is_(None))
+    total = query.count()
+
+    workflows = (
+        query.order_by(Workflow.created_at.desc()).offset(skip).limit(limit).all()
+    )
+
+    items: list[WorkflowListItem] = []
+    for wf in workflows:
+        # input_schema を JSON から dict に変換
+        workflow_input_schema = None
+        if getattr(wf, "input_schema", None):
+            try:
+                workflow_input_schema = (
+                    json.loads(wf.input_schema)
+                    if isinstance(wf.input_schema, str)
+                    else wf.input_schema
+                )
+            except Exception:
+                workflow_input_schema = None
+
+        items.append(
+            WorkflowListItem(
+                id=wf.id,
+                name=wf.name,
+                description=wf.description,
+                input_schema=workflow_input_schema,
+                is_active=wf.is_active,
+                leader_prompt_id=wf.leader_prompt_id,
+                created_at=wf.created_at,
+                updated_at=wf.updated_at,
+            )
+        )
+
+    return {
+        "items": items,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+    }
+
+
+@router.post("/workflows/with-prompt", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
+async def create_workflow_with_prompt(
+    request: WorkflowCreateWithPrompt,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """親プロンプトと子プロンプト（Skills）を含むワークフローを一括作成"""
+    # 1. 親プロンプト（統合プロンプト）を作成
+    encrypted_content = encryption_service.encrypt(request.leader_prompt.content)
+    
+    # input_schemaをJSON文字列に変換
+    input_schema_str = None
+    if request.leader_prompt.input_schema:
+        input_schema_str = json.dumps(request.leader_prompt.input_schema, ensure_ascii=False)
+    
+    leader_prompt = Prompt(
+        name=request.leader_prompt.name,
+        description=request.leader_prompt.description,
+        encrypted_content=encrypted_content,
+        model_type=request.leader_prompt.model_type,
+        input_schema=input_schema_str,
+        is_active=True,
+        created_by=current_user.id,
+        enable_deep_think=request.leader_prompt.enable_deep_think,
+        enable_web_search=request.leader_prompt.enable_web_search,
+        enable_code_interpreter=request.leader_prompt.enable_code_interpreter,
+        enable_file_search=request.leader_prompt.enable_file_search,
+    )
+    db.add(leader_prompt)
+    db.flush()  # IDを取得
+    
+    # 2. ワークフローを作成
+    workflow_input_schema_str = None
+    if request.input_schema is not None:
+        try:
+            workflow_input_schema_str = json.dumps(
+                request.input_schema, ensure_ascii=False
+            )
+        except Exception:
+            workflow_input_schema_str = None
+
+    db_wf = Workflow(
+        name=request.name,
+        description=request.description,
+        input_schema=workflow_input_schema_str,
+        is_active=request.is_active,
+        created_by=current_user.id,
+        leader_prompt_id=leader_prompt.id,
+    )
+    db.add(db_wf)
+    db.flush()  # IDを取得
+    
+    # 3. 子プロンプト（Skills）を登録
+    for skill_item in request.skills:
+        # プロンプトの存在確認
+        prompt = db.query(Prompt).filter(
+            Prompt.id == skill_item.prompt_id,
+            Prompt.deleted_at.is_(None)
+        ).first()
+        if not prompt:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"プロンプトID {skill_item.prompt_id} が見つかりません"
+            )
+        
+        config_json_str = None
+        if skill_item.config_json:
+            config_json_str = json.dumps(skill_item.config_json, ensure_ascii=False)
+        
+        workflow_skill = WorkflowSkill(
+            workflow_id=db_wf.id,
+            prompt_id=skill_item.prompt_id,
+            step_order=skill_item.step_order,
+            step_name=skill_item.step_name,
+            config_json=config_json_str,
+        )
+        db.add(workflow_skill)
+    
+    db.commit()
+    db.refresh(db_wf)
+    
+    return _build_workflow_response(db_wf, db)
+
+
+@router.post("/workflows", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
+async def create_workflow(
+    workflow: WorkflowCreate,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """
+    新しいワークフローを作成（自動親プロンプト生成版）
+
+    - Workflow レコードを作成
+    - leader_prompt_id が指定されていない場合は、このワークフロー専用の統合プロンプト（親プロンプト）を自動作成して紐づける
+    """
+    # 1. Workflow本体を先に作成
+    workflow_input_schema_str = None
+    if workflow.input_schema is not None:
+        try:
+            workflow_input_schema_str = json.dumps(
+                workflow.input_schema, ensure_ascii=False
+            )
+        except Exception:
+            workflow_input_schema_str = None
+
+    db_wf = Workflow(
+        name=workflow.name,
+        description=workflow.description,
+        input_schema=workflow_input_schema_str,
+        is_active=workflow.is_active,
+        created_by=current_user.id,
+        leader_prompt_id=workflow.leader_prompt_id,
+    )
+    db.add(db_wf)
+    db.commit()
+    db.refresh(db_wf)
+
+    # 2. leader_prompt_id が未指定なら、このワークフロー専用の統合プロンプトを1つ自動生成して紐づける
+    if db_wf.leader_prompt_id is None:
+        # デフォルトのモデルは GPT-5.1 を利用（必要に応じて後から編集可能）
+        default_model = "gpt-5.1"
+
+        default_content = (
+            "あなたはワークフローの統合エージェントです。\n"
+            "all_step_results に、各ステップ（子プロンプト / Skills）の結果が配列として渡されます。\n"
+            "- previous_output / previous_step_result: 直前ステップの結果\n"
+            "- all_step_results: これまでの全成功ステップの詳細（step_order, prompt_id, output など）\n\n"
+            "これらを踏まえて、ユーザーへの最終回答を日本語でわかりやすく統合してください。"
+        )
+
+        encrypted_content = encryption_service.encrypt(default_content)
+
+        leader_prompt = Prompt(
+            name=f"[WF:{db_wf.id}] {db_wf.name} - 統合プロンプト",
+            description=f"ワークフロー「{db_wf.name}」用の最終統合プロンプトです。",
+            encrypted_content=encrypted_content,
+            model_type=default_model,
+            input_schema=None,
+            is_active=True,
+            allows_file_output=False,
+            enable_deep_think=True,
+            enable_web_search=False,
+            enable_code_interpreter=False,
+            enable_file_search=False,
+            created_by=current_user.id,
+        )
+        db.add(leader_prompt)
+        db.commit()
+        db.refresh(leader_prompt)
+
+        db_wf.leader_prompt_id = leader_prompt.id
+        db.commit()
+        db.refresh(db_wf)
+
+    return _build_workflow_response(db_wf, db)
+
+
+def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
+    """内部用: Workflow + Skills を組み立てて返す"""
+    skills: list[WorkflowSkillItem] = []
+    wf_skills = (
+        db.query(WorkflowSkill)
+        .join(Prompt, Prompt.id == WorkflowSkill.prompt_id)
+        .filter(WorkflowSkill.workflow_id == db_wf.id)
+        .order_by(WorkflowSkill.step_order.asc(), WorkflowSkill.id.asc())
+        .all()
+    )
+    for ws in wf_skills:
+        skills.append(
+            WorkflowSkillItem(
+                id=ws.id,
+                step_order=ws.step_order,
+                step_name=ws.step_name,
+                prompt_id=ws.prompt_id,
+                prompt_name=ws.prompt.name if ws.prompt else None,
+            )
+        )
+
+    workflow_input_schema = None
+    if getattr(db_wf, "input_schema", None):
+        try:
+            workflow_input_schema = (
+                json.loads(db_wf.input_schema)
+                if isinstance(db_wf.input_schema, str)
+                else db_wf.input_schema
+            )
+        except Exception:
+            workflow_input_schema = None
+
+    return WorkflowResponse(
+        id=db_wf.id,
+        name=db_wf.name,
+        description=db_wf.description,
+        input_schema=workflow_input_schema,
+        is_active=db_wf.is_active,
+        leader_prompt_id=db_wf.leader_prompt_id,
+        created_by=db_wf.created_by,
+        created_at=db_wf.created_at,
+        updated_at=db_wf.updated_at,
+        deleted_at=db_wf.deleted_at,
+        skills=skills,
+    )
+
+
+@router.get("/workflows/{workflow_id}", response_model=WorkflowResponse)
+async def get_workflow_detail(
+    workflow_id: int,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """ワークフロー詳細（Skill一覧込み）を取得"""
+    wf = (
+        db.query(Workflow)
+        .filter(Workflow.id == workflow_id, Workflow.deleted_at.is_(None))
+        .first()
+    )
+    if not wf:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ワークフローが見つかりません",
+        )
+
+    return _build_workflow_response(wf, db)
+
+
+@router.patch("/workflows/{workflow_id}", response_model=WorkflowResponse)
+async def update_workflow(
+    workflow_id: int,
+    workflow_update: WorkflowUpdate,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """ワークフロー基本情報を更新"""
+    wf = (
+        db.query(Workflow)
+        .filter(Workflow.id == workflow_id, Workflow.deleted_at.is_(None))
+        .first()
+    )
+    if not wf:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ワークフローが見つかりません",
+        )
+
+    if workflow_update.name is not None:
+        wf.name = workflow_update.name
+    if workflow_update.description is not None:
+        wf.description = workflow_update.description
+    if workflow_update.input_schema is not None:
+        try:
+            wf.input_schema = json.dumps(workflow_update.input_schema, ensure_ascii=False)
+        except Exception:
+            wf.input_schema = None
+    if workflow_update.is_active is not None:
+        wf.is_active = workflow_update.is_active
+    if workflow_update.leader_prompt_id is not None:
+        # 存在チェックはここでは行わず、管理画面側での選択に委ねる
+        wf.leader_prompt_id = workflow_update.leader_prompt_id
+
+    db.commit()
+    db.refresh(wf)
+
+    return _build_workflow_response(wf, db)
+
+
+@router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_workflow(
+    workflow_id: int,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """ワークフローを論理削除"""
+    wf = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if not wf or wf.deleted_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ワークフローが見つかりません",
+        )
+
+    from datetime import datetime, timezone, timedelta
+
+    jst = timezone(timedelta(hours=9))
+    wf.deleted_at = datetime.now(jst)
+    db.commit()
+
+
+@router.put("/workflows/{workflow_id}/skills", response_model=WorkflowResponse)
+async def update_workflow_skills(
+    workflow_id: int,
+    body: WorkflowSkillsUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """ワークフロー内のSkill構成を一括更新"""
+    wf = (
+        db.query(Workflow)
+        .filter(Workflow.id == workflow_id, Workflow.deleted_at.is_(None))
+        .first()
+    )
+    if not wf:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ワークフローが見つかりません",
+        )
+
+    # すべてのprompt_idが存在し、論理削除されていないことを確認
+    prompt_ids = {item.prompt_id for item in body.skills}
+    if prompt_ids:
+        existing_prompts = (
+            db.query(Prompt)
+            .filter(Prompt.id.in_(prompt_ids), Prompt.deleted_at.is_(None))
+            .all()
+        )
+        if len(existing_prompts) != len(prompt_ids):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="存在しない、または削除されたプロンプトが含まれています",
+            )
+
+    # 既存のWorkflowSkillを削除して、指定された構成で作り直す
+    db.query(WorkflowSkill).filter(WorkflowSkill.workflow_id == workflow_id).delete()
+    db.commit()
+
+    for item in body.skills:
+        config_json_str = None
+        if item.config_json is not None:
+            try:
+                config_json_str = json.dumps(item.config_json, ensure_ascii=False)
+            except Exception:
+                config_json_str = None
+
+        ws = WorkflowSkill(
+            workflow_id=workflow_id,
+            prompt_id=item.prompt_id,
+            step_order=item.step_order,
+            step_name=item.step_name,
+            config_json=config_json_str,
+        )
+        db.add(ws)
+
+    db.commit()
+
+    db.refresh(wf)
+    return _build_workflow_response(wf, db)
 
 
 @router.get("/prompts/{prompt_id}", response_model=PromptResponse)
@@ -427,10 +856,13 @@ async def get_prompt(
         input_schema=input_schema,
         allows_file_output=prompt.allows_file_output,
         enable_deep_think=prompt.enable_deep_think,
+        enable_web_search=prompt.enable_web_search,
+        enable_code_interpreter=prompt.enable_code_interpreter,
+        enable_file_search=prompt.enable_file_search,
         is_active=prompt.is_active,
         created_by=prompt.created_by,
         created_at=prompt.created_at,
-        updated_at=prompt.updated_at
+        updated_at=prompt.updated_at,
     )
 
 
@@ -493,6 +925,12 @@ async def update_prompt(
         prompt.allows_file_output = prompt_update.allows_file_output
     if prompt_update.enable_deep_think is not None:
         prompt.enable_deep_think = prompt_update.enable_deep_think
+    if prompt_update.enable_web_search is not None:
+        prompt.enable_web_search = prompt_update.enable_web_search
+    if prompt_update.enable_code_interpreter is not None:
+        prompt.enable_code_interpreter = prompt_update.enable_code_interpreter
+    if prompt_update.enable_file_search is not None:
+        prompt.enable_file_search = prompt_update.enable_file_search
 
     db.commit()
     db.refresh(prompt)
@@ -514,10 +952,13 @@ async def update_prompt(
         input_schema=input_schema,
         allows_file_output=prompt.allows_file_output,
         enable_deep_think=prompt.enable_deep_think,
+        enable_web_search=prompt.enable_web_search,
+        enable_code_interpreter=prompt.enable_code_interpreter,
+        enable_file_search=prompt.enable_file_search,
         is_active=prompt.is_active,
         created_by=prompt.created_by,
         created_at=prompt.created_at,
-        updated_at=prompt.updated_at
+        updated_at=prompt.updated_at,
     )
 
 

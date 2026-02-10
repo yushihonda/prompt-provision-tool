@@ -372,7 +372,33 @@ function createWorkerMessageHandler(executionId) {
         const { type, data } = event.data;
 
         if (type === 'chunk') {
-            const chunk = data.text || data;
+            // チャンクデータがJSON文字列の場合（ワークフロー次のステップ通知など）
+            let chunkText = data.text || data;
+            try {
+                const parsed = JSON.parse(chunkText);
+                if (parsed.type === 'workflow_next_step' && parsed.next_execution_id) {
+                    // ワークフロー実行の次のステップが起動された
+                    const nextExecutionId = parsed.next_execution_id;
+                    const nextStepOrder = parsed.next_step_order;
+                    const stepName = parsed.step_name || `Step ${nextStepOrder}`;
+                    const workflowName = parsed.workflow_name || 'ワークフロー';
+                    
+                    // バックグラウンドパネルに次のステップを追加
+                    if (typeof PersistentStatusBar !== 'undefined') {
+                        PersistentStatusBar.handleWorkflowNextStep(
+                            nextExecutionId,
+                            nextStepOrder,
+                            stepName,
+                            workflowName
+                        );
+                    }
+                    return; // チャンクとして表示しない
+                }
+            } catch (e) {
+                // JSONパースに失敗した場合は通常のチャンクとして処理
+            }
+            
+            const chunk = chunkText;
             accumulatedOutput += chunk;
             updateOutputContent(accumulatedOutput);
         } else if (type === 'complete') {

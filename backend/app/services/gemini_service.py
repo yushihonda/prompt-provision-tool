@@ -137,11 +137,14 @@ class GeminiService:
         self,
         prompt: str,
         model: str = "gemini-2.5-pro",
-        temperature: float = 0.7,
+        temperature: float = 0.0,
         max_tokens: Optional[int] = None,
         thinking_budget: Optional[int] = None,
         thinking_level: Optional[str] = None,
-        enable_deep_think: bool = True
+        enable_deep_think: bool = True,
+        enable_web_search: bool = True,
+        enable_code_interpreter: bool = False,
+        enable_file_search: bool = False
     ) -> dict:
         """
         プロンプトを実行
@@ -259,6 +262,52 @@ class GeminiService:
                     if max_tokens:
                         config_params["max_output_tokens"] = max_tokens
 
+                    # ツールを有効化
+                    try:
+                        # 新しいSDKではtypes.Tool()の形式で設定
+                        if "tools" not in config_params:
+                            config_params["tools"] = []
+                        
+                        tools_added = []
+                        
+                        # Google Searchツール（web_search）
+                        if enable_web_search:
+                            has_google_search = any(
+                                (isinstance(tool, types.Tool) and hasattr(tool, "google_search")) or
+                                (isinstance(tool, dict) and "google_search" in tool)
+                                for tool in config_params.get("tools", [])
+                            )
+                            if not has_google_search:
+                                config_params["tools"].append(types.Tool(google_search=types.GoogleSearch()))
+                                tools_added.append("Google Search")
+                        
+                        # Code Interpreterツール
+                        if enable_code_interpreter:
+                            has_code_execution = any(
+                                (isinstance(tool, types.Tool) and hasattr(tool, "code_execution")) or
+                                (isinstance(tool, dict) and "code_execution" in tool)
+                                for tool in config_params.get("tools", [])
+                            )
+                            if not has_code_execution:
+                                config_params["tools"].append(types.Tool(code_execution=types.ToolCodeExecution()))
+                                tools_added.append("Code Interpreter")
+                        
+                        # File Searchツール
+                        if enable_file_search:
+                            has_file_search = any(
+                                (isinstance(tool, types.Tool) and hasattr(tool, "file_search")) or
+                                (isinstance(tool, dict) and "file_search" in tool)
+                                for tool in config_params.get("tools", [])
+                            )
+                            if not has_file_search:
+                                config_params["tools"].append(types.Tool(file_search=types.FileSearch()))
+                                tools_added.append("File Search")
+                        
+                        if tools_added:
+                            logger.info(f"  ツール有効化: {', '.join(tools_added)}")
+                    except Exception as tool_error:
+                        logger.warning(f"  ツールの設定に失敗: {tool_error}")
+
                     if temperature is not None:
                         logger.info(f"  Temperature: {temperature}")
 
@@ -371,8 +420,27 @@ class GeminiService:
             # 旧SDKを使用（後方互換性のため、または新SDKが利用できない場合）
             logger.info(f"→ Gemini API呼び出し（旧SDK）: {model_name}")
 
+            # 旧SDK用のツールリストを構築
+            old_sdk_tools = []
+            tools_log = []
+            
+            if enable_web_search:
+                old_sdk_tools.append("google_search_retrieval")
+                tools_log.append("Google Search")
+            
+            if enable_code_interpreter:
+                old_sdk_tools.append("code_execution")
+                tools_log.append("Code Interpreter")
+            
+            if enable_file_search:
+                old_sdk_tools.append("file_search")
+                tools_log.append("File Search")
+            
             # Gemini APIを呼び出す
-            gen_model = genai.GenerativeModel(model_name)
+            gen_model = genai.GenerativeModel(
+                model_name,
+                tools=old_sdk_tools if old_sdk_tools else None
+            )
 
             generation_config = {}
             if temperature is not None:
@@ -382,6 +450,8 @@ class GeminiService:
 
             if temperature is not None:
                 logger.info(f"  Temperature: {temperature}")
+            if tools_log:
+                logger.info(f"  ツール有効化: {', '.join(tools_log)}")
 
             # デバッグモード時のみ詳細な情報を出力
             if settings.is_debug_mode:
@@ -537,11 +607,14 @@ class GeminiService:
         self,
         prompt: str,
         model: str = "gemini-2.5-pro",
-        temperature: float = 0.7,
+        temperature: float = 0.0,
         max_tokens: Optional[int] = None,
         thinking_budget: Optional[int] = None,
         thinking_level: Optional[str] = None,
-        enable_deep_think: bool = True
+        enable_deep_think: bool = True,
+        enable_web_search: bool = True,
+        enable_code_interpreter: bool = False,
+        enable_file_search: bool = False
     ):
         """
         ストリーミングでプロンプトを実行
@@ -593,7 +666,26 @@ class GeminiService:
         try:
             # 新しいSDKを使用してDeep Think機能を有効化（ストリーミングは新SDKでサポートされていない可能性があるため、旧SDKにフォールバック）
             # 注: ストリーミングは現時点では旧SDKを使用
-            gen_model = genai.GenerativeModel(model_name)
+            # 旧SDK用のツールリストを構築
+            old_sdk_tools = []
+            tools_log = []
+            
+            if enable_web_search:
+                old_sdk_tools.append("google_search_retrieval")
+                tools_log.append("Google Search")
+            
+            if enable_code_interpreter:
+                old_sdk_tools.append("code_execution")
+                tools_log.append("Code Interpreter")
+            
+            if enable_file_search:
+                old_sdk_tools.append("file_search")
+                tools_log.append("File Search")
+            
+            gen_model = genai.GenerativeModel(
+                model_name,
+                tools=old_sdk_tools if old_sdk_tools else None
+            )
 
             generation_config = {}
             if temperature is not None:
@@ -603,6 +695,8 @@ class GeminiService:
 
             if temperature is not None:
                 logger.info(f"  Temperature: {temperature}")
+            if tools_log:
+                logger.info(f"  ツール有効化: {', '.join(tools_log)}")
 
             if should_use_deep_think:
                 logger.info(f"  Deep Think機能: 有効（ストリーミングでは旧SDKを使用）")

@@ -75,13 +75,21 @@ function renderHistory() {
         if (execution.model_used === 'gpt-5.2' || execution.model_used === 'gpt-5.2-pro' || execution.model_used === 'gpt-5.2-thinking') {
             modelDisplay += `<span class="new-badge">NEW</span>`;
         }
+        
+        // プロンプト名の表示（ワークフロー実行の場合はワークフロー名とステップ名を表示）
+        let promptDisplay = execution.prompt_name || '-';
+        if (execution.workflow_name) {
+            const stepInfo = execution.step_name ? ` (${execution.step_name})` : (execution.step_order ? ` (Step ${execution.step_order})` : '');
+            promptDisplay = `<span style="color: #7c3aed; font-weight: 500;">[ワークフロー] ${execution.workflow_name}</span><br><span style="font-size: 11px; color: rgba(255,255,255,0.7);">${execution.prompt_name || '-'}${stepInfo}</span>`;
+        }
+        
         return `
         <tr>
             <td>${formatDate(execution.executed_at)}</td>
-            <td>${execution.prompt_name || '-'}</td>
+            <td>${promptDisplay}</td>
             <td>${modelDisplay}</td>
             <td>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</td>
-            <td>${execution.execution_time}ms</td>
+            <td>${execution.execution_time || '-'}${execution.execution_time ? 'ms' : ''}</td>
             <td>${execution.tokens_used || '-'}</td>
             <td><span style="color: ${execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'rgba(255, 255, 255, 0.6)'}">${execution.status}</span></td>
             <td>
@@ -153,8 +161,10 @@ async function showDetail(id) {
                     <span>${formatDate(execution.executed_at)}</span>
                 </div>
                 <div style="margin-bottom: 15px;">
-                    <strong>プロンプト:</strong><br>
-                    <span>${execution.prompt_name || '-'}</span>
+                    <strong>${execution.workflow_name ? 'ワークフロー' : 'プロンプト'}:</strong><br>
+                    <span>${execution.workflow_name ? `<span style="color: #7c3aed; font-weight: 500;">${execution.workflow_name}</span>` : (execution.prompt_name || '-')}</span>
+                    ${execution.workflow_name && execution.step_name ? `<br><span style="font-size: 12px; color: rgba(255,255,255,0.7);">ステップ: ${execution.step_name}</span>` : ''}
+                    ${execution.workflow_name && execution.prompt_name ? `<br><span style="font-size: 12px; color: rgba(255,255,255,0.7);">Skill: ${execution.prompt_name}</span>` : ''}
                 </div>
                 <div style="margin-bottom: 15px;">
                     <strong>使用モデル:</strong><br>
@@ -219,7 +229,7 @@ async function showDetail(id) {
                 </div>
                 <div style="margin-bottom: 15px;">
                     <strong>実行時間:</strong><br>
-                    <span>${execution.execution_time}ms</span>
+                    <span>${execution.execution_time ? `${execution.execution_time}ms` : '-'}</span>
                 </div>
                 <div style="margin-bottom: 15px;">
                     <strong>使用トークン数:</strong><br>
