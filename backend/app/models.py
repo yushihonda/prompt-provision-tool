@@ -70,6 +70,10 @@ class Prompt(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     allows_file_output = Column(Boolean, default=False, nullable=False)  # ファイル出力を許可するか
     enable_deep_think = Column(Boolean, default=True, nullable=False)  # Deep Think機能を有効にするか（Gemini 2.5/3系のみ）
+    # 外部ツール利用可否フラグ（エージェント側のオーケストレーション用メタデータ）
+    enable_web_search = Column(Boolean, default=False, nullable=False)
+    enable_code_interpreter = Column(Boolean, default=False, nullable=False)
+    enable_file_search = Column(Boolean, default=False, nullable=False)
     created_by = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -79,6 +83,66 @@ class Prompt(Base):
     creator = relationship("Account", back_populates="prompts_created", foreign_keys=[created_by])
     account_prompts = relationship("AccountPrompt", back_populates="prompt", cascade="all, delete-orphan")
     executions = relationship("Execution", back_populates="prompt", cascade="all, delete-orphan")
+
+
+class Workflow(Base):
+    """ワークフローテーブル"""
+    __tablename__ = "workflows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False, index=True)
+    description = Column(Text)
+    input_schema = Column(Text, nullable=True)  # ワークフロー共通入力スキーマ（JSON形式）
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_by = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True)  # 論理削除用（削除日時）
+    # ワークフロー専用の統合プロンプト（リーダー）ID
+    leader_prompt_id = Column(Integer, ForeignKey("prompts.id", ondelete="SET NULL"), nullable=True)
+
+    # リレーション
+    creator = relationship("Account")
+    skills = relationship("WorkflowSkill", back_populates="workflow", cascade="all, delete-orphan")
+    # 統合用プロンプト（任意）
+    leader_prompt = relationship("Prompt", foreign_keys=[leader_prompt_id])
+
+
+class WorkflowSkill(Base):
+    """ワークフロー内のステップ（Skill = 既存Prompt）"""
+    __tablename__ = "workflow_skills"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"), nullable=False, index=True)
+    step_order = Column(Integer, nullable=False)  # ワークフロー内の順序（1,2,3,...）
+    step_name = Column(String(255))  # 任意の表示名
+    config_json = Column(Text)  # 将来拡張用の設定JSON
+
+    # リレーション
+    workflow = relationship("Workflow", back_populates="skills")
+    prompt = relationship("Prompt")
+
+
+class WorkflowExecution(Base):
+    """ワークフロー実行テーブル（ワークフロー全体の実行を追跡）"""
+    __tablename__ = "workflow_executions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(50), nullable=False, default="pending")  # pending, processing, success, error, cancelled
+    current_step = Column(Integer, nullable=True)  # 現在実行中のステップ番号（1始まり）
+    total_steps = Column(Integer, nullable=False)  # 総ステップ数
+    global_input_data = Column(Text)  # ワークフロー共通入力データ（JSON）
+    error_message = Column(Text)  # エラーメッセージ
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # リレーション
+    workflow = relationship("Workflow")
+    account = relationship("Account")
+    executions = relationship("Execution", back_populates="workflow_execution", order_by="Execution.step_order")
 
 
 class AccountPrompt(Base):
@@ -102,6 +166,9 @@ class Execution(Base):
     id = Column(Integer, primary_key=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
     prompt_id = Column(Integer, ForeignKey("prompts.id", ondelete="SET NULL"), nullable=True)
+    workflow_execution_id = Column(Integer, ForeignKey("workflow_executions.id", ondelete="SET NULL"), nullable=True, index=True)  # ワークフロー実行ID（ワークフロー実行の場合）
+    workflow_skill_id = Column(Integer, ForeignKey("workflow_skills.id", ondelete="SET NULL"), nullable=True)  # どのワークフロースキルか
+    step_order = Column(Integer, nullable=True)  # ワークフロー内のステップ順序
     input_data = Column(Text)  # ユーザーが入力したデータ
     output_data = Column(Text)  # AIの出力結果
     model_used = Column(String(100))  # 使用されたモデル
@@ -117,6 +184,8 @@ class Execution(Base):
     # リレーション
     account = relationship("Account", back_populates="executions")
     prompt = relationship("Prompt", back_populates="executions")
+    workflow_execution = relationship("WorkflowExecution", back_populates="executions")
+    workflow_skill = relationship("WorkflowSkill")
 
 
 class APIConfig(Base):

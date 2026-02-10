@@ -113,13 +113,28 @@ class ExecutionStreamClient {
 
                                 try {
                                     const data = JSON.parse(eventData);
+                                    // イベントタイプを優先（workflow_next_stepなど専用イベントタイプ）
+                                    // SSEのeventTypeがworkflow_next_stepの場合はそれを優先
+                                    let messageType = eventType;
+                                    if (eventType === 'workflow_next_step') {
+                                        // 専用イベントタイプとして処理
+                                        messageType = 'workflow_next_step';
+                                    } else if (eventType === 'message' || eventType === 'chunk') {
+                                        // message/chunkイベントの場合はdata.typeを確認
+                                        if (data.type && typeof data.type === 'string' && data.type === 'workflow_next_step') {
+                                            messageType = 'workflow_next_step';
+                                        } else {
+                                            messageType = 'chunk';
+                                        }
+                                    }
+                                    
                                     self.postMessage({
-                                        type: eventType === 'message' ? (data.type || 'chunk') : eventType,
+                                        type: messageType,
                                         data: data
                                     });
                                 } catch (e) {
                                     // パースエラーの場合
-                                    if (eventType === 'chunk') {
+                                    if (eventType === 'chunk' || eventType === 'message') {
                                         self.postMessage({
                                             type: 'chunk',
                                             data: { text: eventData }

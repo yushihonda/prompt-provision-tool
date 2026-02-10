@@ -262,6 +262,10 @@ const PersistentStatusBar = {
     executionId: null,
     promptId: null,
     promptName: null,
+    workflowExecutionId: null,  // ワークフロー実行ID
+    workflowName: null,  // ワークフロー名
+    currentStepOrder: null,  // 現在のステップ順序
+    currentStepName: null,  // 現在のステップ名
     completedExecutions: [], // 完了した実行のリスト
     executionQueue: [], // 実行待ちキュー（最大3つ）
     greenDisplayTimeout: null, // 緑表示のタイムアウトID
@@ -648,10 +652,14 @@ const PersistentStatusBar = {
     showPanel() { this.expandDock(); },
     hidePanel() { this.collapseDock(); },
 
-    start(executionId, promptId, promptName) {
+    start(executionId, promptId, promptName, workflowExecutionId = null, workflowName = null, stepOrder = null, stepName = null) {
         this.executionId = executionId;
         this.promptId = promptId;
         this.promptName = promptName || '実行中...';
+        this.workflowExecutionId = workflowExecutionId;
+        this.workflowName = workflowName;
+        this.currentStepOrder = stepOrder;
+        this.currentStepName = stepName;
         this.startTime = Date.now();
 
         // Save to localStorage
@@ -659,6 +667,10 @@ const PersistentStatusBar = {
             id: executionId,
             promptId: promptId,
             promptName: this.promptName,
+            workflowExecutionId: workflowExecutionId,
+            workflowName: workflowName,
+            currentStepOrder: stepOrder,
+            currentStepName: stepName,
             startTime: this.startTime
         }));
 
@@ -667,8 +679,17 @@ const PersistentStatusBar = {
 
         // 実行開始イベントを発火（ダッシュボードでカードを更新するため）
         window.dispatchEvent(new CustomEvent('executionStarted', {
-            detail: { executionId, promptId, promptName: this.promptName }
+            detail: { executionId, promptId, promptName: this.promptName, workflowExecutionId, workflowName }
         }));
+    },
+
+    // ワークフローの次のステップが起動された時に呼ばれる
+    handleWorkflowNextStep(nextExecutionId, nextStepOrder, stepName, workflowName) {
+        // ワークフロー実行中は「ステップ単位」ではなく「ワークフロー単位」で完了を管理するため、
+        // ここでは完了タスクとしては保存せず、現在の実行中ステップのみを更新する
+
+        // 次のステップを開始
+        this.start(nextExecutionId, null, stepName || `Step ${nextStepOrder}`, this.workflowExecutionId, workflowName, nextStepOrder, stepName);
     },
 
     stop() {
@@ -697,7 +718,8 @@ const PersistentStatusBar = {
             }));
         }
 
-        if (completedExecutionId && completedPromptId) {
+        // ① 通常のプロンプト実行（workflowExecutionIdなし）の場合は従来通り execution 単位で保存
+        if (completedExecutionId && completedPromptId && !this.workflowExecutionId) {
             const completedTask = {
                 id: completedExecutionId,
                 promptId: completedPromptId,
@@ -713,16 +735,41 @@ const PersistentStatusBar = {
             } else {
                 this.completedExecutions.push(completedTask);
             }
-
-            // 24時間以上経過したタスクを削除
-            this.completedExecutions = this.completedExecutions.filter(task => {
-                const hoursSinceCompletion = (Date.now() - task.completedAt) / (1000 * 60 * 60);
-                return hoursSinceCompletion < 24;
-            });
-
-            // localStorageに保存
-            this.saveCompletedTasks();
         }
+
+        // ② ワークフロー実行中の場合は「ワークフロー単位」で1件だけ保存
+        if (this.workflowExecutionId) {
+            const workflowId = this.workflowExecutionId;
+            const workflowName = this.workflowName || this.promptName || 'ワークフロー';
+
+            const workflowTask = {
+                id: workflowId,
+                promptId: null,
+                promptName: workflowName,
+                status: status,
+                completedAt: Date.now(),
+                workflowExecutionId: workflowId,
+                workflowName: workflowName
+            };
+
+            const existingWorkflowIndex = this.completedExecutions.findIndex(
+                t => t.workflowExecutionId === workflowId
+            );
+            if (existingWorkflowIndex >= 0) {
+                this.completedExecutions[existingWorkflowIndex] = workflowTask;
+            } else {
+                this.completedExecutions.push(workflowTask);
+            }
+        }
+
+        // 24時間以上経過したタスクを削除
+        this.completedExecutions = this.completedExecutions.filter(task => {
+            const hoursSinceCompletion = (Date.now() - task.completedAt) / (1000 * 60 * 60);
+            return hoursSinceCompletion < 24;
+        });
+
+        // localStorageに保存
+        this.saveCompletedTasks();
 
         // タイマーを停止
         if (this.intervalId) {
@@ -745,6 +792,10 @@ const PersistentStatusBar = {
         this.executionId = null;
         this.promptId = null;
         this.promptName = null;
+        this.workflowExecutionId = null;
+        this.workflowName = null;
+        this.currentStepOrder = null;
+        this.currentStepName = null;
         this.startTime = null;
         localStorage.removeItem('active_execution');
 
@@ -852,6 +903,10 @@ const PersistentStatusBar = {
                 this.executionId = data.id;
                 this.promptId = data.promptId;
                 this.promptName = data.promptName;
+                this.workflowExecutionId = data.workflowExecutionId || null;
+                this.workflowName = data.workflowName || null;
+                this.currentStepOrder = data.currentStepOrder || null;
+                this.currentStepName = data.currentStepName || null;
                 this.startTime = data.startTime;
                 this.updateUI(true);
                 this.renderTasks();
@@ -989,12 +1044,23 @@ const PersistentStatusBar = {
         // 実行中のタスクを表示
         if (this.executionId && activeTaskSection && activeTaskContent) {
             activeTaskSection.style.display = 'block';
-            if (activeTaskName && this.promptName) {
-                // 待機中タスクがある場合は数も表示
-                if (this.executionQueue && this.executionQueue.length > 0) {
-                    activeTaskName.innerHTML = `${this.promptName} <span style="color: #ffc107; font-size: 10px; margin-left: 5px;">(+${this.executionQueue.length}待機中)</span>`;
-                } else {
-                    activeTaskName.textContent = this.promptName;
+            if (activeTaskName) {
+                // ワークフロー実行の場合はワークフロー名とステップ名を表示
+                if (this.workflowName) {
+                    const stepInfo = this.currentStepName ? ` - ${this.currentStepName}` : (this.currentStepOrder ? ` - Step ${this.currentStepOrder}` : '');
+                    const displayName = `${this.workflowName}${stepInfo}`;
+                    if (this.executionQueue && this.executionQueue.length > 0) {
+                        activeTaskName.innerHTML = `${displayName} <span style="color: #ffc107; font-size: 10px; margin-left: 5px;">(+${this.executionQueue.length}待機中)</span>`;
+                    } else {
+                        activeTaskName.textContent = displayName;
+                    }
+                } else if (this.promptName) {
+                    // 通常のプロンプト実行
+                    if (this.executionQueue && this.executionQueue.length > 0) {
+                        activeTaskName.innerHTML = `${this.promptName} <span style="color: #ffc107; font-size: 10px; margin-left: 5px;">(+${this.executionQueue.length}待機中)</span>`;
+                    } else {
+                        activeTaskName.textContent = this.promptName;
+                    }
                 }
             }
             if (activeTaskNavBtn) {
@@ -1160,12 +1226,23 @@ const PersistentStatusBar = {
                 }
                 dock.style.background = 'rgba(124, 58, 237, 0.2)';
                 dock.style.borderColor = '#7c3aed';
-                if (dockPromptName && this.promptName) {
-                    // 実行中はタスク名を表示、待機中タスクがある場合は数も表示
-                    if (this.executionQueue && this.executionQueue.length > 0) {
-                        dockPromptName.innerHTML = `${this.promptName} <span style="color: #ffc107; font-size: 11px; margin-left: 5px;">+${this.executionQueue.length}</span>`;
-                    } else {
-                        dockPromptName.textContent = this.promptName;
+                if (dockPromptName) {
+                    // ワークフロー実行の場合はワークフロー名を表示
+                    if (this.workflowName) {
+                        const stepInfo = this.currentStepName ? ` - ${this.currentStepName}` : (this.currentStepOrder ? ` - Step ${this.currentStepOrder}` : '');
+                        const displayName = `${this.workflowName}${stepInfo}`;
+                        if (this.executionQueue && this.executionQueue.length > 0) {
+                            dockPromptName.innerHTML = `${displayName} <span style="color: #ffc107; font-size: 11px; margin-left: 5px;">+${this.executionQueue.length}</span>`;
+                        } else {
+                            dockPromptName.textContent = displayName;
+                        }
+                    } else if (this.promptName) {
+                        // 通常のプロンプト実行
+                        if (this.executionQueue && this.executionQueue.length > 0) {
+                            dockPromptName.innerHTML = `${this.promptName} <span style="color: #ffc107; font-size: 11px; margin-left: 5px;">+${this.executionQueue.length}</span>`;
+                        } else {
+                            dockPromptName.textContent = this.promptName;
+                        }
                     }
                 }
             } else if ((this.executionQueue && this.executionQueue.length > 0) || (this.completedExecutions && this.completedExecutions.length > 0)) {
@@ -1446,6 +1523,10 @@ const PersistentStatusBar = {
             this.executionId = null;
             this.promptId = null;
             this.promptName = null;
+            this.workflowExecutionId = null;
+            this.workflowName = null;
+            this.currentStepOrder = null;
+            this.currentStepName = null;
             this.startTime = null;
             localStorage.removeItem('active_execution');
 
