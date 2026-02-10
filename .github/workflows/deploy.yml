@@ -69,23 +69,76 @@ jobs:
       - name: Install/update Python dependencies
         run: |
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            set -e
             cd /opt/prompt-provision-tool/backend
             source /opt/prompt-provision-tool/venv/bin/activate
             pip install --upgrade pip
             pip install -r requirements.txt
           EOF
 
-      - name: Restart application service
+      - name: Update systemd service files
         run: |
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            set -e
+            # systemdサービスファイルを更新
+            if [ -f /opt/prompt-provision-tool/deployment/prompt-tool.service ]; then
+              sudo cp /opt/prompt-provision-tool/deployment/prompt-tool.service /etc/systemd/system/
+            fi
+            if [ -f /opt/prompt-provision-tool/deployment/prompt-tool-celery.service ]; then
+              sudo cp /opt/prompt-provision-tool/deployment/prompt-tool-celery.service /etc/systemd/system/
+            fi
+            sudo systemctl daemon-reload
+          EOF
+
+      - name: Restart application services
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            set -e
             sudo systemctl restart prompt-tool.service
+            sudo systemctl restart prompt-tool-celery.service
             sleep 5
+            # サービス状態を確認
+            if ! sudo systemctl is-active --quiet prompt-tool.service; then
+              echo "Error: prompt-tool.service is not active"
+              sudo systemctl status prompt-tool.service --no-pager
+              exit 1
+            fi
+            if ! sudo systemctl is-active --quiet prompt-tool-celery.service; then
+              echo "Error: prompt-tool-celery.service is not active"
+              sudo systemctl status prompt-tool-celery.service --no-pager
+              exit 1
+            fi
+            echo "All services are active"
             sudo systemctl status prompt-tool.service --no-pager | head -20
+            sudo systemctl status prompt-tool-celery.service --no-pager | head -20
           EOF
 
       - name: Verify deployment
         run: |
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
-            curl -f http://127.0.0.1:8000/health || exit 1
+            set -e
+            # ヘルスチェック
+            echo "Checking application health..."
+            for i in {1..5}; do
+              if curl -f http://127.0.0.1:8000/health; then
+                echo "Health check passed"
+                break
+              else
+                if [ $i -eq 5 ]; then
+                  echo "Health check failed after 5 attempts"
+                  exit 1
+                fi
+                echo "Health check failed, retrying in 5 seconds..."
+                sleep 5
+              fi
+            done
+            
+            # Redis接続確認
+            echo "Checking Redis connection..."
+            if redis-cli ping > /dev/null 2>&1; then
+              echo "Redis is running"
+            else
+              echo "Warning: Redis connection check failed"
+            fi
           EOF
 

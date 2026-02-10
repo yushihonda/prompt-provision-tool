@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Enum as SQLEnum, Numeric
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Enum as SQLEnum, Numeric, Date
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -54,6 +54,7 @@ class Account(Base):
     account_prompts = relationship("AccountPrompt", back_populates="account", cascade="all, delete-orphan")
     executions = relationship("Execution", back_populates="account", cascade="all, delete-orphan")
     api_config = relationship("APIConfig", back_populates="account", uselist=False, cascade="all, delete-orphan")
+    daily_execution_counts = relationship("DailyExecutionCount", back_populates="account", cascade="all, delete-orphan")
 
 
 class Prompt(Base):
@@ -110,6 +111,7 @@ class Execution(Base):
     status = Column(String(50))  # success, error, timeout
     error_message = Column(Text)  # エラーメッセージ
     enable_deep_think = Column(Boolean, nullable=True)  # 実行時にDeep Thinkが有効だったか（実行時点の状態を保存）
+    output_format = Column(String(10), nullable=True, default="txt")  # 出力形式（csv, pdf, docx, md, txt）
     executed_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # リレーション
@@ -133,4 +135,17 @@ class APIConfig(Base):
 
     # リレーション
     account = relationship("Account", back_populates="api_config")
+
+
+class DailyExecutionCount(Base):
+    """日ごとの実行回数テーブル（超軽量）"""
+    __tablename__ = "daily_execution_counts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)  # 日付のみ（時刻なし）
+    count = Column(Integer, nullable=False, server_default="0")
+
+    # リレーション
+    account = relationship("Account", back_populates="daily_execution_counts")
 

@@ -161,6 +161,7 @@ class ExecutionResponse(BaseModel):
     execution_time: Optional[int] = None
     status: str
     error_message: Optional[str] = None
+    output_format: Optional[str] = "txt"  # 出力形式（csv, pdf, docx, md, txt）
     executed_at: datetime
 
     class Config:
@@ -224,6 +225,49 @@ class AccountWithPromptCount(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ==================== 監視機能 ====================
+class CeleryWorkerInfo(BaseModel):
+    """Celery Worker情報"""
+    name: str
+    status: str  # online, offline
+    active_tasks: int  # 実行中タスク数
+    reserved_tasks: int  # 待機中タスク数
+    total_tasks_completed: Optional[int] = None  # 完了タスク数
+    total_tasks_failed: Optional[int] = None  # 失敗タスク数
+
+
+class CeleryWorkerStats(BaseModel):
+    """Celery Worker統計情報"""
+    workers: List[CeleryWorkerInfo]
+    total_workers: int
+    total_active_tasks: int
+    total_reserved_tasks: int
+    celery_available: bool
+
+
+class RedisStats(BaseModel):
+    """Redis統計情報"""
+    connection_status: str  # connected, disconnected
+    memory_used_mb: Optional[float] = None
+    memory_max_mb: Optional[float] = None
+    memory_usage_percent: Optional[float] = None
+    stream_count: int
+    active_streams: List[str]  # アクティブなStream一覧（最大10件）
+
+
+class TaskStats(BaseModel):
+    """タスク統計情報"""
+    period_hours: int  # 集計期間（時間）
+    total_executions: int
+    successful: int
+    failed: int
+    cancelled: int
+    success_rate: float  # 成功率（0.0-1.0）
+    error_rate: float  # エラー率（0.0-1.0）
+    average_execution_time_ms: Optional[float] = None
+    max_execution_time_ms: Optional[int] = None
 
 
 # ==================== ページネーション ====================

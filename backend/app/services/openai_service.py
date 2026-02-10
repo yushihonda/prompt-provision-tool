@@ -131,7 +131,7 @@ class OpenAIService:
             raise RuntimeError("OpenAI クライアントが未初期化です")
 
         reasoning_effort = self._get_reasoning_effort(model_name)
-        
+
         # gpt-5.1-thinkingとgpt-5.2-thinkingの場合は実際のAPI呼び出し時にはそれぞれgpt-5.1とgpt-5.2を使用
         if model_name == "gpt-5.1-thinking":
             actual_model = "gpt-5.1"
@@ -553,6 +553,9 @@ class OpenAIService:
 
             chunk_count = 0
             total_length = 0
+            tokens_used = 0
+            last_chunk = None
+
             async for chunk in stream:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta and delta.content is not None:
@@ -561,8 +564,51 @@ class OpenAIService:
                     total_length += len(content)
                     yield content
 
-            logger.info(f"✓ ストリーミング完了 ({chunk_count} チャンク, 合計 {total_length} 文字)")
+                # 最後のチャンクを保持（usage情報が含まれる可能性がある）
+                last_chunk = chunk
+
+                # usage情報が含まれている場合は取得
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage = chunk.usage
+                    if hasattr(usage, "total_tokens"):
+                        tokens_used = usage.total_tokens
+                    elif isinstance(usage, dict):
+                        tokens_used = usage.get("total_tokens", 0)
+
+            # 最後のチャンクからusage情報を取得（まだ取得できていない場合）
+            if tokens_used == 0 and last_chunk:
+                if hasattr(last_chunk, "usage") and last_chunk.usage:
+                    usage = last_chunk.usage
+                    if hasattr(usage, "total_tokens"):
+                        tokens_used = usage.total_tokens
+                    elif isinstance(usage, dict):
+                        tokens_used = usage.get("total_tokens", 0)
+
+            logger.info(f"✓ ストリーミング完了 ({chunk_count} チャンク, 合計 {total_length} 文字, トークン: {tokens_used})")
             logger.info(f"{'='*60}")
+
+            # トークン数が取得できなかった場合、tiktokenライブラリで計算
+            if tokens_used == 0:
+                try:
+                    import tiktoken
+                    # モデルに応じたエンコーダーを取得
+                    try:
+                        encoding = tiktoken.encoding_for_model(model)
+                    except KeyError:
+                        # モデルが見つからない場合はcl100k_baseを使用（GPT-4など）
+                        encoding = tiktoken.get_encoding("cl100k_base")
+
+                    # プロンプトと出力のトークン数を計算
+                    prompt_tokens = len(encoding.encode(prompt))
+                    # 出力はストリーミングで取得済みなので、ここでは概算
+                    # 実際には、ストリーミング完了後に出力全体のトークン数を計算する必要がある
+                    # ただし、出力は既にyieldされているため、ここでは計算できない
+                    # そのため、execution_tasks.pyで計算する
+                    tokens_used = prompt_tokens  # 暫定的にプロンプトトークンのみ
+                except ImportError:
+                    logger.warning("tiktokenライブラリがインストールされていません。トークン数の計算をスキップします。")
+                except Exception as e:
+                    logger.warning(f"トークン数の計算に失敗: {str(e)}")
 
         except Exception as e:
             logger.error(f"✗ ストリーミング失敗: {str(e)}")

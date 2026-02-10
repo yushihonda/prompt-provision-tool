@@ -664,12 +664,24 @@ const PersistentStatusBar = {
 
         this.updateUI(true);
         this.renderTasks();
+
+        // 実行開始イベントを発火（ダッシュボードでカードを更新するため）
+        window.dispatchEvent(new CustomEvent('executionStarted', {
+            detail: { executionId, promptId, promptName: this.promptName }
+        }));
     },
 
     stop() {
+        const oldPromptId = this.promptId;
         // 完了状態を表示するため、すぐには非表示にしない
         // 代わりに完了状態に移行
         this.markAsCompleted();
+        // 実行完了イベントを発火（ダッシュボードでカードを更新するため）
+        if (oldPromptId) {
+            window.dispatchEvent(new CustomEvent('executionCompleted', {
+                detail: { promptId: oldPromptId }
+            }));
+        }
     },
 
     markAsCompleted(status = 'success') {
@@ -677,6 +689,13 @@ const PersistentStatusBar = {
         const completedExecutionId = this.executionId;
         const completedPromptId = this.promptId;
         const completedPromptName = this.promptName;
+
+        // 実行完了イベントを発火（ダッシュボードでカードを更新するため）
+        if (completedPromptId) {
+            window.dispatchEvent(new CustomEvent('executionCompleted', {
+                detail: { executionId: completedExecutionId, promptId: completedPromptId, status }
+            }));
+        }
 
         if (completedExecutionId && completedPromptId) {
             const completedTask = {
