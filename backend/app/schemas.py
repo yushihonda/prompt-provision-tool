@@ -66,6 +66,10 @@ class PromptBase(BaseModel):
     input_schema: Optional[Dict[str, Any]] = None
     allows_file_output: bool = False  # ファイル出力を許可するか
     enable_deep_think: bool = True  # Deep Think機能を有効にするか（Gemini 2.5/3系のみ、デフォルト: True）
+    # 外部ツール利用可否フラグ（エージェント側のオーケストレーション用メタデータ）
+    enable_web_search: bool = False
+    enable_code_interpreter: bool = False
+    enable_file_search: bool = False
 
 
 class PromptCreate(PromptBase):
@@ -81,6 +85,10 @@ class PromptUpdate(BaseModel):
     is_active: Optional[bool] = None
     allows_file_output: Optional[bool] = None  # ファイル出力を許可するか
     enable_deep_think: Optional[bool] = None  # Deep Think機能を有効にするか（Gemini 2.5/3系のみ）
+    # 外部ツール利用可否フラグ（エージェント側のオーケストレーション用メタデータ）
+    enable_web_search: Optional[bool] = None
+    enable_code_interpreter: Optional[bool] = None
+    enable_file_search: Optional[bool] = None
 
 
 class PromptResponse(PromptBase):
@@ -102,6 +110,9 @@ class PromptListResponse(BaseModel):
     model_type: str
     allows_file_output: bool = False  # ファイル出力を許可するか
     enable_deep_think: bool = True  # Deep Think機能を有効にするか
+    enable_web_search: bool = False
+    enable_code_interpreter: bool = False
+    enable_file_search: bool = False
 
     class Config:
         from_attributes = True
@@ -154,6 +165,13 @@ class ExecutionResponse(BaseModel):
     account_id: int
     prompt_id: Optional[int]
     prompt_name: Optional[str] = None
+    # ワークフロー関連フィールド（ワークフロー実行時のみ値が入る）
+    workflow_execution_id: Optional[int] = None
+    workflow_skill_id: Optional[int] = None
+    step_order: Optional[int] = None
+    # 表示用のワークフロー名・ステップ名
+    workflow_name: Optional[str] = None
+    step_name: Optional[str] = None
     input_data: str
     output_data: Optional[str] = None
     model_used: str
@@ -163,6 +181,8 @@ class ExecutionResponse(BaseModel):
     error_message: Optional[str] = None
     output_format: Optional[str] = "txt"  # 出力形式（csv, pdf, docx, md, txt）
     executed_at: datetime
+    # Deep Think有効フラグ（履歴詳細表示用）
+    enable_deep_think: Optional[bool] = None
 
     class Config:
         from_attributes = True
@@ -277,4 +297,142 @@ class PaginatedResponse(BaseModel):
     total: int
     skip: int
     limit: int
+
+
+# ==================== ワークフロー / Skill ====================
+
+
+class WorkflowBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    input_schema: Optional[Dict[str, Any]] = None
+    is_active: bool = True
+    # ワークフロー専用の統合プロンプト（リーダー）ID
+    leader_prompt_id: Optional[int] = None
+
+
+class WorkflowCreate(WorkflowBase):
+    pass
+
+
+class WorkflowUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    input_schema: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+    leader_prompt_id: Optional[int] = None
+
+
+class WorkflowSkillItem(BaseModel):
+    """ワークフロー内の1ステップ（管理画面・ユーザー共通用の軽量表現）"""
+
+    id: Optional[int] = None  # workflow_skill_id
+    step_order: int
+    step_name: Optional[str] = None
+    prompt_id: int
+    prompt_name: Optional[str] = None
+
+
+class WorkflowResponse(WorkflowBase):
+    id: int
+    created_by: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+    skills: List[WorkflowSkillItem] = []
+
+    class Config:
+        from_attributes = True
+
+
+class WorkflowListItem(BaseModel):
+    """一覧用のサマリー"""
+
+    id: int
+    name: str
+    description: Optional[str] = None
+    input_schema: Optional[Dict[str, Any]] = None
+    is_active: bool
+    leader_prompt_id: Optional[int] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class WorkflowSkillUpdateItem(BaseModel):
+    """/api/admin/workflows/{id}/skills 用入力"""
+
+    prompt_id: int
+    step_order: int
+    step_name: Optional[str] = None
+    config_json: Optional[dict] = None
+
+
+class WorkflowSkillsUpdateRequest(BaseModel):
+    skills: List[WorkflowSkillUpdateItem]
+
+
+class LeaderPromptData(BaseModel):
+    """ワークフロー作成時の親プロンプトデータ"""
+    name: str
+    description: Optional[str] = None
+    content: str  # プロンプト本文
+    model_type: str = "gpt-5.1"
+    input_schema: Optional[Dict[str, Any]] = None
+    enable_deep_think: bool = True
+    enable_web_search: bool = False
+    enable_code_interpreter: bool = False
+    enable_file_search: bool = False
+
+
+class WorkflowCreateWithPrompt(BaseModel):
+    """親プロンプトと子プロンプトを含むワークフロー作成リクエスト"""
+    name: str
+    description: Optional[str] = None
+    input_schema: Optional[Dict[str, Any]] = None
+    is_active: bool = True
+    leader_prompt: LeaderPromptData
+    skills: List[WorkflowSkillUpdateItem] = []  # 子プロンプト（Skills）のリスト
+
+
+class UserWorkflowSummary(BaseModel):
+    """ユーザー用ワークフロー一覧の1件"""
+
+    workflow: WorkflowListItem
+    skills: List[PromptListResponse]
+
+
+class UserWorkflowDetailSkill(BaseModel):
+    """ユーザー用ワークフロー詳細の1ステップ"""
+
+    workflow_skill_id: int
+    step_order: int
+    step_name: Optional[str] = None
+    prompt_id: int
+    prompt_name: str
+
+
+class UserWorkflowDetail(BaseModel):
+    """ユーザー用ワークフロー詳細"""
+
+    workflow: WorkflowListItem
+    skills: List[UserWorkflowDetailSkill]
+    input_schema: Optional[Dict[str, Any]] = None
+
+
+class ExecuteWorkflowRequest(BaseModel):
+    """ワークフロー実行リクエスト"""
+
+    workflow_id: int
+    global_input_data: Dict[str, Any]
+    per_skill_input: Optional[Dict[int, Dict[str, Any]]] = None  # key: workflow_skill_id
+    output_format: Optional[str] = "txt"
+
+
+class ExecuteWorkflowResponse(BaseModel):
+    workflow_id: int
+    workflow_execution_id: int  # ワークフロー実行ID
+    execution_ids: List[int]
 

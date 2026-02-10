@@ -152,6 +152,37 @@ def publish_cancel(execution_id: int):
         raise
 
 
+def publish_workflow_next_step(execution_id: int, next_step_data: dict):
+    """
+    ワークフロー次のステップイベントをRedis Streamに送信
+
+    Args:
+        execution_id: 現在の実行ID
+        next_step_data: 次のステップ情報（next_execution_id, next_step_order, step_name, workflow_name等）
+    """
+    try:
+        client = get_redis_client()
+        stream_name = f"execution:{execution_id}"
+
+        msg_id = client.xadd(
+            stream_name,
+            {
+                "type": "workflow_next_step",
+                "data": json.dumps(next_step_data),
+                "timestamp": str(int(time.time()))
+            },
+            maxlen=settings.REDIS_STREAM_MAX_LENGTH
+        )
+
+        # TTL設定（2時間）
+        client.expire(stream_name, settings.REDIS_STREAM_TTL)
+
+        logger.info(f"Published workflow_next_step for execution {execution_id}: {next_step_data}, msg_id: {msg_id}")
+    except Exception as e:
+        logger.error(f"Failed to publish workflow_next_step for execution {execution_id}: {str(e)}")
+        raise
+
+
 def is_cancelled(execution_id: int) -> bool:
     """
     実行がキャンセルされているかチェック

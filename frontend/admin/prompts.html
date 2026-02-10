@@ -47,7 +47,7 @@
             </div>
         </div>
 
-        <div class="content">
+            <div class="content">
             <h1 class="page-title">プロンプト管理</h1>
             <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
                 <div style="display: flex; gap: 10px;">
@@ -56,14 +56,42 @@
                     <button class="nav-item" onclick="location.href='accounts.html'">アカウント管理</button>
                     <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
                 </div>
-                <button class="btn btn-purple" onclick="showCreateModal()" style="white-space: nowrap; display: inline-flex; align-items: center; gap: 8px;">
-                    <img src="../img/iconmonstr-text-plus-lined.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">
-                    プロンプト作成
-                </button>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <button class="btn btn-outline" onclick="showCreateWorkflowFromPrompts()" style="white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; border-color: rgba(156,39,176,0.5); color: #e1bee7;">
+                        <img src="../img/iconmonstr-apps-filled.svg" alt="WF" style="width: 16px; height: 16px; filter: brightness(0) invert(1); opacity: 0.85;">
+                        ワークフロー作成
+                    </button>
+                    <button class="btn btn-purple" onclick="showCreateModal()" style="white-space: nowrap; display: inline-flex; align-items: center; gap: 8px;">
+                        <img src="../img/iconmonstr-text-plus-lined.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">
+                        プロンプト作成
+                    </button>
+                </div>
             </div>
 
 
             <div class="card">
+                <h2 style="font-size: 16px; margin: 0 0 8px; font-weight: bold;">ワークフロー一覧</h2>
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>ワークフロー名</th>
+                            <th>説明</th>
+                            <th>ステータス</th>
+                            <th>アクション</th>
+                        </tr>
+                    </thead>
+                    <tbody id="workflows-tbody">
+                        <tr>
+                            <td colspan="5" style="text-align: center;">読み込み中...</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div id="workflows-pagination-container" class="pagination" style="display: none; margin-top: 8px;"></div>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
+                <h2 style="font-size: 16px; margin: 0 0 8px; font-weight: bold;">Skill（プロンプト）一覧</h2>
                 <table class="table">
                     <thead>
                         <tr>
@@ -72,7 +100,7 @@
                             <th>説明</th>
                             <th>モデル</th>
                             <th>ステータス</th>
-                            <th>ファイル出力</th>
+                            <th>出力/ツール</th>
                             <th>アクション</th>
                         </tr>
                     </thead>
@@ -82,8 +110,8 @@
                         </tr>
                     </tbody>
                 </table>
+                <div id="pagination-container" class="pagination" style="display: none; margin-top: 8px;"></div>
             </div>
-            <div id="pagination-container" class="pagination" style="display: none;"></div>
         </div>
     </div>
 

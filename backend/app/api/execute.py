@@ -4,8 +4,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
 from app.auth import get_current_user
-from app.models import Account, Prompt, AccountPrompt, Execution
-from app.schemas import ExecutePromptRequest, ExecutePromptResponse
+from app.models import Account, Prompt, AccountPrompt, Execution, Workflow, WorkflowSkill, WorkflowExecution
+from app.schemas import (
+    ExecutePromptRequest,
+    ExecutePromptResponse,
+    ExecuteWorkflowRequest,
+    ExecuteWorkflowResponse,
+)
 from app.encryption import encryption_service
 from app.services.openai_service import openai_service
 from app.services.gemini_service import gemini_service
@@ -224,6 +229,154 @@ async def execute_prompt(
     }
 
 
+@router.post("/workflow", response_model=ExecuteWorkflowResponse)
+async def execute_workflow(
+    request: ExecuteWorkflowRequest,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """
+    ワークフローを実行（順次実行：各Step完了後に次のStepを自動起動）
+
+    - WorkflowExecutionレコードを作成
+    - 最初のStepのみを起動（順次実行のため）
+    - 各Step完了時に次のStepが自動的に起動される
+    - 前Stepの出力が次のStepの入力に自動マージされる
+    - 応答として、workflow_execution_idと最初のexecution_idを返す
+    """
+    # ワークフローの取得とバリデーション
+    wf = (
+        db.query(Workflow)
+        .filter(Workflow.id == request.workflow_id, Workflow.deleted_at.is_(None))
+        .first()
+    )
+    if not wf or not wf.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ワークフローが見つからないか、現在利用できません",
+        )
+
+    # ワークフロー内のSkill（Prompt）一覧を取得
+    wf_skills = (
+        db.query(WorkflowSkill)
+        .join(Prompt, Prompt.id == WorkflowSkill.prompt_id)
+        .filter(
+            WorkflowSkill.workflow_id == request.workflow_id,
+            Prompt.deleted_at.is_(None),
+            Prompt.is_active == True,  # noqa: E712
+        )
+        .order_by(WorkflowSkill.step_order.asc(), WorkflowSkill.id.asc())
+        .all()
+    )
+
+    if not wf_skills:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="このワークフローには有効なStepがありません",
+        )
+
+    # ユーザーに割り当てられているプロンプトのみを許可
+    assigned_prompt_ids = {
+        ap.prompt_id
+        for ap in db.query(AccountPrompt)
+        .filter(AccountPrompt.account_id == current_user.id)
+        .all()
+    }
+
+    # 実行可能なSkillのみをフィルタ
+    executable_skills = [
+        ws for ws in wf_skills
+        if ws.prompt and ws.prompt.id in assigned_prompt_ids
+    ]
+
+    if not executable_skills:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="このユーザーが実行可能なStepがワークフローに含まれていません",
+        )
+
+    # JST現在時刻を一度だけ取得
+    jst = timezone(timedelta(hours=9))
+    now_jst = datetime.now(jst)
+
+    # WorkflowExecutionレコードを作成
+    wf_execution = WorkflowExecution(
+        workflow_id=request.workflow_id,
+        account_id=current_user.id,
+        status="pending",
+        current_step=1,
+        total_steps=len(executable_skills),
+        global_input_data=json.dumps(request.global_input_data or {}, ensure_ascii=False),
+    )
+    db.add(wf_execution)
+    db.commit()
+    db.refresh(wf_execution)
+
+    # 最初のステップのみを起動（順次実行のため）
+    first_skill = executable_skills[0]
+    prompt = first_skill.prompt
+
+    # per_skill_input のキーは workflow_skill_id を想定
+    per_skill_overrides = {}
+    if request.per_skill_input and first_skill.id in request.per_skill_input:
+        per_skill_overrides = request.per_skill_input[first_skill.id]
+
+    # グローバル入力とSkill個別入力をマージ（個別が優先）
+    merged_input = dict(request.global_input_data or {})
+    merged_input.update(per_skill_overrides or {})
+
+    # 実行時のDeep Think判定（既存ロジックに合わせる）
+    final_enable_deep_think = getattr(prompt, "enable_deep_think", True)
+    if final_enable_deep_think is None:
+        final_enable_deep_think = True
+
+    # output_format
+    output_format_value = request.output_format or "txt"
+
+    # 最初のExecutionレコード作成
+    execution = Execution(
+        account_id=current_user.id,
+        prompt_id=prompt.id,
+        workflow_execution_id=wf_execution.id,
+        workflow_skill_id=first_skill.id,
+        step_order=first_skill.step_order,
+        input_data=json.dumps(merged_input, ensure_ascii=False),
+        status="pending",
+        model_used=prompt.model_type,
+        enable_deep_think=bool(final_enable_deep_think),
+        output_format=output_format_value,
+        executed_at=now_jst,
+    )
+    db.add(execution)
+    
+    # ワークフロー実行のステータスを更新
+    wf_execution.status = "processing"
+    db.commit()
+    db.refresh(execution)
+
+    # Celeryタスクキュー投入（最初のステップのみ）
+    if not CELERY_AVAILABLE or not execute_prompt_task:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Celery/Redisサービスが利用できません。システム管理者に連絡してください。",
+        )
+
+    execute_prompt_task.delay(
+        execution_id=execution.id,
+        prompt_id=prompt.id,
+        input_data=merged_input,
+        output_format=output_format_value,
+        attachments=None,
+        enable_deep_think=final_enable_deep_think,
+    )
+
+    return ExecuteWorkflowResponse(
+        workflow_id=request.workflow_id,
+        workflow_execution_id=wf_execution.id,  # ワークフロー実行ID
+        execution_ids=[execution.id],  # 最初のexecution_idのみ返す
+    )
+
+
 @router.post("/{execution_id}/cancel")
 async def cancel_execution(
     execution_id: int,
@@ -362,7 +515,7 @@ async def stream_execution(
 
                 logger.info(f"SSE event {event_count} sent for execution {execution_id}: type={event_type}")
 
-                # 完了時はループを抜ける
+                # 完了時はループを抜ける（workflow_next_stepは継続）
                 if event_type in ["complete", "error", "cancel"]:
                     logger.info(f"SSE stream ending for execution {execution_id}: type={event_type}")
                     break
