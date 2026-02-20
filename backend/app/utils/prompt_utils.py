@@ -71,10 +71,10 @@ def replace_placeholders(prompt_template: str, input_data: dict) -> str:
                 )
 
             if not replaced_any:
+                available_placeholders = re.findall(r'\{([^}]+)\}', prompt_template)
                 logger.warning(
                     f"⚠️ Placeholders {placeholder_single}/{placeholder_double} not found in template! "
-                    f"Available single-brace placeholders in template: "
-                    f"{re.findall(r'\\{([^}]+)\\}', prompt_template)}"
+                    f"Available single-brace placeholders in template: {available_placeholders}"
                 )
 
     # 連続する空行を1つにまとめる
