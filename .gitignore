@@ -1,3 +1,6 @@
+# Node（Mermaid CLI / cloc など開発用監査ツール）
+node_modules/
+
 # Python
 __pycache__/
 *.py[cod]

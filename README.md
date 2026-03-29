@@ -33,6 +33,82 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
   - gemini-2.5-flash
   - gemini-2.0-flash
 
+## リポジトリ構成（ディレクトリ一覧）
+
+「どこに何があるか」の早見表です。詳細な要件・手順はこの README の各節が正です。
+
+**読み分けの目安**: バックエンドだけ触る → 最初の小見出し。親（管理）画面 → `frontend/admin/`。子（ユーザー）画面 → `frontend/user/`。
+
+### バックエンド（API・DB・バックグラウンド）
+
+| パス | 役割 |
+|------|------|
+| `backend/app/` | FastAPI 本体。`main.py`、`api/`（`auth` / `admin` / `user` / `execute`）、`services/`（OpenAI・Gemini・Redis・実行）、`tasks/`（Celery）、`utils/`（プロンプト・出力ファイル等）、`models.py`・`schemas.py`・`config.py`・`encryption.py`・`auth.py`・`database.py` など |
+| `backend/alembic/` | MySQL マイグレーション（`alembic upgrade head`） |
+| `backend/requirements.txt` , `Dockerfile` , `alembic.ini` | Python 依存・コンテナ・Alembic 設定 |
+
+### 管理画面（親アカウント / `frontend/admin/`）
+
+| パス | 役割 |
+|------|------|
+| `frontend/admin/*.html` | ログイン、ダッシュボード、アカウント、プロンプト、実行一覧（管理側） |
+| `frontend/admin/js/admin-common.js` | 認証・`apiRequest` 等の共通処理 |
+| `frontend/admin/js/*.js` | 画面別（`prompts.js`、`accounts.js`、`executions.js`、`dashboard.js`、`login.js`） |
+
+**API の目安**: `POST /api/auth/login`（親）および `/api/admin/*`（ダッシュボード・プロンプト・アカウント等）。
+
+### ユーザー画面（子アカウント / `frontend/user/`）
+
+| パス | 役割 |
+|------|------|
+| `frontend/user/*.html` | ログイン、ダッシュボード、単体実行、ワークフロー実行、履歴 |
+| `frontend/user/js/user-common.js` | 認証・`apiRequest`・実行 UI 共通処理 |
+| `frontend/user/js/*.js` | 画面別（`execute.js`、`workflow-execute.js`、`history.js`、`dashboard.js`、`login.js`） |
+| `frontend/user/js/execution-worker.js` | SSE ストリーミング用 Web Worker（`fetch` + 読み取りループ） |
+
+**API の目安**: `POST /api/auth/login`（子）、`/api/user/*`（プロンプト・履歴・ワークフロー等）、実行は `POST /api/execute` および `GET /api/execute/{id}/stream`（Worker 経由）。
+
+### フロントの共通静的資産
+
+| パス | 役割 |
+|------|------|
+| `frontend/css/` | 共通スタイル（`style.css`） |
+| `frontend/img/` | SVG アイコン等 |
+
+### デプロイ・CI・ドキュメント・リポジトリ直下
+
+| パス | 役割 |
+|------|------|
+| `deployment/` | 本番向け Nginx・systemd・セットアップ。`deployment/local/` はローカル検証用 Nginx サンプル等 |
+| `docs/` | 図のソース `*.mmd`、生成物 `diagrams/*.png`・`complexity_report.txt`（`audit.sh` / `npm run audit`） |
+| `.github/workflows/` | CI（デプロイワークフロー等） |
+| 直下 | `docker-compose.local.yml`（ローカル検証）、`audit.sh`・`package.json`（監査）、`.env.sample`、`.cursorrules`（任意）、`README.md` |
+
+### ツリー（主要ディレクトリのみ）
+
+```
+prompt-provision-tool/
+├── backend/                         # 【バックエンド】
+│   ├── app/
+│   │   ├── api/                     # auth, admin, user, execute
+│   │   ├── services/
+│   │   ├── tasks/
+│   │   ├── utils/
+│   │   ├── main.py, config.py, models.py, schemas.py, ...
+│   ├── alembic/versions/
+│   ├── requirements.txt, Dockerfile, alembic.ini
+├── frontend/
+│   ├── admin/                       # 【管理画面・親】*.html, js/
+│   ├── user/                        # 【ユーザー画面・子】*.html, js/（含: execution-worker.js）
+│   ├── css/, img/                 # 【フロント共通】
+├── deployment/                      # 本番補助（+ local/）
+├── docs/
+├── .github/workflows/
+├── docker-compose.local.yml
+├── audit.sh, package.json
+└── README.md
+```
+
 ## 環境変数（.env）
 ```
 # DB
@@ -834,26 +910,18 @@ Thumbs.db
 prompt-provision-tool.zip
 
 ## 構成
-```
-prompt-provision-tool/
-├── backend/                    # FastAPI・アプリケーション
-│   ├── app/
-│   │   ├── celery_app.py       # Celeryアプリケーション初期化
-│   │   ├── tasks/              # Celeryタスク
-│   │   │   └── execution_tasks.py
-│   │   ├── services/
-│   │   │   └── redis_service.py  # Redis Stream操作
-│   │   └── utils/
-│   │       └── prompt_utils.py   # プロンプト関連ユーティリティ
-│   └── requirements.txt         # 依存関係（celery, redis含む）
-├── frontend/                    # 静的フロント（/static に配信）
-│   └── user/
-│       └── js/
-│           └── execution-worker.js  # Web Worker実装
-├── deployment/                  # Nginx・systemd 等
-├── docker-compose.local.yml     # ローカル開発用（Redis, Celery Worker含む）
-└── README.md                    # 本ファイル（要件定義・動作確認レポートも集約）
-```
+
+リポジトリ全体のディレクトリ早見表は、冒頭の **[リポジトリ構成（ディレクトリ一覧）](#リポジトリ構成ディレクトリ一覧)** を参照してください。
+
+以下は **Celery + Redis + SSE + Web Worker** まわりに絞ったファイル対応です。
+
+| ファイル | 役割 |
+|----------|------|
+| `backend/app/celery_app.py` | Celery アプリ初期化 |
+| `backend/app/tasks/execution_tasks.py` | プロンプト実行タスク |
+| `backend/app/services/redis_service.py` | Redis Stream（チャンク配信・キャンセルフラグ等） |
+| `backend/app/utils/prompt_utils.py` | プレースホルダ・サニタイズ等 |
+| `frontend/user/js/execution-worker.js` | SSE 接続管理（Web Worker） |
 
 ## Celery + Redis + ストリーミング + Web Worker
 
@@ -966,6 +1034,95 @@ python -m app.init_admin
 - このDocker構成はローカル検証向けです。本番環境（ConoHaVPS）では使用しません。
 - 本番環境では `deployment/` の systemd 構成を使用してください。
 - DB初期化/マイグレーションが必要な場合は、コンテナ内で `alembic upgrade head` を実行してください。
+
+## 開発用: Mermaid 図の画像化とコード規模レポート（監査）
+
+アーキテクチャ図（`.mmd`）を PNG にし、行数集計（`cloc`）を `docs/complexity_report.txt` に出すための手順です。**どのプロジェクトでも使えるグローバル用**と、このリポジトリ内だけの**ローカル用**があります。
+
+### 前提
+
+- **Node.js** と **npm**（`npx` が使えること）
+- 図のソースはリポジトリルートからの相対パス **`docs/*.mmd`**（中身は Mermaid の生テキスト。コードフェンス不要）
+- 成果物: **`docs/diagrams/*.png`**、**`docs/complexity_report.txt`**
+
+### 全プロジェクト共通（推奨）
+
+マシンに一度だけスクリプトを置き、任意のプロジェクトルートで実行します。
+
+1. **スクリプトの配置**（どちらか）
+   - 既に入っている場合: `~/.local/bin/project-audit` をそのまま使う（`PATH` に `~/.local/bin` が含まれていること）
+   - バックアップ用コピー: `~/Downloads/project-audit` を `chmod +x` したうえで次へコピーする
+     `cp ~/Downloads/project-audit ~/.local/bin/project-audit && chmod +x ~/.local/bin/project-audit`
+2. **実行**
+   ```bash
+   cd /path/to/任意のプロジェクト
+   project-audit
+   ```
+   別ディレクトリを明示する場合:
+   ```bash
+   project-audit /path/to/任意のプロジェクト
+   ```
+3. **動作の要点**
+   - 各リポに `node_modules` は不要。`npx --package=...` で `@mermaid-js/mermaid-cli` と `cloc` を利用します
+   - 初回は Mermaid CLI まわりの取得で時間がかかることがあります
+
+### このリポジトリだけ（`npm install` あり）
+
+クローン先でグローバルスクリプトを使わない場合:
+
+```bash
+cd /path/to/prompt-provision-tool
+npm install
+./audit.sh
+# または
+npm run audit
+```
+
+`PATH` 上に `project-audit` があると、`./audit.sh` は内部で **`project-audit` に委譲**します。無い場合のみ、このリポの `node_modules` を使います。
+
+### 補足
+
+- **`cloc` は行数・言語別の規模**であり、圈複雑度（cyclomatic complexity）そのものではありません
+- サンプル: `docs/architecture-sample.mmd` → 生成例 `docs/diagrams/architecture-sample.png`
+
+## AI との開発: 日常用プロンプトと監査ワークフロー
+
+Cursor の **User ルール**（メンター方針・思考の型）が既に効いている前提で、チャット／Composer に毎回長文を書かずに済むよう、**要件だけ足すテンプレ**と、**図・数値での監査**の流れをまとめます。
+
+### 日常用テンプレ（コピー用）
+
+```markdown
+【目的】
+（実装したいこと・直したい不具合を短く）
+
+【制約・コンテキスト】
+- （例: 既存テーブル／API・セキュリティ要件・触ってはいけない範囲）
+- （例: パフォーマンスや互換性の優先度）
+
+【アクション】
+- Cursor のユーザールールに従い、方針と代替案（Plan B）を先に整理してから実装してください。
+- 最新仕様や一次ソースが必要なら、MCP の **Fetch**（または Playwright）で **公式 URL を指定して取得**し、推測で補わないでください。（Brave Search MCP を入れている場合は検索でも可）
+- アーキテクチャやデータフローに触れたら **Mermaid** を提示し、継続利用するなら `docs/*.mmd` として保存してください。
+- 最後に、この変更の**検証手順**（テスト・手動確認）を箇条書きしてください。
+```
+
+### 監査までの流れ（このリポ）
+
+1. 実装・図の更新（AI が `docs/〇〇.mmd` を更新または新規作成する場合あり）
+2. ターミナルで監査（どちらか）
+   - グローバル: `project-audit`（任意のプロジェクトルートで可）
+   - このリポのみ: `./audit.sh` または `npm run audit`
+3. `docs/diagrams/*.png` と `docs/complexity_report.txt` を目視確認
+4. ユーザールールどおり、複雑な箇所では AI から「なぜその設計か」「スケール時のボトルネック」などの**確認用の問い**が返る想定
+
+### MCP とテンプレの対応（参考）
+
+| 役割 | いまの想定 |
+|------|------------|
+| 推論の整理 | **Sequential Thinking** MCP、および User ルール |
+| 設計の永続メモリ | **Memory** MCP（Knowledge Graph） |
+| 公式ドキュメント取得 | **Fetch**（`mcp-fetch-server`）※ URL を指示する |
+| コードベース把握 | **Serena**（このプロジェクト向け） |
 
 ## 更新履歴
 
@@ -1246,3 +1403,137 @@ python -m app.init_admin
 - **実行結果の再編集・再実行**
   - 過去の実行結果を編集して再実行可能
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+了解。外部顧客向け前提で、「**フロー/スキルはサーバーに秘匿**」「**AI実行はローカル（顧客端末/顧客VPC）**」「**結果はサーバーで閲覧**」を満たしつつ、**ローカル側で並列処理**する現実的なやり方をまとめます。
+
+## 1) まず全体の切り分け（秘匿と並列の両立）
+- **サーバー（Control Plane）**がやること（=秘匿したい所）
+  - ワークフロー定義（DAG/ステップ順）
+  - スキル定義（テンプレ、品質基準、採点、ガードレール）
+  - ジョブ分割・依存解決・再試行・優先度・予算管理
+  - 署名付き「実行命令（Job）」発行
+- **ローカル（Execution Worker）**がやること
+  - 受け取ったJobを**並列に**実行（LLM/TTS/画像/検索など）
+  - 中間結果を返す（もしくは暗号化してアップロード）
+  - 端末リソース（GPU/CPU/メモリ）に合わせた同時実行数制御
+
+この方式だと、顧客に見えるのは「渡されたJobの範囲」で、**フロー全体やスキル全文を配布しない**設計が取りやすいです。
+
+---
+
+## 2) ローカルでの「並列処理」のやり方（選択肢）
+並列化には主に3レイヤがあります。多くは組み合わせます。
+
+### A. **プロセス並列（いちばん堅い）**
+- Jobごとに別プロセスで実行（Node/Python/Goなど）
+- **利点**: 1つが落ちても他に影響しにくい、メモリ分離、監視しやすい  
+- **用途**: 外部API呼び、複数モデルの同時実行、重い前処理
+
+### B. **スレッド/タスク並列（軽量）**
+- 1プロセス内で async/await（I/O並列）やワーカースレッド（CPU並列）
+- **利点**: 生成待ち（ネットワーク待ち）を効率化
+- **注意**: CPUバウンドはスレッド/プロセスに逃がすのが無難
+
+### C. **GPU/モデル並列（ローカルLLM特有）**
+- ローカルモデル（例: llama.cpp / Ollama系）は、
+  - **同時に複数リクエスト**を投げると遅くなる/VRAM枯渇しがち
+  - その代わり **バッチング**や**キュー**で「1〜数本に絞る」のが速いことが多い
+- つまり「並列＝無限に同時」ではなく、**端末能力に合わせて上限を設ける**のが正解
+
+---
+
+## 3) 実務でよくある“並列化”の設計（DAG + ローカルキュー）
+記事生成だと、自然にDAGになります。
+
+- **並列にできる例**
+  - 競合しない「素材集め」: 参考URL収集 / 見出し案×N / ペルソナ案×N
+  - 「候補生成」: タイトル案×20、導入案×10、構成案×5
+  - 「レビュー」: 校正・SEO・トーンチェックを別エージェントで同時
+- **直列が必要な例**
+  - 構成が固まってから本文
+  - 本文が固まってから最終校正
+
+このDAGをサーバーが解決して、「今実行可能なJob」をローカルへ配布。ローカルは **ローカルキュー（優先度付き）**で空いてる枠に流します。
+
+---
+
+## 4) ローカル側の並列実行を“どう実装するか”（具体）
+ローカルワーカーはだいたいこの部品でできています。
+
+- **Job Poller / Subscriber**
+  - サーバーから「実行可能Job」を受け取る（長輪講: WebSocket/SSE or ポーリング）
+- **Scheduler**
+  - Jobの種類ごとに同時実行枠（concurrency）を決める  
+    - 例: 外部APIは同時8、ローカルLLMは同時1、埋め込みは同時2…など
+- **Executor**
+  - Jobを実行（LLM呼び出し、ツール呼び出し、ファイル生成など）
+- **Result Uploader**
+  - 中間/最終結果とメタデータ（トークン数、所要時間、モデル名、ハッシュ）を送る
+
+**肝**はSchedulerで、次の2つを必ず入れます。
+- **レート制限**（外部APIの429対策、顧客の予算制御）
+- **リソース制限**（GPU/VRAM/メモリ、同時実行数の上限）
+
+---
+
+## 5) 「複数AI」の並列って、何を並列にするの？
+2種類あります。
+
+- **(1) “複数ロール”を並列**（Writer/Editor/SEO/Fact-checker）
+  - 同じ入力から別観点の出力を同時に作る（速い・品質上がる）
+- **(2) “サンプリング”を並列**（候補をN本作ってbestを選ぶ）
+  - タイトル案20本→スコアリング→上位3本だけ採用、みたいな
+
+外部顧客向けでノウハウを守りたいなら、**best選定（評価関数）をサーバー側**に寄せるのが有効です。ローカルは候補を量産するだけにできる。
+
+---
+
+## 6) 外部顧客向けでの注意点（並列以前に重要）
+- **APIキーの扱い**
+  - 顧客自身のキーで外部APIを叩かせるのか（最もシンプル）
+  - あなたの会社のキーを使うなら、ローカルに配らず**サーバー経由**が基本（ただし「AI処理はローカル」という要件とトレードオフ）
+- **データ漏洩**
+  - ローカル実行でも、結果をサーバーに上げるなら「何を保存するか」は契約/設計が必要
+- **改ざん/なりすまし**
+  - JobとResultは署名・トレーサビリティ（job_id、hash）を必須に
+
+---
+
+## 7) 記事制作フローの「サーバー保持 / ローカル実行」切り分け例（要望の表）
+- **企画（テーマ→狙い決め）**
+  - **サーバー**: 狙い・禁止事項・品質基準・テンプレ（秘匿）
+  - **ローカル**: アイデア候補生成×N（並列）
+- **構成（見出し案）**
+  - **ローカル**: 構成案×N（並列）
+  - **サーバー**: 採点・統合・最終構成の決定（秘匿）
+- **執筆（本文）**
+  - **ローカル**: セクション単位で並列執筆（H2単位など）
+  - **サーバー**: トーン統一ルール適用・一貫性チェック（秘匿寄せ可能）
+- **校正/SEO/ファクトチェック**
+  - **ローカル**: チェック観点を並列実行
+  - **サーバー**: 重大判定・最終承認・スコア（秘匿）
+
+---
+
+## 次に決めると設計が固まる3点（短い質問）
+- **ローカル実行環境**: 顧客PC（Mac/Win）？それとも顧客VPC内のサーバー？
+- **AI実行**: ローカルLLM（GPU）前提？外部API併用OK？
+- **並列の目的**: 「とにかく速く」？「品質を上げたい（候補多め+選抜）」？
+
+この3つを教えてくれれば、あなたの要件に合わせて **推奨の並列モデル（キュー構成・同時実行上限・ジョブ分割単位）**まで具体化して提示します。
