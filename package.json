@@ -1,0 +1,14 @@
+{
+  "name": "prompt-provision-tool",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Python アプリ本体。Mermaid 画像化・cloc は開発用のみ。",
+  "scripts": {
+    "audit": "./audit.sh"
+  },
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^11.12.0",
+    "cloc": "^2.11.0",
+    "puppeteer": "^23.11.1"
+  }
+}

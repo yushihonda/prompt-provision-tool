@@ -1,0 +1,26 @@
+# prompt-provision-tool（プロジェクト固有・追記用）
+# 共通の振る舞い・メンター方針・作業プロセスは Cursor Settings → Rules, Skills, Subagents の「User」ルールにのみ置くこと（本リポの .cursor/rules には同文を置かない＝二重適用を避ける）。
+
+## スタック
+- バックエンド: Python / FastAPI / Uvicorn（実装は `backend/app/`）
+- ORM・マイグレーション: SQLAlchemy 2.x / Alembic（`backend/alembic/`）
+- 非同期ジョブ: Celery + Redis
+- DB: MySQL 8.0（接続は PyMySQL。スキーマ・手順は README）
+- フロント: `frontend/` 配下の静的 HTML + バニラ JS（ビルドツールなし）
+
+## 作業時の参照
+- 要件・環境変数・セキュリティ仕様・運用手順の正は `README.md`
+- 本番デプロイ補助は `deployment/`
+
+## 変更時の注意（このリポの前提）
+- プロンプト本文はクライアントに返さず、暗号化保存・サーバ側復号のみ（詳細は README の暗号化・セキュリティ節）
+- スキーマ変更は Alembic でマイグレーションを追加し、`alembic upgrade head` で検証可能にすること
+- AI 呼び出しは OpenAI / Google（Gemini）両系。モデル一覧・命名は README「対応モデル」に合わせる
+
+## よく使うコマンド（開発）
+```bash
+cd backend && pip install -r requirements.txt
+alembic upgrade head
+ENVIRONMENT=development uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+celery -A app.celery_app worker --loglevel=info
+```
