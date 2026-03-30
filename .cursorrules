@@ -1,26 +1,39 @@
 # prompt-provision-tool（プロジェクト固有・追記用）
-# 共通の振る舞い・メンター方針・作業プロセスは Cursor Settings → Rules, Skills, Subagents の「User」ルールにのみ置くこと（本リポの .cursor/rules には同文を置かない＝二重適用を避ける）。
 
 ## スタック
-- バックエンド: Python / FastAPI / Uvicorn（実装は `backend/app/`）
+- バックエンド: Python / FastAPI / Uvicorn（`backend/app/`）
 - ORM・マイグレーション: SQLAlchemy 2.x / Alembic（`backend/alembic/`）
-- 非同期ジョブ: Celery + Redis
-- DB: MySQL 8.0（接続は PyMySQL。スキーマ・手順は README）
+- DB: MySQL 8.0（PyMySQL）
+- SSE ストリーミング: Redis Streams
 - フロント: `frontend/` 配下の静的 HTML + バニラ JS（ビルドツールなし）
+- ローカル実行: `local_worker/`（Python CLI、asyncio 並列、OpenAI/Gemini SDK）
+- Docker: `deployment/docker-compose.local.yml`
+
+## アーキテクチャ
+- サーバー = スキル暗号化保存 + バンドル配信 + 結果保存のみ（AI 処理なし）
+- ローカルワーカー = 全ての AI 実行（ユーザーの API キーで直接 LLM 呼び出し）
+- ワークフロー = 親スキル（Parent Skill）+ グループ化されたスキル群（グループ単位で直列/並列）
 
 ## 作業時の参照
-- 要件・環境変数・セキュリティ仕様・運用手順の正は `README.md`
+- 要件・仕様の正は `README.md`（簡潔版）と `docs/README_FULL.md`（詳細版）
 - 本番デプロイ補助は `deployment/`
 
-## 変更時の注意（このリポの前提）
-- プロンプト本文はクライアントに返さず、暗号化保存・サーバ側復号のみ（詳細は README の暗号化・セキュリティ節）
-- スキーマ変更は Alembic でマイグレーションを追加し、`alembic upgrade head` で検証可能にすること
-- AI 呼び出しは OpenAI / Google（Gemini）両系。モデル一覧・命名は README「対応モデル」に合わせる
+## 変更時の注意
+- スキル本文はクライアントに返さず、暗号化保存・サーバ側復号のみ
+- スキーマ変更は Alembic マイグレーション追加 → `alembic upgrade head`
+- AI 呼び出しは OpenAI / Gemini 両系。モデル一覧は README「対応モデル」参照
+- Celery は廃止済み。非同期ジョブはローカルワーカーデーモンが処理
 
 ## よく使うコマンド（開発）
 ```bash
-cd backend && pip install -r requirements.txt
-alembic upgrade head
-ENVIRONMENT=development uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-celery -A app.celery_app worker --loglevel=info
+# サーバー起動
+cd deployment && docker compose -f docker-compose.local.yml up -d
+docker exec ppt-backend alembic upgrade head
+
+# ローカルワーカー
+pip install -r local_worker/requirements.txt
+python -m local_worker daemon              # 常駐モード（UI から自動実行）
+python -m local_worker list skills         # スキル一覧
+python -m local_worker skill 260 --input '{"topic":"test"}'  # 単体実行
+python -m local_worker workflow 3 --input '{"topic":"test"}'  # ワークフロー実行
 ```

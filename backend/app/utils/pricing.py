@@ -25,24 +25,31 @@ def calculate_token_cost(model_type: str, tokens: int) -> float:
     # OpenAIモデルの料金（1MトークンあたりのUSD）
     # 入力と出力で料金が異なる場合、平均値を使用
     openai_pricing = {
-        "gpt-4": 30.0,  # 入力$30 + 出力$60の平均
-        "gpt-4-turbo-preview": 10.0,  # 入力$10 + 出力$30の平均
-        "gpt-5": 15.0,  # 仮の値
-        "gpt-5-pro": 20.0,  # 仮の値
-        "gpt-5.1": 25.0,  # 仮の値
-        "gpt-5.1-thinking": 30.0,  # 仮の値（思考時間自動調整モデル）
-        "gpt-5.2": 28.0,  # 仮の値
-        "gpt-5.2-pro": 32.0,  # 仮の値
-        "gpt-5.2-thinking": 35.0,  # 仮の値（思考時間自動調整モデル）
+        "gpt-5.4": 8.25,
+        "gpt-5.4-mini": 1.6,
+        "gpt-5.4-pro": 35.0,
+        "gpt-5.4-thinking": 38.0,
+        "gpt-5.2": 28.0,
+        "gpt-5.2-pro": 32.0,
+        "gpt-5.2-thinking": 35.0,
+        "o4-mini": 2.75,           # 推論/コード コスパ
     }
 
     # Geminiモデルの料金（1MトークンあたりのUSD）
     gemini_pricing = {
-        "gemini-pro": 0.5,  # 入力$0.25 + 出力$0.5の平均
-        "gemini-2.0-flash": 0.15,  # 入力$0.075 + 出力$0.3の平均
-        "gemini-2.5-flash": 0.15,  # 入力$0.075 + 出力$0.3の平均
-        "gemini-2.5-pro": 1.25,  # 入力$1.25 + 出力$5.0の平均
-        "gemini-3-pro-preview": 1.5,  # 入力$1.5 + 出力$6.0の平均
+        "gemini-3.1-pro-preview": 7.0,
+        "gemini-3-pro-preview": 1.5,
+        "gemini-2.5-pro": 1.25,        # 推論/コード強い
+        "gemini-2.5-flash": 0.15,
+    }
+
+    # Claudeモデルの料金（1MトークンあたりのUSD）
+    claude_pricing = {
+        "claude-opus-4-6": 22.5,
+        "claude-opus-4-6-thinking": 27.0,     # Thinking追加コスト
+        "claude-sonnet-4-6": 9.0,
+        "claude-sonnet-4-6-thinking": 12.0,   # Thinking追加コスト
+        "claude-haiku-4-5": 1.25,
     }
 
     # モデルタイプに応じた料金を取得
@@ -50,6 +57,8 @@ def calculate_token_cost(model_type: str, tokens: int) -> float:
         price_per_million = openai_pricing[model]
     elif model in gemini_pricing:
         price_per_million = gemini_pricing[model]
+    elif model in claude_pricing:
+        price_per_million = claude_pricing[model]
     else:
         # デフォルト値（不明なモデルの場合）
         price_per_million = 1.0

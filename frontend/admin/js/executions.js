@@ -1,18 +1,62 @@
 // 管理者 実行ログ画面 JavaScript
 
-let executions = [];
+let groupedRows = []; // { type: 'skill' | 'workflow', ... }
+let allRawExecutions = []; // API生データ（詳細検索用）
 let currentPage = 1;
 const itemsPerPage = 10;
 let totalItems = 0;
 
 async function loadExecutions(page = 1) {
     try {
-        const skip = (page - 1) * itemsPerPage;
-        const response = await apiRequest(`/api/admin/executions?skip=${skip}&limit=${itemsPerPage}`);
+        // ワークフロー実行をまとめるため多めに取得
+        const response = await apiRequest(`/api/admin/executions?skip=0&limit=100`);
+        const allExecs = response.items || response;
+        allRawExecutions = allExecs;
 
-        executions = response.items || response;
-        totalItems = response.total !== undefined ? response.total : (executions.length === itemsPerPage ? page * itemsPerPage + 1 : page * itemsPerPage);
+        // ワークフロー実行IDでグルーピング / スキル単体はそのまま
+        const wfGroups = {};
+        const skillRows = [];
 
+        for (const exec of allExecs) {
+            if (exec.workflow_execution_id) {
+                const weId = exec.workflow_execution_id;
+                if (!wfGroups[weId]) {
+                    wfGroups[weId] = {
+                        type: 'workflow',
+                        workflowExecutionId: weId,
+                        workflowName: exec.workflow_name || 'ワークフロー',
+                        executions: [],
+                    };
+                }
+                wfGroups[weId].executions.push(exec);
+            } else {
+                skillRows.push({ type: 'skill', execution: exec });
+            }
+        }
+
+        // ワークフローグループ内をステップ順ソート、代表日時を算出
+        const wfRows = Object.values(wfGroups).map(g => {
+            g.executions.sort((a, b) => (a.skill_order || 0) - (b.skill_order || 0));
+            g.executedAt = g.executions.reduce((earliest, e) => {
+                if (!e.executed_at) return earliest;
+                return !earliest || e.executed_at < earliest ? e.executed_at : earliest;
+            }, null);
+            g.accountId = g.executions[0]?.account_id;
+            return g;
+        });
+
+        // 統合して日時降順ソート
+        const merged = [...skillRows, ...wfRows];
+        merged.sort((a, b) => {
+            const tA = a.type === 'skill' ? a.execution.executed_at : a.executedAt;
+            const tB = b.type === 'skill' ? b.execution.executed_at : b.executedAt;
+            if (!tA) return 1;
+            if (!tB) return -1;
+            return tB > tA ? 1 : tB < tA ? -1 : 0;
+        });
+
+        groupedRows = merged;
+        totalItems = merged.length;
         currentPage = page;
         renderExecutions();
         renderPagination();
@@ -22,256 +66,217 @@ async function loadExecutions(page = 1) {
     }
 }
 
+function getStatusColor(status) {
+    const colors = { success: '#28a745', error: '#dc3545', cancelled: '#ffc107', pending: '#7c3aed', processing: '#7c3aed', pending_local: '#7c3aed' };
+    return colors[status] || 'rgba(255, 255, 255, 0.6)';
+}
+
+function getOverallStatus(execs) {
+    if (execs.some(e => e.status === 'error')) return 'error';
+    if (execs.some(e => e.status === 'cancelled')) return 'cancelled';
+    if (execs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
+    if (execs.every(e => e.status === 'success')) return 'success';
+    return 'pending';
+}
+
 function renderExecutions() {
     const tbody = document.getElementById('executions-tbody');
+    const start = (currentPage - 1) * itemsPerPage;
+    const pageRows = groupedRows.slice(start, start + itemsPerPage);
 
-    if (executions.length === 0) {
+    if (pageRows.length === 0) {
         tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: rgba(255, 255, 255, 0.6);">実行ログがありません</td></tr>';
         return;
     }
 
-    tbody.innerHTML = executions.map(execution => {
-        let modelDisplay = execution.model_used;
-
-        // Thinkingモデルの場合はサフィックスを削除して表示
-        let isThinkingModel = false;
-        if (modelDisplay && modelDisplay.includes('thinking')) {
-            modelDisplay = modelDisplay.replace('-thinking', '');
-            isThinkingModel = true;
+    tbody.innerHTML = pageRows.map(row => {
+        if (row.type === 'skill') {
+            return renderSkillRow(row.execution);
+        } else {
+            return renderWorkflowRow(row);
         }
-
-        // Deep Thinkモデルの場合はサフィックスを削除して表示
-        let isDeepThinkModel = false;
-        if (modelDisplay && modelDisplay.includes('deep-think')) {
-            modelDisplay = modelDisplay.replace('-deep-think', '');
-            isDeepThinkModel = true;
-        }
-
-        // Proモデルの場合は「-pro」を削除してProバッジを追加
-        const isProModel = execution.model_used && (execution.model_used.includes('-pro') || execution.model_used.endsWith('-pro'));
-        if (isProModel) {
-            // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
-            modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
-            modelDisplay += `<span class="pro-badge">Pro</span>`;
-        }
-
-        // 「-preview」を削除
-        modelDisplay = modelDisplay.replace(/-preview/g, '');
-
-        // Deep Thinkバッジを追加（モデル名にdeep-thinkが含まれる場合、またはenable_deep_thinkが有効でGeminiモデルの場合）
-        const isDeepThinkEnabled = execution.enable_deep_think === true || execution.enable_deep_think === 1 || execution.enable_deep_think === 'true';
-        const enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
-        if (isDeepThinkModel || enableDeepThink) {
-            modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
-        }
-
-        // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
-        if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
-            modelDisplay += `<span class="thinking-badge">Thinking</span>`;
-        }
-
-        // NEWバッジを追加
-        if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
-            modelDisplay += `<span class="new-badge">NEW</span>`;
-        } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
-            modelDisplay += `<span class="new-badge">NEW</span>`;
-        }
-        return `
-        <tr>
-            <td>${execution.id}</td>
-            <td>${formatDate(execution.executed_at)}</td>
-            <td>${execution.account_id}</td>
-            <td>${execution.prompt_name || '-'}</td>
-            <td>${modelDisplay}</td>
-            <td>${execution.execution_time}ms</td>
-            <td>${execution.tokens_used || '-'}</td>
-            <td>
-                <span style="color: ${execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'rgba(255, 255, 255, 0.6)'}">
-                    ${execution.status}
-                </span>
-            </td>
-            <td>
-                <button onclick="showDetail(${execution.id})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
-                    <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #17a2b8; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
-                </button>
-            </td>
-        </tr>
-        `;
     }).join('');
 }
 
-function renderPagination() {
-    const container = document.getElementById('pagination-container');
-    const totalPages = Math.ceil(totalItems / itemsPerPage);
+function renderSkillRow(execution) {
+    const modelDisplay = formatModelDisplay(execution.model_used, execution);
+    return `
+    <tr>
+        <td>${execution.id}</td>
+        <td>${formatDate(execution.executed_at)}</td>
+        <td>${execution.account_id}</td>
+        <td>${escapeHtmlAdmin(execution.skill_name || '-')}</td>
+        <td>${modelDisplay}</td>
+        <td>${execution.execution_time || '-'}${execution.execution_time ? 'ms' : ''}</td>
+        <td>${execution.tokens_used || '-'}</td>
+        <td>${executionStatusHtml(execution.status)}</td>
+        <td>
+            <button onclick="showDetail(${execution.id})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer;">
+                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #17a2b8;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
+            </button>
+        </td>
+    </tr>
+    `;
+}
 
-    if (totalPages <= 1) {
-        container.style.display = 'none';
+function renderWorkflowRow(group) {
+    const execs = group.executions;
+    const totalTime = execs.reduce((s, e) => s + (e.execution_time || 0), 0);
+    const totalTokens = execs.reduce((s, e) => s + (e.tokens_used || 0), 0);
+    const overallStatus = getOverallStatus(execs);
+    const stepExecs = execs.filter(e => e.skill_order && e.workflow_skill_id);
+    const weId = group.workflowExecutionId;
+
+    // 各スキルの小さなバー
+    const skillBars = stepExecs.map(e => {
+        const sc = getStatusColor(e.status);
+        const name = escapeHtmlAdmin(e.skill_name || `Step ${e.skill_order}`);
+        return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px;background:rgba(0,0,0,0.2);border-left:2px solid ${sc};color:rgba(255,255,255,0.8);">${name}</span>`;
+    }).join(' ');
+
+    return `
+    <tr>
+        <td style="color:rgba(255,255,255,0.4);font-size:11px;">${execs.map(e=>e.id).join(', ')}</td>
+        <td>${group.executedAt ? formatDate(group.executedAt) : '-'}</td>
+        <td>${group.accountId || '-'}</td>
+        <td>
+            <div style="margin-bottom:4px;">
+                <span style="color: #7c3aed; font-weight: 600; font-size: 13px;">${escapeHtmlAdmin(group.workflowName)}</span>
+                <span style="color: rgba(255,255,255,0.4); font-size: 11px; margin-left: 6px;">${stepExecs.length} steps</span>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
+        </td>
+        <td style="font-size:11px;color:rgba(255,255,255,0.5);">-</td>
+        <td>${totalTime ? totalTime + 'ms' : '-'}</td>
+        <td>${totalTokens || '-'}</td>
+        <td>${executionStatusHtml(overallStatus)}</td>
+        <td>
+            <button onclick="showWorkflowDetail(${weId})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer;">
+                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #17a2b8;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
+            </button>
+        </td>
+    </tr>
+    `;
+}
+
+function renderPagination() {
+    renderAdminPagination('pagination-container', currentPage, totalItems, itemsPerPage, 'loadExecutions');
+}
+
+// formatJSON は admin-common.js で定義済み
+
+async function showDetail(id) {
+    const execution = allRawExecutions.find(e => e.id === id);
+    if (!execution) return;
+
+    // ワークフロー実行の場合はワークフロー詳細へ
+    if (execution.workflow_execution_id) {
+        await showWorkflowDetail(execution.workflow_execution_id);
         return;
     }
 
-    container.style.display = 'flex';
+    const modelHtml = formatModelDisplay(execution.model_used, execution);
+    const { escapeHtml, buildHtml } = execDetailModal;
 
-    let html = `
-        <button onclick="loadExecutions(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>前へ</button>
-    `;
+    const summaryChips = [
+        { label: '実行日時', valueHtml: escapeHtml(formatDate(execution.executed_at)) },
+        { label: 'アカウント', valueHtml: escapeHtml(String(execution.account_id ?? '-')) },
+        { label: 'スキル', valueHtml: escapeHtml(execution.skill_name || '-') },
+        { label: 'モデル', valueHtml: modelHtml },
+    ];
 
-    const startPage = Math.max(1, currentPage - 2);
-    const endPage = Math.min(totalPages, startPage + 4);
-
-    for (let i = startPage; i <= endPage; i++) {
-        html += `<button class="page-number ${i === currentPage ? 'active' : ''}" onclick="loadExecutions(${i})">${i}</button>`;
-    }
-
-    html += `
-        <span class="page-info">${currentPage} / ${totalPages}</span>
-        <button onclick="loadExecutions(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>次へ</button>
-    `;
-
-    container.innerHTML = html;
-}
-
-function formatJSON(json) {
-    try {
-        if (typeof json === 'string') {
-            json = JSON.parse(json);
-        }
-        return JSON.stringify(json, null, 2);
-    } catch {
-        return json;
-    }
-}
-
-async function showDetail(id) {
-    const execution = executions.find(e => e.id === id);
-    if (!execution) return;
-
-    // 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
-    // 保存されていない場合はプロンプト情報を取得（後方互換性のため）
-    let enableDeepThink = false;
-    if (execution.enable_deep_think !== undefined && execution.enable_deep_think !== null) {
-        // 実行時に保存された値を使用
-        const isDeepThinkEnabled = execution.enable_deep_think === true || execution.enable_deep_think === 1 || execution.enable_deep_think === 'true';
-        enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
-    } else if (execution.prompt_id) {
-        // 古い実行履歴の場合、プロンプト情報を取得
-        try {
-            const prompt = await apiRequest(`/api/admin/prompts/${execution.prompt_id}`);
-            const isDeepThinkEnabled = prompt.enable_deep_think === true || prompt.enable_deep_think === 1 || prompt.enable_deep_think === 'true';
-            enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
-        } catch (e) {
-            console.error('Failed to load prompt detail:', e);
-        }
-    }
-
-    const detailHTML = `
-        <div style="text-align: left; max-height: 70vh; overflow-y: auto;">
-            <div style="margin-bottom: 15px;">
-                <strong>実行日時:</strong><br>
-                <span>${formatDate(execution.executed_at)}</span>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <strong>アカウントID:</strong><br>
-                <span>${execution.account_id}</span>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <strong>プロンプト:</strong><br>
-                <span>${execution.prompt_name || '-'}</span>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <strong>使用モデル:</strong><br>
-                <span>${(() => {
-                    let modelDisplay = execution.model_used;
-
-                    // Thinkingモデルの場合はサフィックスを削除して表示
-                    let isThinkingModel = false;
-                    if (modelDisplay && modelDisplay.includes('thinking')) {
-                        modelDisplay = modelDisplay.replace('-thinking', '');
-                        isThinkingModel = true;
-                    }
-
-                    // Deep Thinkモデルの場合はサフィックスを削除して表示
-                    let isDeepThinkModel = false;
-                    if (modelDisplay && modelDisplay.includes('deep-think')) {
-                        modelDisplay = modelDisplay.replace('-deep-think', '');
-                        isDeepThinkModel = true;
-                    }
-
-                    // Proモデルの場合は「-pro」を削除してProバッジを追加
-                    const isProModel = execution.model_used && (execution.model_used.includes('-pro') || execution.model_used.endsWith('-pro'));
-                    if (isProModel) {
-                        // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
-                        modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
-                        modelDisplay += `<span class="pro-badge">Pro</span>`;
-                    }
-
-                    // 「-preview」を削除
-                    modelDisplay = modelDisplay.replace(/-preview/g, '');
-
-                    // Deep Thinkバッジを追加（モデル名にdeep-thinkが含まれる場合、またはenableDeepThinkが有効な場合）
-                    if (isDeepThinkModel || enableDeepThink) {
-                        modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
-                    }
-
-                    // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
-                    if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
-                        modelDisplay += `<span class="thinking-badge">Thinking</span>`;
-                    }
-
-                    // NEWバッジを追加
-                    if (execution.model_used === 'gpt-5.1' || execution.model_used === 'gemini-3-pro-preview' || execution.model_used === 'gemini-3-pro-preview-deep-think') {
-                        modelDisplay += `<span class="new-badge">NEW</span>`;
-                    } else if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
-                        modelDisplay += `<span class="new-badge">NEW</span>`;
-                    }
-
-                    return modelDisplay;
-                })()}</span>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <strong>入力データ:</strong><br>
-                <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-top: 5px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word; color: rgba(255, 255, 255, 0.9);">${formatJSON(execution.input_data)}</div>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <strong>出力データ:</strong><br>
-                <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-top: 5px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; color: rgba(255, 255, 255, 0.9);">${execution.output_data || '-'}</div>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <strong>実行時間:</strong><br>
-                <span>${execution.execution_time}ms</span>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <strong>使用トークン数:</strong><br>
-                <span>${execution.tokens_used || '-'}</span>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <strong>ステータス:</strong><br>
-                <span style="color: ${execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'rgba(255, 255, 255, 0.6)'}">
-                    ${execution.status}
-                </span>
-            </div>
-            ${execution.error_message ? `
-            <div style="margin-bottom: 15px;">
-                <strong>エラーメッセージ:</strong><br>
-                <div style="background: rgba(220, 53, 69, 0.2); border: 1px solid rgba(220, 53, 69, 0.4); color: rgba(255, 107, 107, 0.9); padding: 10px; border-radius: 8px; margin-top: 5px;">${execution.error_message}</div>
-            </div>
-            ` : ''}
-        </div>
-    `;
+    const detailHTML = buildHtml(execution, {
+        formatJSON,
+        summaryChips,
+        showOutputFormat: false,
+        outputCopyId: null,
+    });
 
     await Swal.fire({
         title: '実行詳細',
         html: detailHTML,
-        width: '800px',
-        confirmButtonText: '閉じる',
-        confirmButtonColor: '#6c757d',
-        customClass: {
-            popup: 'swal-wide'
-        }
+        width: '880px',
+        confirmButtonText: ADMIN_SWAL.btnClose,
+        confirmButtonColor: ADMIN_SWAL.primary,
+        customClass: { popup: 'swal-wide swal-exec-detail' },
+    });
+}
+
+// ワークフロー結果HTML（折りたたみスキル + 統合結果）
+async function showWorkflowDetail(weId) {
+    const execs = allRawExecutions
+        .filter(e => e.workflow_execution_id === weId)
+        .sort((a, b) => (a.skill_order || 0) - (b.skill_order || 0));
+
+    if (execs.length === 0) {
+        showAlert('実行データが見つかりません', 'error');
+        return;
+    }
+
+    const esc = execDetailModal.escapeHtml;
+    const workflowName = execs[0]?.workflow_name || 'ワークフロー';
+    const accountId = execs[0]?.account_id || '-';
+
+    const leaderExec = execs.find(e => !e.workflow_skill_id || e.workflow_skill_id === null);
+    const stepExecs = execs.filter(e => e.skill_order && e.workflow_skill_id);
+    const totalTime = execs.reduce((s, e) => s + (e.execution_time || 0), 0);
+    const totalTokens = execs.reduce((s, e) => s + (e.tokens_used || 0), 0);
+
+    // グループ情報を取得
+    let groups = null;
+    const wfId = execs.find(e => e.workflow_id)?.workflow_id;
+    if (wfId) {
+        try {
+            const wfDetail = await apiRequest(`/api/admin/workflows/${wfId}`);
+            groups = wfDetail?.groups || null;
+        } catch (e) { /* グループ取得失敗時はフラット表示 */ }
+    }
+
+    const allStepResults = stepExecs.map(exec => ({
+        stepOrder: exec.skill_order,
+        stepName: exec.skill_name || `Step ${exec.skill_order}`,
+        status: exec.status,
+        output: exec.output_data || '',
+        errorMessage: exec.error_message,
+        model: exec.model_used,
+        time: exec.execution_time,
+        tokens: exec.tokens_used,
+        workflowSkillId: exec.workflow_skill_id,
+        skillId: exec.skill_id,
+    }));
+    const finalOutput = leaderExec?.output_data || '';
+    const resultHtml = execDetailModal.buildWorkflowFlowHTML({
+        finalOutput, allStepResults, workflowName, groups,
+    });
+
+    const detailHTML = `
+        <div style="text-align: left;">
+            <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <div style="color: #c4b5fd; font-weight: 600; font-size: 16px; margin-bottom: 6px;">${esc(workflowName)}</div>
+                <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
+                    <span>Account: ${esc(String(accountId))}</span>
+                    <span>${stepExecs.length} ステップ</span>
+                    <span>合計 ${totalTime}ms</span>
+                    <span>${totalTokens} tokens</span>
+                </div>
+            </div>
+            ${resultHtml}
+        </div>
+    `;
+
+    await Swal.fire({
+        title: 'ワークフロー実行詳細',
+        html: detailHTML,
+        width: '880px',
+        confirmButtonText: ADMIN_SWAL.btnClose,
+        confirmButtonColor: ADMIN_SWAL.primary,
+        customClass: { popup: 'swal-wide swal-exec-detail' },
     });
 }
 
 // ページ読み込み時に実行
 (async () => {
+    initAdminLayout('executions.html');
     await checkAuth();
     loadExecutions(1);
 })();

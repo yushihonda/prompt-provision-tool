@@ -20,9 +20,8 @@ def get_redis_client() -> redis.Redis:
     global _redis_client
     if _redis_client is None:
         try:
-            # CELERY_BROKER_URLから接続情報を取得
-            broker_url = settings.CELERY_BROKER_URL
-            _redis_client = redis.from_url(broker_url, decode_responses=True)
+            redis_url = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
+            _redis_client = redis.from_url(redis_url, decode_responses=True)
             # 接続テスト
             _redis_client.ping()
             logger.info("Redis client initialized")
@@ -158,7 +157,7 @@ def publish_workflow_next_step(execution_id: int, next_step_data: dict):
 
     Args:
         execution_id: 現在の実行ID
-        next_step_data: 次のステップ情報（next_execution_id, next_step_order, step_name, workflow_name等）
+        next_step_data: 次のスキル情報（next_execution_id, next_skill_order, skill_name, workflow_name等）
     """
     try:
         client = get_redis_client()

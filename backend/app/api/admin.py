@@ -1,20 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
-from typing import List
 from app.database import get_db
 from app.auth import get_current_active_parent, get_password_hash
-from app.models import Account, Prompt, AccountPrompt, Execution, APIConfig, AccountType, Workflow, WorkflowSkill
+from app.models import Account, Skill, AccountSkill, Execution, APIConfig, AccountType, Workflow, WorkflowSkill, WorkflowExecution
 from app.schemas import (
     AccountCreate,
     AccountResponse,
     AccountUpdate,
-    AccountWithPromptCount,
-    PromptCreate,
-    PromptResponse,
-    PromptUpdate,
-    AccountPromptAssign,
-    AccountPromptResponse,
+    AccountWithSkillCount,
+    SkillCreate,
+    SkillResponse,
+    SkillUpdate,
+    AccountSkillAssign,
+    AccountSkillResponse,
     DashboardStats,
     ExecutionResponse,
     CeleryWorkerStats,
@@ -22,7 +21,7 @@ from app.schemas import (
     RedisStats,
     TaskStats,
     WorkflowCreate,
-    WorkflowCreateWithPrompt,
+    WorkflowCreateWithParentSkill,
     WorkflowUpdate,
     WorkflowResponse,
     WorkflowSkillItem,
@@ -35,15 +34,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Celery/Redis監視用の遅延インポート
+# Redis 監視用
 try:
-    from app.celery_app import celery_app
     from app.services.redis_service import get_redis_client
-    CELERY_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Celery/Redis not available: {str(e)}")
-    CELERY_AVAILABLE = False
-    celery_app = None
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
 
 router = APIRouter(prefix="/api/admin", tags=["管理者"])
 
@@ -56,14 +52,14 @@ async def get_dashboard_stats(
 ):
     """ダッシュボード統計情報を取得"""
     total_accounts = db.query(Account).filter(Account.account_type == AccountType.CHILD).count()
-    total_prompts = db.query(Prompt).filter(Prompt.deleted_at.is_(None)).count()
+    total_skills = db.query(Skill).filter(Skill.deleted_at.is_(None)).count()
     # 総実行回数はAccount.total_executionsの合計を使用（保存された値）
     total_executions = db.query(func.sum(Account.total_executions)).scalar() or 0
     total_executions = int(total_executions)  # Decimal型をintに変換
 
     return {
         "total_accounts": total_accounts,
-        "total_prompts": total_prompts,
+        "total_skills": total_skills,
         "total_executions": total_executions
     }
 
@@ -107,8 +103,9 @@ async def create_account(
     if str(account.account_type) == AccountType.CHILD:
         api_config = APIConfig(
             account_id=db_account.id,
-            openai_api_key=account.openai_api_key if account.openai_api_key else None,
-            gemini_api_key=account.gemini_api_key if account.gemini_api_key else None,
+            openai_api_key=encryption_service.encrypt_api_key(account.openai_api_key) if account.openai_api_key else None,
+            gemini_api_key=encryption_service.encrypt_api_key(account.gemini_api_key) if account.gemini_api_key else None,
+            anthropic_api_key=encryption_service.encrypt_api_key(account.anthropic_api_key) if account.anthropic_api_key else None,
             rate_limit_per_hour=account.rate_limit_per_hour if account.rate_limit_per_hour is not None else 100,
             rate_limit_per_day=account.rate_limit_per_day if account.rate_limit_per_day is not None else 1000,
             is_enabled=account.api_config_enabled if account.api_config_enabled is not None else True
@@ -127,51 +124,24 @@ async def list_accounts(
     current_user: Account = Depends(get_current_active_parent)
 ):
     """全アカウントを取得（ページネーション対応）"""
+    limit = min(limit, 100)
     # 総件数を取得
     total = db.query(Account).count()
 
     # アカウント一覧を取得
     accounts = db.query(Account).order_by(Account.id.desc()).offset(skip).limit(limit).all()
 
-    # 今月の開始日時（JST基準）
-    from datetime import datetime, timezone, timedelta
-    jst = timezone(timedelta(hours=9))
-    current_month_start = datetime.now(jst).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    from app.services.account_stats import check_and_reset_monthly_stats
 
-    # 各アカウントのプロンプト数、実行回数、総トークン数、総料金を個別に取得
+    # 各アカウントのスキル数、実行回数、総トークン数、総料金を個別に取得
     items = []
     for acc in accounts:
-        prompt_count = db.query(func.count(AccountPrompt.id)).filter(
-            AccountPrompt.account_id == acc.id
+        skill_count = db.query(func.count(AccountSkill.id)).filter(
+            AccountSkill.account_id == acc.id
         ).scalar() or 0
 
-        # 今月の実行回数はAccountモデルから取得（保存された値を使用）
-        # 月が変わった場合は自動的にリセット
-        # last_month_resetがtimezone-naiveの場合はJSTとして解釈
-        should_reset = False
-        if acc.last_month_reset is None:
-            should_reset = True
-        else:
-            # timezone-awareかどうかを確認
-            if acc.last_month_reset.tzinfo is None:
-                # timezone-naiveの場合はJSTとして解釈
-                from datetime import timezone, timedelta
-                jst = timezone(timedelta(hours=9))
-                last_reset_aware = acc.last_month_reset.replace(tzinfo=jst)
-            else:
-                last_reset_aware = acc.last_month_reset
-            
-            if last_reset_aware < current_month_start:
-                should_reset = True
-        
-        if should_reset:
-            acc.tokens_this_month = 0
-            acc.cost_this_month = 0.0
-            acc.executions_this_month = 0
-            acc.last_month_reset = current_month_start
-            db.commit()
-            db.refresh(acc)
-        
+        # 月が変わっていたら月次カウンターをリセット
+        check_and_reset_monthly_stats(acc, db)
         executions_this_month = acc.executions_this_month or 0
 
         # 総トークン数、総料金、総実行回数はAccountモデルから取得（保存された値を使用）
@@ -183,14 +153,40 @@ async def list_accounts(
         tokens_this_month = acc.tokens_this_month or 0
         cost_this_month = float(acc.cost_this_month or 0.0)
 
-        # API設定情報を取得（子アカウントのみ）
+        # API設定情報を取得（子アカウントのみ）— キーはマスク表示
         api_config_data = None
         if str(acc.account_type) == AccountType.CHILD:
             api_config = db.query(APIConfig).filter(APIConfig.account_id == acc.id).first()
             if api_config:
+                # 暗号化されたキーを復号→マスク表示
+                openai_masked = None
+                gemini_masked = None
+                if api_config.openai_api_key:
+                    try:
+                        openai_masked = encryption_service.mask_api_key(
+                            encryption_service.decrypt_api_key(api_config.openai_api_key)
+                        )
+                    except Exception:
+                        openai_masked = "****"
+                if api_config.gemini_api_key:
+                    try:
+                        gemini_masked = encryption_service.mask_api_key(
+                            encryption_service.decrypt_api_key(api_config.gemini_api_key)
+                        )
+                    except Exception:
+                        gemini_masked = "****"
+                anthropic_masked = None
+                if api_config.anthropic_api_key:
+                    try:
+                        anthropic_masked = encryption_service.mask_api_key(
+                            encryption_service.decrypt_api_key(api_config.anthropic_api_key)
+                        )
+                    except Exception:
+                        anthropic_masked = "****"
                 api_config_data = {
-                    "openai_api_key": api_config.openai_api_key if api_config.openai_api_key else None,
-                    "gemini_api_key": api_config.gemini_api_key if api_config.gemini_api_key else None,
+                    "openai_api_key": openai_masked,
+                    "gemini_api_key": gemini_masked,
+                    "anthropic_api_key": anthropic_masked,
                     "rate_limit_per_hour": api_config.rate_limit_per_hour or 100,
                     "rate_limit_per_day": api_config.rate_limit_per_day or 1000,
                     "is_enabled": api_config.is_enabled if api_config.is_enabled is not None else True
@@ -202,7 +198,7 @@ async def list_accounts(
             "email": acc.email,
             "account_type": acc.account_type,
             "is_active": acc.is_active,
-            "prompt_count": prompt_count,
+            "skill_count": skill_count,
             "execution_count": total_executions,
             "executions_this_month": executions_this_month,
             "total_tokens": total_tokens,
@@ -271,13 +267,16 @@ async def update_account(
             api_config = APIConfig(account_id=account_id)
             db.add(api_config)
 
-        # API設定を更新（値が提供されている場合のみ更新）
+        # API設定を更新（値が提供されている場合のみ更新）— キーは暗号化して保存
         if account_update.openai_api_key is not None:
-            # 空文字列の場合はNoneに設定（削除）
-            api_config.openai_api_key = account_update.openai_api_key.strip() if account_update.openai_api_key and account_update.openai_api_key.strip() else None
+            stripped = account_update.openai_api_key.strip() if account_update.openai_api_key else ""
+            api_config.openai_api_key = encryption_service.encrypt_api_key(stripped) if stripped else None
         if account_update.gemini_api_key is not None:
-            # 空文字列の場合はNoneに設定（削除）
-            api_config.gemini_api_key = account_update.gemini_api_key.strip() if account_update.gemini_api_key and account_update.gemini_api_key.strip() else None
+            stripped = account_update.gemini_api_key.strip() if account_update.gemini_api_key else ""
+            api_config.gemini_api_key = encryption_service.encrypt_api_key(stripped) if stripped else None
+        if account_update.anthropic_api_key is not None:
+            stripped = account_update.anthropic_api_key.strip() if account_update.anthropic_api_key else ""
+            api_config.anthropic_api_key = encryption_service.encrypt_api_key(stripped) if stripped else None
         if account_update.rate_limit_per_hour is not None:
             api_config.rate_limit_per_hour = account_update.rate_limit_per_hour
         if account_update.rate_limit_per_day is not None:
@@ -315,105 +314,106 @@ async def delete_account(
     db.commit()
 
 
-# ==================== プロンプト管理 ====================
-@router.post("/prompts", response_model=PromptResponse, status_code=status.HTTP_201_CREATED)
-async def create_prompt(
-    prompt: PromptCreate,
+# ==================== スキル管理 ====================
+@router.post("/skills", response_model=SkillResponse, status_code=status.HTTP_201_CREATED)
+async def create_skill(
+    skill: SkillCreate,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """新しいプロンプトを作成"""
-    # プロンプトを暗号化
-    encrypted_content = encryption_service.encrypt(prompt.content)
+    """新しいスキルを作成"""
+    # スキルを暗号化
+    encrypted_content = encryption_service.encrypt(skill.content)
 
     # input_schemaをJSON文字列に変換
-    input_schema_str = json.dumps(prompt.input_schema) if prompt.input_schema else None
+    input_schema_str = json.dumps(skill.input_schema) if skill.input_schema else None
 
-    db_prompt = Prompt(
-        name=prompt.name,
-        description=prompt.description,
+    db_skill = Skill(
+        name=skill.name,
+        description=skill.description,
         encrypted_content=encrypted_content,
-        model_type=prompt.model_type,
+        model_type=skill.model_type,
         input_schema=input_schema_str,
         is_active=True,
-        allows_file_output=prompt.allows_file_output,
-        enable_deep_think=prompt.enable_deep_think,
-        enable_web_search=prompt.enable_web_search,
-       enable_code_interpreter=prompt.enable_code_interpreter,
-        enable_file_search=prompt.enable_file_search,
+        allows_file_output=skill.allows_file_output,
+        enable_deep_think=skill.enable_deep_think,
+        enable_web_search=skill.enable_web_search,
+        enable_code_interpreter=skill.enable_code_interpreter,
+        enable_file_search=skill.enable_file_search,
         created_by=current_user.id
     )
-    db.add(db_prompt)
+    db.add(db_skill)
     db.commit()
-    db.refresh(db_prompt)
+    db.refresh(db_skill)
 
     # input_schemaをJSON文字列からdictに変換
     input_schema = None
-    if db_prompt.input_schema:
+    if db_skill.input_schema:
         try:
-            input_schema = json.loads(db_prompt.input_schema)
-        except:
+            input_schema = json.loads(db_skill.input_schema)
+        except (json.JSONDecodeError, TypeError):
             input_schema = None
 
-    # PromptResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
-    return PromptResponse(
-        id=db_prompt.id,
-        name=db_prompt.name,
-        description=db_prompt.description,
-        model_type=db_prompt.model_type,
+    # SkillResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
+    return SkillResponse(
+        id=db_skill.id,
+        name=db_skill.name,
+        description=db_skill.description,
+        model_type=db_skill.model_type,
         input_schema=input_schema,
-        allows_file_output=db_prompt.allows_file_output,
-        enable_deep_think=db_prompt.enable_deep_think,
-        enable_web_search=db_prompt.enable_web_search,
-        enable_code_interpreter=db_prompt.enable_code_interpreter,
-        enable_file_search=db_prompt.enable_file_search,
-        is_active=db_prompt.is_active,
-        created_by=db_prompt.created_by,
-        created_at=db_prompt.created_at,
-        updated_at=db_prompt.updated_at
+        allows_file_output=db_skill.allows_file_output,
+        enable_deep_think=db_skill.enable_deep_think,
+        enable_web_search=db_skill.enable_web_search,
+        enable_code_interpreter=db_skill.enable_code_interpreter,
+        enable_file_search=db_skill.enable_file_search,
+        is_active=db_skill.is_active,
+        created_by=db_skill.created_by,
+        created_at=db_skill.created_at,
+        updated_at=db_skill.updated_at
     )
 
 
-@router.get("/prompts")
-async def list_prompts(
+@router.get("/skills")
+async def list_skills(
     skip: int = 0,
     limit: int = 6,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """全プロンプトを取得（ページネーション対応）"""
+    """全スキルを取得（ページネーション対応）"""
+    limit = min(limit, 100)
     # 総件数を取得（論理削除されていないもののみ）
-    total = db.query(Prompt).filter(Prompt.deleted_at.is_(None)).count()
+    total = db.query(Skill).filter(Skill.deleted_at.is_(None)).count()
 
-    prompts = db.query(Prompt).filter(Prompt.deleted_at.is_(None)).order_by(Prompt.created_at.desc()).offset(skip).limit(limit).all()
+    skills = db.query(Skill).filter(Skill.deleted_at.is_(None)).order_by(Skill.created_at.desc()).offset(skip).limit(limit).all()
 
     # input_schemaをJSON文字列からdictに変換
     items = []
-    for prompt in prompts:
+    for skill in skills:
         input_schema = None
-        if prompt.input_schema:
+        if skill.input_schema:
             try:
-                input_schema = json.loads(prompt.input_schema)
-            except:
+                input_schema = json.loads(skill.input_schema)
+            except (json.JSONDecodeError, TypeError):
                 input_schema = None
-        
-        # PromptResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
+
+        # SkillResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
         items.append(
-            PromptResponse(
-                id=prompt.id,
-                name=prompt.name,
-                description=prompt.description,
-                model_type=prompt.model_type,
+            SkillResponse(
+                id=skill.id,
+                name=skill.name,
+                description=skill.description,
+                model_type=skill.model_type,
                 input_schema=input_schema,
-                allows_file_output=prompt.allows_file_output,
-                enable_deep_think=prompt.enable_deep_think,
-                enable_web_search=prompt.enable_web_search,
-                enable_code_interpreter=prompt.enable_code_interpreter,
-                enable_file_search=prompt.enable_file_search,
-                is_active=prompt.is_active,
-                created_by=prompt.created_by,
-                created_at=prompt.created_at,
-                updated_at=prompt.updated_at,
+                allows_file_output=skill.allows_file_output,
+                enable_deep_think=skill.enable_deep_think,
+                enable_web_search=skill.enable_web_search,
+                enable_code_interpreter=skill.enable_code_interpreter,
+                enable_file_search=skill.enable_file_search,
+                is_active=skill.is_active,
+                created_by=skill.created_by,
+                created_at=skill.created_at,
+                updated_at=skill.updated_at,
             )
         )
 
@@ -462,9 +462,8 @@ async def list_workflows(
                 id=wf.id,
                 name=wf.name,
                 description=wf.description,
-                input_schema=workflow_input_schema,
                 is_active=wf.is_active,
-                leader_prompt_id=wf.leader_prompt_id,
+                parent_model_type=wf.parent_model_type,
                 created_at=wf.created_at,
                 updated_at=wf.updated_at,
             )
@@ -478,38 +477,17 @@ async def list_workflows(
     }
 
 
-@router.post("/workflows/with-prompt", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
-async def create_workflow_with_prompt(
-    request: WorkflowCreateWithPrompt,
+@router.post("/workflows/with-parent-skill", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
+async def create_workflow_with_parent_skill(
+    request: WorkflowCreateWithParentSkill,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent),
 ):
-    """親プロンプトと子プロンプト（Skills）を含むワークフローを一括作成"""
-    # 1. 親プロンプト（統合プロンプト）を作成
-    encrypted_content = encryption_service.encrypt(request.leader_prompt.content)
-    
+    """親スキルと子スキルを含むワークフローを一括作成"""
+    # 1. 親スキルコンテンツを暗号化してワークフローに埋め込み
+    encrypted_parent_content = encryption_service.encrypt(request.parent_skill.content)
+
     # input_schemaをJSON文字列に変換
-    input_schema_str = None
-    if request.leader_prompt.input_schema:
-        input_schema_str = json.dumps(request.leader_prompt.input_schema, ensure_ascii=False)
-    
-    leader_prompt = Prompt(
-        name=request.leader_prompt.name,
-        description=request.leader_prompt.description,
-        encrypted_content=encrypted_content,
-        model_type=request.leader_prompt.model_type,
-        input_schema=input_schema_str,
-        is_active=True,
-        created_by=current_user.id,
-        enable_deep_think=request.leader_prompt.enable_deep_think,
-        enable_web_search=request.leader_prompt.enable_web_search,
-        enable_code_interpreter=request.leader_prompt.enable_code_interpreter,
-        enable_file_search=request.leader_prompt.enable_file_search,
-    )
-    db.add(leader_prompt)
-    db.flush()  # IDを取得
-    
-    # 2. ワークフローを作成
     workflow_input_schema_str = None
     if request.input_schema is not None:
         try:
@@ -525,40 +503,97 @@ async def create_workflow_with_prompt(
         input_schema=workflow_input_schema_str,
         is_active=request.is_active,
         created_by=current_user.id,
-        leader_prompt_id=leader_prompt.id,
+        encrypted_parent_content=encrypted_parent_content,
+        parent_model_type=request.parent_skill.model_type,
+        parent_enable_deep_think=request.parent_skill.enable_deep_think,
+        parent_enable_web_search=request.parent_skill.enable_web_search,
+        parent_enable_code_interpreter=request.parent_skill.enable_code_interpreter,
+        parent_enable_file_search=request.parent_skill.enable_file_search,
     )
     db.add(db_wf)
     db.flush()  # IDを取得
-    
-    # 3. 子プロンプト（Skills）を登録
-    for skill_item in request.skills:
-        # プロンプトの存在確認
-        prompt = db.query(Prompt).filter(
-            Prompt.id == skill_item.prompt_id,
-            Prompt.deleted_at.is_(None)
+
+    from app.models import WorkflowGroup
+
+    def _validate_skill_exists(sid: int) -> None:
+        skill = db.query(Skill).filter(
+            Skill.id == sid,
+            Skill.deleted_at.is_(None),
         ).first()
-        if not prompt:
+        if not skill:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"プロンプトID {skill_item.prompt_id} が見つかりません"
+                detail=f"スキルID {sid} が見つかりません",
             )
-        
-        config_json_str = None
-        if skill_item.config_json:
-            config_json_str = json.dumps(skill_item.config_json, ensure_ascii=False)
-        
-        workflow_skill = WorkflowSkill(
+
+    # 2. 子スキルを登録 — グループ優先、なければ旧 skills を1直列グループに包む
+    if request.groups is not None and len(request.groups) > 0:
+        step_counter = 1
+        for grp_data in request.groups:
+            grp = WorkflowGroup(
+                workflow_id=db_wf.id,
+                group_order=grp_data.group_order,
+                group_name=grp_data.group_name,
+                execution_type=grp_data.execution_type or "serial",
+            )
+            db.add(grp)
+            db.flush()
+
+            for skill_data in grp_data.skills:
+                _validate_skill_exists(skill_data.skill_id)
+                config_json_str = None
+                if getattr(skill_data, "config_json", None):
+                    config_json_str = json.dumps(
+                        skill_data.config_json, ensure_ascii=False
+                    )
+                ws = WorkflowSkill(
+                    workflow_id=db_wf.id,
+                    skill_id=skill_data.skill_id,
+                    skill_order=step_counter,
+                    skill_name=skill_data.skill_display_name or skill_data.skill_name,
+                    config_json=config_json_str,
+                    group_id=grp.id,
+                    order_in_group=skill_data.order_in_group,
+                )
+                db.add(ws)
+                step_counter += 1
+    elif request.skills:
+        grp = WorkflowGroup(
             workflow_id=db_wf.id,
-            prompt_id=skill_item.prompt_id,
-            step_order=skill_item.step_order,
-            step_name=skill_item.step_name,
-            config_json=config_json_str,
+            group_order=1,
+            group_name="グループ 1",
+            execution_type="serial",
         )
-        db.add(workflow_skill)
-    
+        db.add(grp)
+        db.flush()
+        step_counter = 1
+        for skill_item in request.skills:
+            _validate_skill_exists(skill_item.skill_id)
+            config_json_str = None
+            if skill_item.config_json:
+                config_json_str = json.dumps(
+                    skill_item.config_json, ensure_ascii=False
+                )
+            workflow_skill = WorkflowSkill(
+                workflow_id=db_wf.id,
+                skill_id=skill_item.skill_id,
+                skill_order=step_counter,
+                skill_name=skill_item.skill_name,
+                config_json=config_json_str,
+                group_id=grp.id,
+                order_in_group=step_counter,
+            )
+            db.add(workflow_skill)
+            step_counter += 1
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="groups または skills に少なくとも1件のスキルを含めてください",
+        )
+
     db.commit()
     db.refresh(db_wf)
-    
+
     return _build_workflow_response(db_wf, db)
 
 
@@ -569,12 +604,12 @@ async def create_workflow(
     current_user: Account = Depends(get_current_active_parent),
 ):
     """
-    新しいワークフローを作成（自動親プロンプト生成版）
+    新しいワークフローを作成（親スキル埋め込み版）
 
     - Workflow レコードを作成
-    - leader_prompt_id が指定されていない場合は、このワークフロー専用の統合プロンプト（親プロンプト）を自動作成して紐づける
+    - parent_skill_content を暗号化してワークフローに直接埋め込む
     """
-    # 1. Workflow本体を先に作成
+    # 1. Workflow本体を作成
     workflow_input_schema_str = None
     if workflow.input_schema is not None:
         try:
@@ -584,79 +619,88 @@ async def create_workflow(
         except Exception:
             workflow_input_schema_str = None
 
+    # 親スキルコンテンツを暗号化
+    encrypted_parent_content = None
+    if workflow.parent_skill_content:
+        encrypted_parent_content = encryption_service.encrypt(workflow.parent_skill_content)
+    else:
+        # デフォルトの親スキルコンテンツ
+        default_content = (
+            "あなたはワークフローの統合エージェントです。\n"
+            "all_step_results に、各ステップ（子スキル）の結果が配列として渡されます。\n"
+            "- previous_output / previous_step_result: 直前ステップの結果\n"
+            "- all_step_results: これまでの全成功ステップの詳細（skill_order, skill_id, output など）\n\n"
+            "これらを踏まえて、ユーザーへの最終回答を日本語でわかりやすく統合してください。"
+        )
+        encrypted_parent_content = encryption_service.encrypt(default_content)
+
     db_wf = Workflow(
         name=workflow.name,
         description=workflow.description,
         input_schema=workflow_input_schema_str,
         is_active=workflow.is_active,
         created_by=current_user.id,
-        leader_prompt_id=workflow.leader_prompt_id,
+        encrypted_parent_content=encrypted_parent_content,
+        parent_model_type=workflow.parent_model_type,
+        parent_enable_deep_think=workflow.parent_enable_deep_think,
+        parent_enable_web_search=workflow.parent_enable_web_search,
+        parent_enable_code_interpreter=workflow.parent_enable_code_interpreter,
+        parent_enable_file_search=workflow.parent_enable_file_search,
     )
     db.add(db_wf)
     db.commit()
     db.refresh(db_wf)
 
-    # 2. leader_prompt_id が未指定なら、このワークフロー専用の統合プロンプトを1つ自動生成して紐づける
-    if db_wf.leader_prompt_id is None:
-        # デフォルトのモデルは GPT-5.1 を利用（必要に応じて後から編集可能）
-        default_model = "gpt-5.1"
-
-        default_content = (
-            "あなたはワークフローの統合エージェントです。\n"
-            "all_step_results に、各ステップ（子プロンプト / Skills）の結果が配列として渡されます。\n"
-            "- previous_output / previous_step_result: 直前ステップの結果\n"
-            "- all_step_results: これまでの全成功ステップの詳細（step_order, prompt_id, output など）\n\n"
-            "これらを踏まえて、ユーザーへの最終回答を日本語でわかりやすく統合してください。"
-        )
-
-        encrypted_content = encryption_service.encrypt(default_content)
-
-        leader_prompt = Prompt(
-            name=f"[WF:{db_wf.id}] {db_wf.name} - 統合プロンプト",
-            description=f"ワークフロー「{db_wf.name}」用の最終統合プロンプトです。",
-            encrypted_content=encrypted_content,
-            model_type=default_model,
-            input_schema=None,
-            is_active=True,
-            allows_file_output=False,
-            enable_deep_think=True,
-            enable_web_search=False,
-            enable_code_interpreter=False,
-            enable_file_search=False,
-            created_by=current_user.id,
-        )
-        db.add(leader_prompt)
-        db.commit()
-        db.refresh(leader_prompt)
-
-        db_wf.leader_prompt_id = leader_prompt.id
-        db.commit()
-        db.refresh(db_wf)
-
     return _build_workflow_response(db_wf, db)
 
 
 def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
-    """内部用: Workflow + Skills を組み立てて返す"""
-    skills: list[WorkflowSkillItem] = []
-    wf_skills = (
-        db.query(WorkflowSkill)
-        .join(Prompt, Prompt.id == WorkflowSkill.prompt_id)
-        .filter(WorkflowSkill.workflow_id == db_wf.id)
-        .order_by(WorkflowSkill.step_order.asc(), WorkflowSkill.id.asc())
+    """内部用: Workflow + Groups + Skills を組み立てて返す"""
+    from app.models import WorkflowGroup
+    from app.schemas import WorkflowGroupItem, WorkflowGroupSkillItem, WorkflowSkillItem
+
+    # グループベース構造を構築
+    groups_list = []
+    flat_skills = []
+
+    db_groups = (
+        db.query(WorkflowGroup)
+        .filter(WorkflowGroup.workflow_id == db_wf.id)
+        .order_by(WorkflowGroup.group_order.asc())
         .all()
     )
-    for ws in wf_skills:
-        skills.append(
-            WorkflowSkillItem(
-                id=ws.id,
-                step_order=ws.step_order,
-                step_name=ws.step_name,
-                prompt_id=ws.prompt_id,
-                prompt_name=ws.prompt.name if ws.prompt else None,
-            )
-        )
 
+    for grp in db_groups:
+        grp_skills = []
+        for ws in sorted(grp.skills, key=lambda s: s.order_in_group or s.skill_order or 0):
+            skill = ws.skill
+            skill_item = WorkflowGroupSkillItem(
+                id=ws.id,
+                skill_id=ws.skill_id,
+                skill_name=skill.name if skill else None,
+                model_type=skill.model_type if skill else None,
+                order_in_group=ws.order_in_group or ws.skill_order or 0,
+                skill_display_name=ws.skill_name,
+            )
+            grp_skills.append(skill_item)
+            # 後方互換: フラット skills
+            flat_skills.append(WorkflowSkillItem(
+                id=ws.id,
+                skill_order=ws.skill_order,
+                skill_name=ws.skill_name,
+                skill_id=ws.skill_id,
+                skill_display_name=skill.name if skill else None,
+            ))
+
+        groups_list.append(WorkflowGroupItem(
+            id=grp.id,
+            group_order=grp.group_order,
+            group_name=grp.group_name,
+            execution_type=grp.execution_type,
+            skills=grp_skills,
+        ))
+
+    # input_schema パース
     workflow_input_schema = None
     if getattr(db_wf, "input_schema", None):
         try:
@@ -666,7 +710,15 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
                 else db_wf.input_schema
             )
         except Exception:
-            workflow_input_schema = None
+            pass
+
+    # 親スキル復号（管理者用）
+    parent_content = None
+    if db_wf.encrypted_parent_content:
+        try:
+            parent_content = encryption_service.decrypt(db_wf.encrypted_parent_content)
+        except Exception:
+            parent_content = "(復号エラー)"
 
     return WorkflowResponse(
         id=db_wf.id,
@@ -674,12 +726,17 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
         description=db_wf.description,
         input_schema=workflow_input_schema,
         is_active=db_wf.is_active,
-        leader_prompt_id=db_wf.leader_prompt_id,
+        parent_skill_content=parent_content,
+        parent_model_type=db_wf.parent_model_type,
+        parent_enable_deep_think=db_wf.parent_enable_deep_think,
+        parent_enable_web_search=db_wf.parent_enable_web_search,
+        parent_enable_code_interpreter=db_wf.parent_enable_code_interpreter,
+        parent_enable_file_search=db_wf.parent_enable_file_search,
         created_by=db_wf.created_by,
         created_at=db_wf.created_at,
         updated_at=db_wf.updated_at,
-        deleted_at=db_wf.deleted_at,
-        skills=skills,
+        groups=groups_list,
+        skills=flat_skills,
     )
 
 
@@ -734,9 +791,52 @@ async def update_workflow(
             wf.input_schema = None
     if workflow_update.is_active is not None:
         wf.is_active = workflow_update.is_active
-    if workflow_update.leader_prompt_id is not None:
-        # 存在チェックはここでは行わず、管理画面側での選択に委ねる
-        wf.leader_prompt_id = workflow_update.leader_prompt_id
+
+    # 親スキル更新
+    if workflow_update.parent_skill_content is not None:
+        wf.encrypted_parent_content = encryption_service.encrypt(workflow_update.parent_skill_content)
+    if workflow_update.parent_model_type is not None:
+        wf.parent_model_type = workflow_update.parent_model_type
+    if workflow_update.parent_enable_deep_think is not None:
+        wf.parent_enable_deep_think = workflow_update.parent_enable_deep_think
+    if workflow_update.parent_enable_web_search is not None:
+        wf.parent_enable_web_search = workflow_update.parent_enable_web_search
+    if workflow_update.parent_enable_code_interpreter is not None:
+        wf.parent_enable_code_interpreter = workflow_update.parent_enable_code_interpreter
+    if workflow_update.parent_enable_file_search is not None:
+        wf.parent_enable_file_search = workflow_update.parent_enable_file_search
+
+    # グループ構造更新（全置換）
+    if workflow_update.groups is not None:
+        from app.models import WorkflowGroup
+        # 既存グループ・スキル削除
+        db.query(WorkflowSkill).filter(WorkflowSkill.workflow_id == workflow_id).delete()
+        db.query(WorkflowGroup).filter(WorkflowGroup.workflow_id == workflow_id).delete()
+        db.flush()
+
+        # 新規グループ・スキル作成
+        step_counter = 1
+        for grp_data in workflow_update.groups:
+            grp = WorkflowGroup(
+                workflow_id=workflow_id,
+                group_order=grp_data.group_order,
+                group_name=grp_data.group_name,
+                execution_type=grp_data.execution_type,
+            )
+            db.add(grp)
+            db.flush()
+
+            for skill_data in grp_data.skills:
+                ws = WorkflowSkill(
+                    workflow_id=workflow_id,
+                    skill_id=skill_data.skill_id,
+                    skill_order=step_counter,
+                    skill_name=skill_data.skill_display_name or skill_data.skill_name,
+                    group_id=grp.id,
+                    order_in_group=skill_data.order_in_group,
+                )
+                db.add(ws)
+                step_counter += 1
 
     db.commit()
     db.refresh(wf)
@@ -784,18 +884,18 @@ async def update_workflow_skills(
             detail="ワークフローが見つかりません",
         )
 
-    # すべてのprompt_idが存在し、論理削除されていないことを確認
-    prompt_ids = {item.prompt_id for item in body.skills}
-    if prompt_ids:
-        existing_prompts = (
-            db.query(Prompt)
-            .filter(Prompt.id.in_(prompt_ids), Prompt.deleted_at.is_(None))
+    # すべてのskill_idが存在し、論理削除されていないことを確認
+    skill_ids = {item.skill_id for item in body.skills}
+    if skill_ids:
+        existing_skills = (
+            db.query(Skill)
+            .filter(Skill.id.in_(skill_ids), Skill.deleted_at.is_(None))
             .all()
         )
-        if len(existing_prompts) != len(prompt_ids):
+        if len(existing_skills) != len(skill_ids):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="存在しない、または削除されたプロンプトが含まれています",
+                detail="存在しない、または削除されたスキルが含まれています",
             )
 
     # 既存のWorkflowSkillを削除して、指定された構成で作り直す
@@ -812,9 +912,9 @@ async def update_workflow_skills(
 
         ws = WorkflowSkill(
             workflow_id=workflow_id,
-            prompt_id=item.prompt_id,
-            step_order=item.step_order,
-            step_name=item.step_name,
+            skill_id=item.skill_id,
+            skill_order=item.skill_order,
+            skill_name=item.skill_name,
             config_json=config_json_str,
         )
         db.add(ws)
@@ -825,172 +925,172 @@ async def update_workflow_skills(
     return _build_workflow_response(wf, db)
 
 
-@router.get("/prompts/{prompt_id}", response_model=PromptResponse)
-async def get_prompt(
-    prompt_id: int,
+@router.get("/skills/{skill_id}", response_model=SkillResponse)
+async def get_skill(
+    skill_id: int,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """特定のプロンプトを取得"""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.deleted_at.is_(None)).first()
-    if not prompt:
+    """特定のスキルを取得"""
+    skill = db.query(Skill).filter(Skill.id == skill_id, Skill.deleted_at.is_(None)).first()
+    if not skill:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="プロンプトが見つかりません"
+            detail="スキルが見つかりません"
         )
 
     # input_schemaをJSON文字列からdictに変換
     input_schema = None
-    if prompt.input_schema:
+    if skill.input_schema:
         try:
-            input_schema = json.loads(prompt.input_schema)
-        except:
+            input_schema = json.loads(skill.input_schema)
+        except (json.JSONDecodeError, TypeError):
             input_schema = None
 
-    # PromptResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
-    return PromptResponse(
-        id=prompt.id,
-        name=prompt.name,
-        description=prompt.description,
-        model_type=prompt.model_type,
+    # SkillResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
+    return SkillResponse(
+        id=skill.id,
+        name=skill.name,
+        description=skill.description,
+        model_type=skill.model_type,
         input_schema=input_schema,
-        allows_file_output=prompt.allows_file_output,
-        enable_deep_think=prompt.enable_deep_think,
-        enable_web_search=prompt.enable_web_search,
-        enable_code_interpreter=prompt.enable_code_interpreter,
-        enable_file_search=prompt.enable_file_search,
-        is_active=prompt.is_active,
-        created_by=prompt.created_by,
-        created_at=prompt.created_at,
-        updated_at=prompt.updated_at,
+        allows_file_output=skill.allows_file_output,
+        enable_deep_think=skill.enable_deep_think,
+        enable_web_search=skill.enable_web_search,
+        enable_code_interpreter=skill.enable_code_interpreter,
+        enable_file_search=skill.enable_file_search,
+        is_active=skill.is_active,
+        created_by=skill.created_by,
+        created_at=skill.created_at,
+        updated_at=skill.updated_at,
     )
 
 
-@router.get("/prompts/{prompt_id}/content")
-async def get_prompt_content(
-    prompt_id: int,
+@router.get("/skills/{skill_id}/content")
+async def get_skill_content(
+    skill_id: int,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """プロンプトの内容を取得（復号化）- 管理者のみ"""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.deleted_at.is_(None)).first()
-    if not prompt:
+    """スキルの内容を取得（復号化）- 管理者のみ"""
+    skill = db.query(Skill).filter(Skill.id == skill_id, Skill.deleted_at.is_(None)).first()
+    if not skill:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="プロンプトが見つかりません"
+            detail="スキルが見つかりません"
         )
 
     # 復号化
     try:
-        if prompt.encrypted_content is None:
+        if skill.encrypted_content is None:
             return {"content": ""}
-        decrypted_content = encryption_service.decrypt(prompt.encrypted_content)
+        decrypted_content = encryption_service.decrypt(skill.encrypted_content)
         return {"content": decrypted_content}
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"プロンプトの復号化に失敗しました: {str(e)}"
+            detail=f"スキルの復号化に失敗しました: {str(e)}"
         )
 
 
-@router.patch("/prompts/{prompt_id}", response_model=PromptResponse)
-async def update_prompt(
-    prompt_id: int,
-    prompt_update: PromptUpdate,
+@router.patch("/skills/{skill_id}", response_model=SkillResponse)
+async def update_skill(
+    skill_id: int,
+    skill_update: SkillUpdate,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """プロンプト情報を更新"""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.deleted_at.is_(None)).first()
-    if not prompt:
+    """スキル情報を更新"""
+    skill = db.query(Skill).filter(Skill.id == skill_id, Skill.deleted_at.is_(None)).first()
+    if not skill:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="プロンプトが見つかりません"
+            detail="スキルが見つかりません"
         )
 
     # 更新
-    if prompt_update.name:
-        prompt.name = prompt_update.name
-    if prompt_update.description is not None:
-        prompt.description = prompt_update.description
-    if prompt_update.content:
-        prompt.encrypted_content = encryption_service.encrypt(prompt_update.content)
-    if prompt_update.model_type:
-        prompt.model_type = prompt_update.model_type
-    if prompt_update.input_schema is not None:
-        prompt.input_schema = json.dumps(prompt_update.input_schema)
-    if prompt_update.is_active is not None:
-        prompt.is_active = prompt_update.is_active
-    if prompt_update.allows_file_output is not None:
-        prompt.allows_file_output = prompt_update.allows_file_output
-    if prompt_update.enable_deep_think is not None:
-        prompt.enable_deep_think = prompt_update.enable_deep_think
-    if prompt_update.enable_web_search is not None:
-        prompt.enable_web_search = prompt_update.enable_web_search
-    if prompt_update.enable_code_interpreter is not None:
-        prompt.enable_code_interpreter = prompt_update.enable_code_interpreter
-    if prompt_update.enable_file_search is not None:
-        prompt.enable_file_search = prompt_update.enable_file_search
+    if skill_update.name:
+        skill.name = skill_update.name
+    if skill_update.description is not None:
+        skill.description = skill_update.description
+    if skill_update.content:
+        skill.encrypted_content = encryption_service.encrypt(skill_update.content)
+    if skill_update.model_type:
+        skill.model_type = skill_update.model_type
+    if skill_update.input_schema is not None:
+        skill.input_schema = json.dumps(skill_update.input_schema)
+    if skill_update.is_active is not None:
+        skill.is_active = skill_update.is_active
+    if skill_update.allows_file_output is not None:
+        skill.allows_file_output = skill_update.allows_file_output
+    if skill_update.enable_deep_think is not None:
+        skill.enable_deep_think = skill_update.enable_deep_think
+    if skill_update.enable_web_search is not None:
+        skill.enable_web_search = skill_update.enable_web_search
+    if skill_update.enable_code_interpreter is not None:
+        skill.enable_code_interpreter = skill_update.enable_code_interpreter
+    if skill_update.enable_file_search is not None:
+        skill.enable_file_search = skill_update.enable_file_search
 
     db.commit()
-    db.refresh(prompt)
+    db.refresh(skill)
 
     # input_schemaをJSON文字列からdictに変換
     input_schema = None
-    if prompt.input_schema:
+    if skill.input_schema:
         try:
-            input_schema = json.loads(prompt.input_schema)
-        except:
+            input_schema = json.loads(skill.input_schema)
+        except (json.JSONDecodeError, TypeError):
             input_schema = None
 
-    # PromptResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
-    return PromptResponse(
-        id=prompt.id,
-        name=prompt.name,
-        description=prompt.description,
-        model_type=prompt.model_type,
+    # SkillResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
+    return SkillResponse(
+        id=skill.id,
+        name=skill.name,
+        description=skill.description,
+        model_type=skill.model_type,
         input_schema=input_schema,
-        allows_file_output=prompt.allows_file_output,
-        enable_deep_think=prompt.enable_deep_think,
-        enable_web_search=prompt.enable_web_search,
-        enable_code_interpreter=prompt.enable_code_interpreter,
-        enable_file_search=prompt.enable_file_search,
-        is_active=prompt.is_active,
-        created_by=prompt.created_by,
-        created_at=prompt.created_at,
-        updated_at=prompt.updated_at,
+        allows_file_output=skill.allows_file_output,
+        enable_deep_think=skill.enable_deep_think,
+        enable_web_search=skill.enable_web_search,
+        enable_code_interpreter=skill.enable_code_interpreter,
+        enable_file_search=skill.enable_file_search,
+        is_active=skill.is_active,
+        created_by=skill.created_by,
+        created_at=skill.created_at,
+        updated_at=skill.updated_at,
     )
 
 
-@router.delete("/prompts/{prompt_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_prompt(
-    prompt_id: int,
+@router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_skill(
+    skill_id: int,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """プロンプトを論理削除"""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.deleted_at.is_(None)).first()
-    if not prompt:
+    """スキルを論理削除"""
+    skill = db.query(Skill).filter(Skill.id == skill_id, Skill.deleted_at.is_(None)).first()
+    if not skill:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="プロンプトが見つかりません"
+            detail="スキルが見つかりません"
         )
 
     # 論理削除: deleted_atに現在時刻を設定
     from datetime import datetime, timezone, timedelta
     jst = timezone(timedelta(hours=9))
-    prompt.deleted_at = datetime.now(jst)
+    skill.deleted_at = datetime.now(jst)
     db.commit()
 
 
-# ==================== プロンプト割り当て ====================
-@router.post("/assign-prompt", response_model=AccountPromptResponse, status_code=status.HTTP_201_CREATED)
-async def assign_prompt_to_account(
-    assignment: AccountPromptAssign,
+# ==================== スキル割り当て ====================
+@router.post("/assign-skill", response_model=AccountSkillResponse, status_code=status.HTTP_201_CREATED)
+async def assign_skill_to_account(
+    assignment: AccountSkillAssign,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """アカウントにプロンプトを割り当て"""
+    """アカウントにスキルを割り当て"""
     # アカウントの存在確認
     account = db.query(Account).filter(Account.id == assignment.account_id).first()
     if not account:
@@ -999,46 +1099,46 @@ async def assign_prompt_to_account(
             detail="アカウントが見つかりません"
         )
 
-    # プロンプトの存在確認（論理削除されていないもののみ）
-    prompt = db.query(Prompt).filter(Prompt.id == assignment.prompt_id, Prompt.deleted_at.is_(None)).first()
-    if not prompt:
+    # スキルの存在確認（論理削除されていないもののみ）
+    skill = db.query(Skill).filter(Skill.id == assignment.skill_id, Skill.deleted_at.is_(None)).first()
+    if not skill:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="プロンプトが見つかりません"
+            detail="スキルが見つかりません"
         )
 
     # 既に割り当てられているかチェック
-    existing = db.query(AccountPrompt).filter(
-        AccountPrompt.account_id == assignment.account_id,
-        AccountPrompt.prompt_id == assignment.prompt_id
+    existing = db.query(AccountSkill).filter(
+        AccountSkill.account_id == assignment.account_id,
+        AccountSkill.skill_id == assignment.skill_id
     ).first()
 
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="このプロンプトは既に割り当てられています"
+            detail="このスキルは既に割り当てられています"
         )
 
     # 割り当て
-    account_prompt = AccountPrompt(
+    account_skill = AccountSkill(
         account_id=assignment.account_id,
-        prompt_id=assignment.prompt_id
+        skill_id=assignment.skill_id
     )
-    db.add(account_prompt)
+    db.add(account_skill)
     db.commit()
-    db.refresh(account_prompt)
+    db.refresh(account_skill)
 
-    return account_prompt
+    return account_skill
 
 
-@router.delete("/assign-prompt/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def unassign_prompt_from_account(
+@router.delete("/assign-skill/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def unassign_skill_from_account(
     assignment_id: int,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """アカウントからプロンプトの割り当てを解除"""
-    assignment = db.query(AccountPrompt).filter(AccountPrompt.id == assignment_id).first()
+    """アカウントからスキルの割り当てを解除"""
+    assignment = db.query(AccountSkill).filter(AccountSkill.id == assignment_id).first()
     if not assignment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1049,46 +1149,46 @@ async def unassign_prompt_from_account(
     db.commit()
 
 
-@router.get("/accounts/{account_id}/prompts")
-async def get_account_prompts(
+@router.get("/accounts/{account_id}/skills")
+async def get_account_skills(
     account_id: int,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """特定のアカウントに割り当てられたプロンプト一覧を取得（assignment_idを含む）"""
-    assignments = db.query(AccountPrompt).filter(
-        AccountPrompt.account_id == account_id
+    """特定のアカウントに割り当てられたスキル一覧を取得（assignment_idを含む）"""
+    assignments = db.query(AccountSkill).filter(
+        AccountSkill.account_id == account_id
     ).all()
 
     # input_schemaをJSON文字列からdictに変換
     result = []
     for assignment in assignments:
-        prompt = assignment.prompt
+        skill = assignment.skill
         assignment_id = assignment.id  # assignment_idを先に取得
 
         # 必要なフィールドのみを明示的に取得
-        prompt_dict = {
-            'id': prompt.id,
-            'name': prompt.name,
-            'description': prompt.description,
-            'model_type': prompt.model_type,
-            'is_active': prompt.is_active,
-            'allows_file_output': prompt.allows_file_output,
-            'created_by': prompt.created_by,
-            'created_at': prompt.created_at.isoformat() if prompt.created_at else None,
-            'updated_at': prompt.updated_at.isoformat() if prompt.updated_at else None,
+        skill_dict = {
+            'id': skill.id,
+            'name': skill.name,
+            'description': skill.description,
+            'model_type': skill.model_type,
+            'is_active': skill.is_active,
+            'allows_file_output': skill.allows_file_output,
+            'created_by': skill.created_by,
+            'created_at': skill.created_at.isoformat() if skill.created_at else None,
+            'updated_at': skill.updated_at.isoformat() if skill.updated_at else None,
             'assignment_id': assignment_id  # assignment_idを追加
         }
         # input_schemaをJSON文字列からdictに変換
-        if prompt.input_schema:
+        if skill.input_schema:
             try:
-                prompt_dict['input_schema'] = json.loads(prompt.input_schema)
-            except:
-                prompt_dict['input_schema'] = None
+                skill_dict['input_schema'] = json.loads(skill.input_schema)
+            except (json.JSONDecodeError, TypeError):
+                skill_dict['input_schema'] = None
         else:
-            prompt_dict['input_schema'] = None
+            skill_dict['input_schema'] = None
 
-        result.append(prompt_dict)
+        result.append(skill_dict)
 
     return result
 
@@ -1102,22 +1202,25 @@ async def list_executions(
     current_user: Account = Depends(get_current_active_parent)
 ):
     """全実行ログを取得"""
+    limit = min(limit, 100)
     # 総件数を取得
     total = db.query(Execution).count()
 
-    executions = db.query(Execution).order_by(
+    executions = db.query(Execution).options(
+        joinedload(Execution.workflow_execution).joinedload(WorkflowExecution.workflow)
+    ).order_by(
         Execution.executed_at.desc()
     ).offset(skip).limit(limit).all()
 
     items = []
     for execution in executions:
-        prompt_name = execution.prompt.name if execution.prompt else None
+        skill_name = execution.skill.name if execution.skill else None
         # 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
-        # 保存されていない場合はプロンプトの設定を参照（後方互換性のため）
+        # 保存されていない場合はスキルの設定を参照（後方互換性のため）
         enable_deep_think = getattr(execution, 'enable_deep_think', None)
-        if enable_deep_think is None and execution.prompt:
-            # 古い実行履歴の場合、プロンプトの設定を参照
-            enable_deep_think = getattr(execution.prompt, 'enable_deep_think', None)
+        if enable_deep_think is None and execution.skill:
+            # 古い実行履歴の場合、スキルの設定を参照
+            enable_deep_think = getattr(execution.skill, 'enable_deep_think', None)
             if enable_deep_think is None:
                 enable_deep_think = True  # デフォルト値
 
@@ -1126,12 +1229,21 @@ async def list_executions(
         if output_format is None:
             output_format = 'txt'  # デフォルト値
 
+        # ワークフロー情報を取得
+        workflow_name = None
+        wf_id = None
+        if execution.workflow_execution_id:
+            wf_exec = execution.workflow_execution
+            if wf_exec and wf_exec.workflow:
+                workflow_name = wf_exec.workflow.name
+                wf_id = wf_exec.workflow_id
+
         # ExecutionResponseスキーマに合致するフィールドのみを返す（encrypted_contentやリレーションオブジェクトは含めない）
         execution_dict = {
             "id": execution.id,
             "account_id": execution.account_id,
-            "prompt_id": execution.prompt_id,
-            "prompt_name": prompt_name,
+            "skill_id": execution.skill_id,
+            "skill_name": skill_name,
             "input_data": execution.input_data,
             "output_data": execution.output_data,
             "model_used": execution.model_used,
@@ -1141,7 +1253,12 @@ async def list_executions(
             "error_message": execution.error_message,
             "executed_at": execution.executed_at,
             "output_format": output_format,
-            "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
+            "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None,
+            "workflow_execution_id": execution.workflow_execution_id,
+            "workflow_skill_id": execution.workflow_skill_id,
+            "skill_order": execution.skill_order,
+            "workflow_name": workflow_name,
+            "workflow_id": wf_id,
         }
         items.append(execution_dict)
 
@@ -1158,74 +1275,14 @@ async def list_executions(
 async def get_celery_worker_stats(
     current_user: Account = Depends(get_current_active_parent)
 ):
-    """Celery Workerの監視情報を取得"""
-    if not CELERY_AVAILABLE or not celery_app:
-        return CeleryWorkerStats(
-            workers=[],
-            total_workers=0,
-            total_active_tasks=0,
-            total_reserved_tasks=0,
-            celery_available=False
-        )
-    
-    try:
-        inspect = celery_app.control.inspect()
-        
-        # 実行中のタスク
-        active_tasks = inspect.active() or {}
-        
-        # 待機中のタスク
-        reserved_tasks = inspect.reserved() or {}
-        
-        # Worker統計情報
-        stats = inspect.stats() or {}
-        
-        # Worker一覧を構築
-        workers = []
-        total_active = 0
-        total_reserved = 0
-        
-        # すべてのWorker名を取得（active, reserved, statsのキーから）
-        all_worker_names = set()
-        all_worker_names.update(active_tasks.keys())
-        all_worker_names.update(reserved_tasks.keys())
-        all_worker_names.update(stats.keys())
-        
-        for worker_name in all_worker_names:
-            worker_active = active_tasks.get(worker_name, [])
-            worker_reserved = reserved_tasks.get(worker_name, [])
-            worker_stats = stats.get(worker_name, {})
-            
-            active_count = len(worker_active)
-            reserved_count = len(worker_reserved)
-            total_active += active_count
-            total_reserved += reserved_count
-            
-            workers.append(CeleryWorkerInfo(
-                name=worker_name,
-                status="online" if worker_name in stats else "offline",
-                active_tasks=active_count,
-                reserved_tasks=reserved_count,
-                total_tasks_completed=worker_stats.get("total", {}).get("tasks.succeeded", 0) if isinstance(worker_stats.get("total"), dict) else None,
-                total_tasks_failed=worker_stats.get("total", {}).get("tasks.failed", 0) if isinstance(worker_stats.get("total"), dict) else None
-            ))
-        
-        return CeleryWorkerStats(
-            workers=workers,
-            total_workers=len(workers),
-            total_active_tasks=total_active,
-            total_reserved_tasks=total_reserved,
-            celery_available=True
-        )
-    except Exception as e:
-        logger.error(f"Failed to get Celery worker stats: {str(e)}")
-        return CeleryWorkerStats(
-            workers=[],
-            total_workers=0,
-            total_active_tasks=0,
-            total_reserved_tasks=0,
-            celery_available=False
-        )
+    """Celery Worker監視（廃止済み — ローカルワーカーに移行）"""
+    return CeleryWorkerStats(
+        workers=[],
+        total_workers=0,
+        total_active_tasks=0,
+        total_reserved_tasks=0,
+        celery_available=False
+    )
 
 
 @router.get("/monitor/redis", response_model=RedisStats)
@@ -1233,16 +1290,16 @@ async def get_redis_stats(
     current_user: Account = Depends(get_current_active_parent)
 ):
     """Redisの監視情報を取得"""
-    if not CELERY_AVAILABLE:
+    if not REDIS_AVAILABLE:
         return RedisStats(
             connection_status="disconnected",
             stream_count=0,
             active_streams=[]
         )
-    
+
     try:
         redis_client = get_redis_client()
-        
+
         # 接続確認
         try:
             redis_client.ping()
@@ -1254,19 +1311,19 @@ async def get_redis_stats(
                 stream_count=0,
                 active_streams=[]
             )
-        
+
         # メモリ情報
         memory_info = redis_client.info('memory')
         memory_used = memory_info.get('used_memory', 0) / (1024 * 1024)  # MB
         memory_max = memory_info.get('maxmemory', 0) / (1024 * 1024) if memory_info.get('maxmemory', 0) > 0 else None  # MB
         memory_usage_percent = (memory_used / memory_max * 100) if memory_max and memory_max > 0 else None
-        
+
         # Stream一覧（execution:*パターン）
         stream_keys = redis_client.keys('execution:*')
         stream_count = len(stream_keys)
         # アクティブなStream一覧（最大10件）
         active_streams = [key.replace('execution:', '') for key in stream_keys[:10]]
-        
+
         return RedisStats(
             connection_status=connection_status,
             memory_used_mb=memory_used,
@@ -1292,32 +1349,32 @@ async def get_task_stats(
 ):
     """タスクの実行統計を取得"""
     from datetime import datetime, timedelta, timezone
-    
+
     try:
         # 期間の開始時刻を計算（JST）
         jst = timezone(timedelta(hours=9))
         now = datetime.now(jst)
         start_time = now - timedelta(hours=hours)
-        
+
         # 期間内の実行を取得
         executions = db.query(Execution).filter(
             Execution.executed_at >= start_time
         ).all()
-        
+
         total_executions = len(executions)
         successful = sum(1 for e in executions if e.status == "success")
         failed = sum(1 for e in executions if e.status == "error")
         cancelled = sum(1 for e in executions if e.status == "cancelled")
-        
+
         # 成功率・エラー率
         success_rate = successful / total_executions if total_executions > 0 else 0.0
         error_rate = failed / total_executions if total_executions > 0 else 0.0
-        
+
         # 実行時間の統計
         execution_times = [e.execution_time for e in executions if e.execution_time is not None]
         average_execution_time_ms = sum(execution_times) / len(execution_times) if execution_times else None
         max_execution_time_ms = max(execution_times) if execution_times else None
-        
+
         return TaskStats(
             period_hours=hours,
             total_executions=total_executions,
@@ -1342,4 +1399,3 @@ async def get_task_stats(
             average_execution_time_ms=None,
             max_execution_time_ms=None
         )
-

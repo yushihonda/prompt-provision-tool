@@ -13,24 +13,20 @@ class OpenAIService:
 
     # 推論モデル（Responses APIを使用）
     REASONING_MODELS = {
-        "gpt-5-pro",  # 最上位モデル（Responses APIのみサポート）
-        "gpt-5.2-pro",  # GPT-5.2 Pro（Responses APIのみサポート）
+        "gpt-5.2-pro", "gpt-5.4-pro", "o4-mini",
     }
 
     # temperatureをサポートしないモデル
     NO_TEMPERATURE_MODELS = {
-        "gpt-5",
-        "gpt-5.1",  # Responses APIでtemperature非対応
-        "gpt-5.2",  # Responses APIでtemperature非対応
-        "gpt-5.2-pro",  # Responses APIでtemperature非対応
-        "gpt-5-pro",  # Responses APIでtemperature非対応
+        "gpt-5.2", "gpt-5.2-pro",
+        "gpt-5.4", "gpt-5.4-pro",
+        "o4-mini",
     }
 
     # max_completion_tokensを使用する必要があるモデル（max_tokensの代わり）
     MAX_COMPLETION_TOKENS_MODELS = {
-        "gpt-5",
-        "gpt-5.1",
         "gpt-5.2",
+        "gpt-5.4", "gpt-5.4-mini",
     }
 
     def __init__(self, api_key: Optional[str] = None):
@@ -400,7 +396,7 @@ class OpenAIService:
                     try:
                         error_detail = e.response.json() if hasattr(e.response, 'json') else str(e.response)
                         logger.debug(f"  レスポンス詳細: {error_detail}")
-                    except:
+                    except Exception:
                         logger.debug(f"  レスポンス: {e.response}")
                 import traceback
                 logger.debug(f"  トレースバック:\n{traceback.format_exc()}")
@@ -544,7 +540,8 @@ class OpenAIService:
         temperature: float = 0.0,
         max_tokens: Optional[int] = None,
         enable_code_interpreter: bool = False,
-        enable_file_search: bool = False
+        enable_file_search: bool = False,
+        messages_override: list = None,
     ):
         """
         ストリーミングでプロンプトを実行
@@ -579,10 +576,13 @@ class OpenAIService:
         if not self.client:
             raise RuntimeError("OpenAI クライアントが未初期化です")
 
-        messages = []
-        if settings.ENABLE_PROMPT_GUARDRAILS:
-            messages.append({"role": "system", "content": settings.GUARDRAIL_PREFIX})
-        messages.append({"role": "user", "content": prompt})
+        if messages_override:
+            messages = messages_override
+        else:
+            messages = []
+            if settings.ENABLE_PROMPT_GUARDRAILS:
+                messages.append({"role": "system", "content": settings.GUARDRAIL_PREFIX})
+            messages.append({"role": "user", "content": prompt})
 
         kwargs = {
             "model": model,

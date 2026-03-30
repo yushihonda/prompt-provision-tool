@@ -9,51 +9,12 @@
 </head>
 <body class="user-theme">
     <div class="container">
-        <div class="header">
-            <span class="tool-name">Prompt Provision Tool</span>
-            <div class="user-info">
-                <span id="username-display">-</span>
-                <button class="btn-logout" onclick="logout()">ログアウト</button>
-            </div>
-            <button class="hamburger-menu" onclick="toggleMobileMenu()">
-                <span></span>
-                <span></span>
-                <span></span>
-            </button>
-        </div>
-
-        <!-- モバイルメニュー -->
-        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
-        <div class="mobile-menu" id="mobile-menu">
-            <div class="mobile-menu-header">
-                <span class="tool-name">Prompt Provision Tool</span>
-                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                </button>
-            </div>
-            <div class="mobile-menu-content">
-                <div class="nav">
-                    <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト/ワークフロー一覧</button>
-                    <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
-                </div>
-                <div class="user-info">
-                    <span id="mobile-username-display">-</span>
-                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
-                </div>
-            </div>
-        </div>
-
         <div class="content">
             <div class="page-title-container">
                 <h1 class="page-title">ワークフロー実行</h1>
             </div>
             <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
-                <div style="display: flex; gap: 10px;">
-                    <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト/ワークフロー一覧</button>
-                    <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
-                </div>
+                <div id="desktop-nav" style="display: flex; gap: 10px;"></div>
                 <button class="btn btn-secondary" onclick="location.href='dashboard.html'" style="display: inline-flex; align-items: center; gap: 5px; padding: 10px 20px;">
                     ← 一覧に戻る
                 </button>
@@ -84,6 +45,10 @@
                             <small style="color: rgba(255, 255, 255, 0.6);">各ステップの出力形式（現状はメタ情報としてのみ利用）</small>
                         </div>
 
+                        <div style="margin-top: 8px; padding: 8px 12px; background: rgba(40, 167, 69, 0.08); border: 1px solid rgba(40, 167, 69, 0.2); border-radius: 6px; font-size: 11px; color: rgba(255,255,255,0.6);">
+                            ローカルワーカーで実行されます。ターミナルで <code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:3px; cursor:pointer;" onclick="navigator.clipboard.writeText('python -m local_worker daemon')" title="コピー">python -m local_worker daemon</code> を起動してください。
+                        </div>
+
                         <button type="submit" class="btn btn-primary" id="workflow-execute-btn" style="display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 16px;">
                             <span id="workflow-execute-btn-text">ワークフロー実行</span>
                             <span id="workflow-execute-btn-spinner" style="display: none;">
@@ -95,12 +60,15 @@
 
                 <div class="execute-output-panel">
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
-                        <h3 style="margin: 0;">実行結果（ステップ一覧）</h3>
+                        <h3 style="margin: 0;">実行フロー</h3>
                     </div>
+
+                    <!-- 実行フロー表示 -->
+                    <div id="workflow-flow-view" style="display:none; flex:1; overflow-y:auto; min-height:0; flex-direction:column;"></div>
+
+                    <!-- ステップ結果 -->
                     <div id="workflow-result-container">
-                        <div class="output-box" id="workflow-output-content">
-                            ワークフローを実行すると、各ステップの実行結果がここに表示されます
-                        </div>
+                        <div class="output-box" id="workflow-output-content">ワークフローを実行すると、各ステップの実行結果がここに表示されます</div>
                     </div>
                 </div>
             </div>
@@ -108,13 +76,29 @@
             <!-- 実行履歴セクション -->
             <div class="card" style="margin-top: 20px;">
                 <h3 style="margin-bottom: 20px;">実行履歴</h3>
-                <div id="history-container">
-                    <p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">読み込み中...</p>
-                </div>
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>実行日時</th>
+                            <th>ステップ</th>
+                            <th>実行時間</th>
+                            <th>トークン数</th>
+                            <th>ステータス</th>
+                            <th>アクション</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-tbody">
+                        <tr>
+                            <td colspan="6" style="text-align: center;">読み込み中...</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
 
+    <script src="../js/model-display.js"></script>
+    <script src="../js/exec-detail-modal.js"></script>
     <script src="js/user-common.js"></script>
     <script src="js/workflow-execute.js"></script>
 </body>

@@ -4,43 +4,76 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
 from app.auth import get_current_user
-from app.models import Account, Prompt, AccountPrompt, Execution, Workflow, WorkflowSkill, WorkflowExecution
+from app.models import Account, APIConfig, Skill, AccountSkill, Execution, Workflow, WorkflowSkill, WorkflowExecution
 from app.schemas import (
-    ExecutePromptRequest,
-    ExecutePromptResponse,
+    ExecuteSkillRequest,
+    ExecuteSkillResponse,
     ExecuteWorkflowRequest,
     ExecuteWorkflowResponse,
 )
+from app.services.worker_auth import create_job_token, generate_lease_token
 from app.encryption import encryption_service
-from app.services.openai_service import openai_service
-from app.services.gemini_service import gemini_service
 from app.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
 
-# 遅延インポート（CeleryとRedisが利用できない場合でもアプリケーションが起動できるように）
+# Redis (SSE ストリーミング用)
 try:
     from app.services.redis_service import subscribe_stream, publish_cancel
-    from app.tasks.execution_tasks import execute_prompt_task
-    from app.celery_app import celery_app
-    CELERY_AVAILABLE = True
+    REDIS_AVAILABLE = True
 except ImportError as e:
-    logger.warning(f"Celery/Redis not available: {str(e)}. Some features will be disabled.")
-    CELERY_AVAILABLE = False
-    celery_app = None
-    execute_prompt_task = None
+    logger.warning(f"Redis not available: {str(e)}. SSE streaming will be disabled.")
+    REDIS_AVAILABLE = False
     subscribe_stream = None
     publish_cancel = None
-from app.utils.file_export import export_content, parse_attached_files
-from app.utils.prompt_utils import replace_placeholders, sanitize_output
+from app.utils.file_export import export_content
+from app.utils.skill_utils import replace_placeholders
 from datetime import datetime, timezone, timedelta
 import json
 import time
-import base64
 import asyncio
 
 router = APIRouter(prefix="/api/execute", tags=["実行"])
+
+
+def _check_rate_limit(db: Session, account_id: int) -> None:
+    """APIConfigのレートリミットを確認し、超過していれば429を返す"""
+    api_config = db.query(APIConfig).filter(
+        APIConfig.account_id == account_id,
+        APIConfig.is_enabled == True,
+    ).first()
+    if not api_config:
+        return  # APIConfig が無い場合はリミットなし
+
+    jst = timezone(timedelta(hours=9))
+    now = datetime.now(jst)
+
+    # 1時間あたりのリミット
+    if api_config.rate_limit_per_hour:
+        one_hour_ago = now - timedelta(hours=1)
+        count_hour = db.query(func.count(Execution.id)).filter(
+            Execution.account_id == account_id,
+            Execution.executed_at >= one_hour_ago,
+        ).scalar() or 0
+        if count_hour >= api_config.rate_limit_per_hour:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"1時間あたりの実行回数制限（{api_config.rate_limit_per_hour}回）に達しました",
+            )
+
+    # 1日あたりのリミット
+    if api_config.rate_limit_per_day:
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        count_day = db.query(func.count(Execution.id)).filter(
+            Execution.account_id == account_id,
+            Execution.executed_at >= today_start,
+        ).scalar() or 0
+        if count_day >= api_config.rate_limit_per_day:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"1日あたりの実行回数制限（{api_config.rate_limit_per_day}回）に達しました",
+            )
 
 
 @router.get("/download/{execution_id}")
@@ -114,57 +147,60 @@ async def download_execution_file(
         )
 
 
-@router.post("", response_model=ExecutePromptResponse)
-async def execute_prompt(
-    request: ExecutePromptRequest,
+@router.post("", response_model=ExecuteSkillResponse)
+async def execute_skill(
+    request: ExecuteSkillRequest,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_user)
 ):
     """
-    プロンプトを実行（Celeryタスク）
+    スキルを実行（ローカルワーカーが処理）
 
-    重要: プロンプトの内容はクライアントに送信されない
-    サーバー側でプロンプトと入力データを結合してAI APIに送信
+    Execution を pending_local で作成し、ローカルデーモンが claim → 実行する。
+    スキル本文はクライアントに送信されない（バンドル配信時に復号）。
     """
     # デバッグ: 受信したリクエスト（本番は入力詳細を出力しない）
-    logger.info(f"Execute request - prompt_id: {request.prompt_id}, output_format: {request.output_format}")
+    logger.info(f"Execute request - skill_id: {request.skill_id}, output_format: {request.output_format}")
     if settings.ENVIRONMENT != "production":
-        logger.info(f"Execute request - prompt_id: {request.prompt_id}, input_data: {request.input_data}")
+        logger.info(f"Execute request - skill_id: {request.skill_id}, input_data: {request.input_data}")
     else:
-        logger.info(f"Execute request - prompt_id: {request.prompt_id}")
+        logger.info(f"Execute request - skill_id: {request.skill_id}")
 
-    # プロンプトの取得
-    prompt = db.query(Prompt).filter(Prompt.id == request.prompt_id).first()
-    if not prompt:
+    # スキルの取得
+    skill = db.query(Skill).filter(Skill.id == request.skill_id).first()
+    if not skill:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="プロンプトが見つかりません"
+            detail="スキルが見つかりません"
         )
 
     # アクセス権限の確認
-    assignment = db.query(AccountPrompt).filter(
-        AccountPrompt.account_id == current_user.id,
-        AccountPrompt.prompt_id == request.prompt_id
+    assignment = db.query(AccountSkill).filter(
+        AccountSkill.account_id == current_user.id,
+        AccountSkill.skill_id == request.skill_id
     ).first()
 
     if not assignment:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="このプロンプトへのアクセス権限がありません"
+            detail="このスキルへのアクセス権限がありません"
         )
 
-    # プロンプトが有効かチェック
-    if not prompt.is_active:
+    # スキルが有効かチェック
+    if not skill.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="このプロンプトは現在利用できません"
+            detail="このスキルは現在利用できません"
         )
 
+    # レートリミットチェック
+    _check_rate_limit(db, current_user.id)
+
     # 実行時にDeep Thinkが有効かどうかを判定
-    # 優先順位: リクエストで明示的に指定された場合 -> プロンプトの設定 -> デフォルトTrue
+    # 優先順位: リクエストで明示的に指定された場合 -> スキルの設定 -> デフォルトTrue
     final_enable_deep_think = request.enable_deep_think
     if final_enable_deep_think is None:
-        final_enable_deep_think = getattr(prompt, 'enable_deep_think', True)
+        final_enable_deep_think = getattr(skill, 'enable_deep_think', True)
     if final_enable_deep_think is None:
         final_enable_deep_think = True
 
@@ -180,52 +216,36 @@ async def execute_prompt(
 
     logger.info(f"Execution creation: output_format from request={request.output_format}, final={output_format_value}")
 
+    # 常にローカル実行（デーモンが処理）
+    raw_lease_token, lease_token_hash = generate_lease_token()
+    lease_expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=settings.WORKER_LEASE_TTL_SECONDS
+    )
+
     execution = Execution(
         account_id=current_user.id,
-        prompt_id=prompt.id,
+        skill_id=skill.id,
         input_data=json.dumps(request.input_data, ensure_ascii=False),
-        status="pending",
-        model_used=prompt.model_type, # 初期値として設定
-        enable_deep_think=bool(final_enable_deep_think),  # 実行時点のDeep Think状態を保存
-        output_format=output_format_value,  # 出力形式を保存
-        executed_at=now_jst
+        status="pending_local",
+        model_used=skill.model_type,
+        enable_deep_think=bool(final_enable_deep_think),
+        output_format=output_format_value,
+        dispatch_mode="local",
+        lease_token_hash=lease_token_hash,
+        lease_expires_at=lease_expires_at,
+        executed_at=now_jst,
     )
     db.add(execution)
     db.commit()
     db.refresh(execution)
 
-    # Celeryタスクをキューに送信
-    if not CELERY_AVAILABLE or not execute_prompt_task:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Celery/Redisサービスが利用できません。システム管理者に連絡してください。"
-        )
-
-    # 添付ファイルを辞書形式に変換（Celeryのシリアライズ対応）
-    attachments_dict = None
-    if request.attachments:
-        attachments_dict = [
-            {
-                "filename": att.filename,
-                "content": att.content
-            }
-            for att in request.attachments
-        ]
-
-    execute_prompt_task.delay(
-            execution_id=execution.id,
-            prompt_id=prompt.id,
-            input_data=request.input_data,
-        output_format=output_format_value,  # 保存した値を使用
-        attachments=attachments_dict,
-            enable_deep_think=request.enable_deep_think
-        )
-
-    logger.info(f"Execution {execution.id} queued as Celery task")
+    job_token = create_job_token(execution.id, current_user.id)
+    logger.info(f"Execution {execution.id} created for local worker")
 
     return {
         "execution_id": execution.id,
-        "status": "pending"
+        "status": "pending_local",
+        "job_token": job_token,
     }
 
 
@@ -256,16 +276,19 @@ async def execute_workflow(
             detail="ワークフローが見つからないか、現在利用できません",
         )
 
-    # ワークフロー内のSkill（Prompt）一覧を取得
+    # レートリミットチェック
+    _check_rate_limit(db, current_user.id)
+
+    # ワークフロー内のSkill一覧を取得
     wf_skills = (
         db.query(WorkflowSkill)
-        .join(Prompt, Prompt.id == WorkflowSkill.prompt_id)
+        .join(Skill, Skill.id == WorkflowSkill.skill_id)
         .filter(
             WorkflowSkill.workflow_id == request.workflow_id,
-            Prompt.deleted_at.is_(None),
-            Prompt.is_active == True,  # noqa: E712
+            Skill.deleted_at.is_(None),
+            Skill.is_active == True,  # noqa: E712
         )
-        .order_by(WorkflowSkill.step_order.asc(), WorkflowSkill.id.asc())
+        .order_by(WorkflowSkill.skill_order.asc(), WorkflowSkill.id.asc())
         .all()
     )
 
@@ -275,18 +298,18 @@ async def execute_workflow(
             detail="このワークフローには有効なStepがありません",
         )
 
-    # ユーザーに割り当てられているプロンプトのみを許可
-    assigned_prompt_ids = {
-        ap.prompt_id
-        for ap in db.query(AccountPrompt)
-        .filter(AccountPrompt.account_id == current_user.id)
+    # ユーザーに割り当てられているスキルのみを許可
+    assigned_skill_ids = {
+        ask.skill_id
+        for ask in db.query(AccountSkill)
+        .filter(AccountSkill.account_id == current_user.id)
         .all()
     }
 
     # 実行可能なSkillのみをフィルタ
     executable_skills = [
         ws for ws in wf_skills
-        if ws.prompt and ws.prompt.id in assigned_prompt_ids
+        if ws.skill and ws.skill.id in assigned_skill_ids
     ]
 
     if not executable_skills:
@@ -307,14 +330,23 @@ async def execute_workflow(
         current_step=1,
         total_steps=len(executable_skills),
         global_input_data=json.dumps(request.global_input_data or {}, ensure_ascii=False),
+        per_skill_input_data=json.dumps(
+            {str(k): v for k, v in (request.per_skill_input or {}).items()},
+            ensure_ascii=False,
+        ) if request.per_skill_input else None,
     )
     db.add(wf_execution)
     db.commit()
     db.refresh(wf_execution)
 
-    # 最初のステップのみを起動（順次実行のため）
+    # 実行モード判定
+    workflow_execution_mode = "serial"
+
+    # 並列モードの場合は全ステップを一括作成
+    skills_to_launch = [executable_skills[0]] if workflow_execution_mode == "serial" else executable_skills
+
     first_skill = executable_skills[0]
-    prompt = first_skill.prompt
+    skill = first_skill.skill
 
     # per_skill_input のキーは workflow_skill_id を想定
     per_skill_overrides = {}
@@ -326,54 +358,85 @@ async def execute_workflow(
     merged_input.update(per_skill_overrides or {})
 
     # 実行時のDeep Think判定（既存ロジックに合わせる）
-    final_enable_deep_think = getattr(prompt, "enable_deep_think", True)
+    final_enable_deep_think = getattr(skill, "enable_deep_think", True)
     if final_enable_deep_think is None:
         final_enable_deep_think = True
 
     # output_format
     output_format_value = request.output_format or "txt"
 
-    # 最初のExecutionレコード作成
-    execution = Execution(
-        account_id=current_user.id,
-        prompt_id=prompt.id,
-        workflow_execution_id=wf_execution.id,
-        workflow_skill_id=first_skill.id,
-        step_order=first_skill.step_order,
-        input_data=json.dumps(merged_input, ensure_ascii=False),
-        status="pending",
-        model_used=prompt.model_type,
-        enable_deep_think=bool(final_enable_deep_think),
-        output_format=output_format_value,
-        executed_at=now_jst,
+    # 常にローカル実行
+    raw_lease_token, lease_token_hash = generate_lease_token()
+    lease_expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=settings.WORKER_LEASE_TTL_SECONDS
     )
-    db.add(execution)
-    
-    # ワークフロー実行のステータスを更新
+
+    # グループベースで最初に起動するスキルを決定
+    from app.models import WorkflowGroup
+    first_group = (
+        db.query(WorkflowGroup)
+        .filter(WorkflowGroup.workflow_id == request.workflow_id)
+        .order_by(WorkflowGroup.group_order.asc())
+        .first()
+    )
+
+    if first_group:
+        # グループベース: 最初のグループのスキルを起動
+        group_skills = [s for s in executable_skills if s.group_id == first_group.id]
+        if first_group.execution_type == "parallel":
+            skills_to_launch = group_skills  # 並列: グループ内の全スキル
+        else:
+            skills_to_launch = [group_skills[0]] if group_skills else []  # 直列: 最初の1つ
+    else:
+        # フォールバック: グループなし → 最初のスキルのみ
+        skills_to_launch = [executable_skills[0]]
+
+    # Execution レコード作成
+    created_executions = []
+    for ws in skills_to_launch:
+        ws_skill = ws.skill
+        skill_deep_think = getattr(ws_skill, "enable_deep_think", True)
+        if skill_deep_think is None:
+            skill_deep_think = True
+
+        skill_input = dict(request.global_input_data or {})
+        if request.per_skill_input and ws.id in request.per_skill_input:
+            skill_input.update(request.per_skill_input[ws.id])
+
+        execution = Execution(
+            account_id=current_user.id,
+            skill_id=ws_skill.id,
+            workflow_execution_id=wf_execution.id,
+            workflow_skill_id=ws.id,
+            skill_order=ws.skill_order,
+            input_data=json.dumps(skill_input, ensure_ascii=False),
+            status="pending_local",
+            model_used=ws_skill.model_type,
+            enable_deep_think=bool(skill_deep_think),
+            output_format=output_format_value,
+            dispatch_mode="local",
+            lease_token_hash=lease_token_hash,
+            lease_expires_at=lease_expires_at,
+            executed_at=now_jst,
+        )
+        db.add(execution)
+        created_executions.append(execution)
+
     wf_execution.status = "processing"
     db.commit()
-    db.refresh(execution)
+    for ex in created_executions:
+        db.refresh(ex)
 
-    # Celeryタスクキュー投入（最初のステップのみ）
-    if not CELERY_AVAILABLE or not execute_prompt_task:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Celery/Redisサービスが利用できません。システム管理者に連絡してください。",
-        )
+    execution_ids = [ex.id for ex in created_executions]
+    job_token = create_job_token(created_executions[0].id, current_user.id)
 
-    execute_prompt_task.delay(
-        execution_id=execution.id,
-        prompt_id=prompt.id,
-        input_data=merged_input,
-        output_format=output_format_value,
-        attachments=None,
-        enable_deep_think=final_enable_deep_think,
-    )
+    logger.info(f"Workflow {wf_execution.id}: {len(created_executions)} steps created for local worker")
 
     return ExecuteWorkflowResponse(
         workflow_id=request.workflow_id,
-        workflow_execution_id=wf_execution.id,  # ワークフロー実行ID
-        execution_ids=[execution.id],  # 最初のexecution_idのみ返す
+        workflow_execution_id=wf_execution.id,
+        execution_ids=execution_ids,
+        job_token=job_token,
     )
 
 
@@ -384,7 +447,7 @@ async def cancel_execution(
     current_user: Account = Depends(get_current_user)
 ):
     """
-    実行中のプロンプトをキャンセルする
+    実行中のスキルをキャンセルする
     """
     try:
         execution = db.query(Execution).filter(
@@ -418,18 +481,8 @@ async def cancel_execution(
         db.commit()
         db.refresh(execution)
 
-        # Celeryタスクをキャンセル
-        if CELERY_AVAILABLE and celery_app:
-            try:
-                # タスクIDを取得（CeleryタスクのIDは通常、タスク名と引数から生成される）
-                # 実行中のタスクを探してキャンセル
-                celery_app.control.revoke(execution_id, terminate=True)
-                logger.info(f"Revoked Celery task for execution {execution_id}")
-            except Exception as e:
-                logger.warning(f"Failed to revoke Celery task for execution {execution_id}: {str(e)}")
-
         # Redis Streamにキャンセルイベントを送信
-        if CELERY_AVAILABLE and publish_cancel:
+        if REDIS_AVAILABLE and publish_cancel:
             try:
                 publish_cancel(execution_id)
             except Exception as e:
@@ -461,7 +514,7 @@ async def stream_execution(
     Args:
         execution_id: 実行ID
     """
-    if not CELERY_AVAILABLE or not subscribe_stream:
+    if not REDIS_AVAILABLE or not subscribe_stream:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="ストリーミングサービスが利用できません。システム管理者に連絡してください。"

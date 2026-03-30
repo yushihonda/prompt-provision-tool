@@ -107,7 +107,12 @@ backend/.env.local
 .env.local
 # docker-compose.local.yml はリポジトリに含める（ローカル開発環境構築用）
 
-# ローカル開発用スクリプト
+# ローカル実行の生成ファイル
+orchestration_output_*.txt
+daemon_stderr.log
+
+# ローカルワーカー設定（APIキー含む）
+.env.worker
 
 # 資料フォルダ（GitHub Actionsデプロイ時に除外）
 資料/

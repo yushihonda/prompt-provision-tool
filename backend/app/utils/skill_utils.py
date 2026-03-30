@@ -1,5 +1,5 @@
 """
-プロンプト関連のユーティリティ関数
+スキル関連のユーティリティ関数
 """
 import re
 import difflib
@@ -7,17 +7,17 @@ import difflib
 
 def replace_placeholders(prompt_template: str, input_data: dict) -> str:
     """
-    プロンプトテンプレート内のプレースホルダーを入力データで置き換える
+    スキルテンプレート内のプレースホルダーを入力データで置き換える
 
     プレースホルダーの形式: {variable_name}
     オプショナルフィールドが空の場合、その行を削除する
 
     Args:
-        prompt_template: プロンプトテンプレート
+        prompt_template: スキルテンプレート
         input_data: 入力データ
 
     Returns:
-        置き換え後のプロンプト
+        置き換え後のスキル内容
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def replace_placeholders(prompt_template: str, input_data: dict) -> str:
     for key, value in input_data.items():
         # サポートするプレースホルダー形式:
         # - {key}
-        # - {{key}}  （既存プロンプトとの互換性のため）
+        # - {{key}}  （既存スキルとの互換性のため）
         placeholder_single = f"{{{key}}}"
         placeholder_double = f"{{{{{key}}}}}"
         logger.info(

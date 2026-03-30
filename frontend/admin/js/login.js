@@ -78,7 +78,8 @@ async function showAlert(message, type) {
         title: icon === 'error' ? 'エラー' : icon === 'success' ? '成功' : icon === 'warning' ? '警告' : '情報',
         text: message,
         icon: icon,
-        confirmButtonText: 'OK',
+        confirmButtonText: '閉じる',
+        confirmButtonColor: '#9c27b0',
         timer: 3000,
         timerProgressBar: true
     });

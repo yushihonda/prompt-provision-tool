@@ -2,6 +2,25 @@
 
 const API_BASE = window.location.origin;
 
+/** HTML特殊文字をエスケープ（XSS防止） */
+function escapeHtmlAdmin(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+/** 管理画面 SweetAlert2 の統一（ワークフロー系モーダルと同系色・文言） */
+const ADMIN_SWAL = {
+    primary: '#9c27b0',
+    secondary: '#6c757d',
+    danger: '#d33',
+    btnClose: '閉じる',
+};
+
 // 認証チェック（非同期）
 async function checkAuth() {
     const token = sessionStorage.getItem('token');
@@ -62,10 +81,10 @@ async function logout() {
         text: 'ログアウトしますか？',
         icon: 'question',
         showCancelButton: true,
-        confirmButtonColor: '#3085d6',
-        cancelButtonColor: '#6c757d',
+        confirmButtonColor: ADMIN_SWAL.primary,
+        cancelButtonColor: ADMIN_SWAL.secondary,
         confirmButtonText: 'ログアウト',
-        cancelButtonText: 'キャンセル'
+        cancelButtonText: ADMIN_SWAL.btnClose
     });
 
     if (result.isConfirmed) {
@@ -75,6 +94,7 @@ async function logout() {
             title: 'ログアウトしました',
             text: 'ログイン画面に戻ります',
             icon: 'success',
+            confirmButtonColor: ADMIN_SWAL.primary,
             timer: 1500,
             showConfirmButton: false
         });
@@ -193,7 +213,8 @@ async function showAlert(message, type = 'info') {
         title: icon === 'error' ? 'エラー' : icon === 'success' ? '成功' : icon === 'warning' ? '警告' : '情報',
         text: message,
         icon: icon,
-        confirmButtonText: 'OK',
+        confirmButtonText: ADMIN_SWAL.btnClose,
+        confirmButtonColor: ADMIN_SWAL.primary,
         timer: 3000,
         timerProgressBar: true
     });
@@ -240,6 +261,134 @@ function formatJSON(json) {
     } catch {
         return json;
     }
+}
+
+// ---------------------------------------------------------------------------
+// 共通レイアウト（ヘッダー＋ナビゲーション）
+// ---------------------------------------------------------------------------
+const ADMIN_NAV_ITEMS = [
+    { href: 'dashboard.html', label: 'ダッシュボード' },
+    { href: 'skills.html',   label: 'スキル管理' },
+    { href: 'accounts.html',  label: 'アカウント管理' },
+    { href: 'executions.html', label: '実行ログ' },
+];
+
+/**
+ * ヘッダー + モバイルメニュー + ナビを自動挿入する。
+ * 各 HTML の <div class="content"> の直前に呼び出す。
+ *
+ * @param {string} activePage - 現在のページ href (例: 'skills.html')
+ */
+function initAdminLayout(activePage) {
+    const container = document.querySelector('.container');
+    if (!container) return;
+
+    const navHtml = (extraClass = '') =>
+        ADMIN_NAV_ITEMS.map(n =>
+            `<button class="nav-item${n.href === activePage ? ' active' : ''}${extraClass}" onclick="location.href='${n.href}'">${n.label}</button>`
+        ).join('\n');
+
+    const headerHtml = `
+        <div class="header">
+            <span class="tool-name">Prompt Provision Tool</span>
+            <div class="user-info">
+                <span id="username-display">-</span>
+                <button class="btn-logout" onclick="logout()">ログアウト</button>
+            </div>
+            <button class="hamburger-menu" onclick="toggleMobileMenu()">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
+        <div class="mobile-menu" id="mobile-menu">
+            <div class="mobile-menu-header">
+                <span class="tool-name">Prompt Provision Tool</span>
+                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
+                    <span></span><span></span><span></span>
+                </button>
+            </div>
+            <div class="mobile-menu-content">
+                <div class="nav">${navHtml('')}</div>
+                <div class="user-info">
+                    <span id="mobile-username-display">-</span>
+                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
+                </div>
+            </div>
+        </div>`;
+
+    // content div の前に挿入
+    const content = container.querySelector('.content');
+    if (content) {
+        content.insertAdjacentHTML('beforebegin', headerHtml);
+    }
+
+    // デスクトップナビ（#desktop-nav があれば中身を生成）
+    const desktopNav = document.getElementById('desktop-nav');
+    if (desktopNav) {
+        desktopNav.insertAdjacentHTML('afterbegin', navHtml(''));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 共通ページネーション
+// ---------------------------------------------------------------------------
+
+/**
+ * ページネーション HTML を生成して指定コンテナに描画する。
+ *
+ * @param {string} containerId - ページネーションを描画する要素の ID
+ * @param {number} currentPage
+ * @param {number} totalItems
+ * @param {number} itemsPerPage
+ * @param {string} loadFnName - ページ切替時に呼ぶグローバル関数名 (例: 'loadAccounts')
+ */
+function renderAdminPagination(containerId, currentPage, totalItems, itemsPerPage, loadFnName) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+    if (totalPages <= 1) {
+        container.style.display = 'none';
+        return;
+    }
+
+    container.style.display = 'flex';
+
+    const startPage = Math.max(1, currentPage - 2);
+    const endPage = Math.min(totalPages, startPage + 4);
+
+    let html = `<button onclick="${loadFnName}(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>前へ</button>`;
+    for (let i = startPage; i <= endPage; i++) {
+        html += `<button class="page-number ${i === currentPage ? 'active' : ''}" onclick="${loadFnName}(${i})">${i}</button>`;
+    }
+    html += `<span class="page-info">${currentPage} / ${totalPages}</span>`;
+    html += `<button onclick="${loadFnName}(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>次へ</button>`;
+
+    container.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// 共通 SVG アイコン・ステータスバッジ
+// ---------------------------------------------------------------------------
+
+const ADMIN_ICONS = {
+    check: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="#28a745" style="flex-shrink: 0;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`,
+    cross: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="#dc3545" style="flex-shrink: 0;"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`,
+};
+
+/** 有効/無効ステータスバッジ HTML を返す */
+function statusBadgeHtml(isActive) {
+    const icon = isActive ? ADMIN_ICONS.check : ADMIN_ICONS.cross;
+    const color = isActive ? '#28a745' : '#dc3545';
+    const label = isActive ? '有効' : '無効';
+    return `<div style="display:flex;align-items:center;gap:6px;">${icon}<span style="color:${color};font-weight:${isActive ? 'bold' : 'normal'};">${label}</span></div>`;
+}
+
+/** 実行ステータス色付き span を返す */
+function executionStatusHtml(status) {
+    const colors = { success: '#28a745', error: '#dc3545', cancelled: '#ffc107', pending: '#7c3aed', processing: '#7c3aed', pending_local: '#7c3aed' };
+    const color = colors[status] || 'rgba(255, 255, 255, 0.6)';
+    return `<span style="color:${color}">${escapeHtmlAdmin(status)}</span>`;
 }
 
 // モバイルメニューの開閉

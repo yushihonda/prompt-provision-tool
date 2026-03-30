@@ -9,52 +9,9 @@
 </head>
 <body class="admin-theme">
     <div class="container">
-        <div class="header">
-            <span class="tool-name">Prompt Provision Tool</span>
-            <div class="user-info">
-                <span id="username-display">-</span>
-                <button class="btn-logout" onclick="logout()">ログアウト</button>
-            </div>
-            <button class="hamburger-menu" onclick="toggleMobileMenu()">
-                <span></span>
-                <span></span>
-                <span></span>
-            </button>
-        </div>
-
-        <!-- モバイルメニュー -->
-        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
-        <div class="mobile-menu" id="mobile-menu">
-            <div class="mobile-menu-header">
-                <span class="tool-name">Prompt Provision Tool</span>
-                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                </button>
-            </div>
-            <div class="mobile-menu-content">
-                <div class="nav">
-                    <button class="nav-item active" onclick="location.href='dashboard.html'">ダッシュボード</button>
-                    <button class="nav-item" onclick="location.href='prompts.html'">プロンプト管理</button>
-                    <button class="nav-item" onclick="location.href='accounts.html'">アカウント管理</button>
-                    <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
-                </div>
-                <div class="user-info">
-                    <span id="mobile-username-display">-</span>
-                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
-                </div>
-            </div>
-        </div>
-
             <div class="content">
             <h1 class="page-title">管理者ダッシュボード</h1>
-            <div class="nav">
-                <button class="nav-item active" onclick="location.href='dashboard.html'">ダッシュボード</button>
-                <button class="nav-item" onclick="location.href='prompts.html'">プロンプト管理</button>
-                <button class="nav-item" onclick="location.href='accounts.html'">アカウント管理</button>
-                <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
-            </div>
+            <div class="nav" id="desktop-nav"></div>
 
 
             <div class="dashboard-stats" id="stats-container">
@@ -63,8 +20,8 @@
                     <div class="value" id="total-accounts">-</div>
                 </div>
                 <div class="stat-card">
-                    <h3>総プロンプト数</h3>
-                    <div class="value" id="total-prompts">-</div>
+                    <h3>総スキル数</h3>
+                    <div class="value" id="total-skills">-</div>
                 </div>
                 <div class="stat-card">
                     <h3>総実行回数</h3>
@@ -73,9 +30,9 @@
             </div>
 
             <div class="actions">
-                <button class="btn btn-purple" onclick="location.href='prompts.html'" style="display: inline-flex; align-items: center; gap: 8px;">
+                <button class="btn btn-purple" onclick="location.href='skills.html'" style="display: inline-flex; align-items: center; gap: 8px;">
                     <img src="../img/iconmonstr-text-plus-lined.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">
-                    プロンプト管理
+                    スキル管理
                 </button>
                 <button class="btn btn-success" onclick="location.href='accounts.html'" style="display: inline-flex; align-items: center; gap: 8px;">
                     <img src="../img/iconmonstr-id-card-17.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">

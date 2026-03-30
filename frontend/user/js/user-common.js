@@ -3,6 +3,27 @@
 // API_BASEの設定（本番環境ではNginx経由でアクセス）
 const API_BASE = window.location.origin;
 
+/** HTML特殊文字をエスケープ（XSS防止） */
+function escapeHtmlCommon(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+/** escapeHtml のエイリアス — 各ページ JS から参照 */
+const escapeHtml = escapeHtmlCommon;
+
+/** ユーザー画面 SweetAlert2 の統一 */
+const USER_SWAL = {
+    primary: '#7c3aed',
+    secondary: '#6c757d',
+    danger: '#d33',
+    btnClose: '閉じる',
+};
+
 // 認証チェック（非同期）
 async function checkAuth() {
     const token = sessionStorage.getItem('token');
@@ -16,7 +37,7 @@ async function checkAuth() {
     // トークンの有効性をサーバー側で確認
     try {
         // ユーザー側のAPIエンドポイントを呼び出してトークンを検証
-        const response = await fetch(`${API_BASE}/api/user/prompts?skip=0&limit=1`, {
+        const response = await fetch(`${API_BASE}/api/user/skills?skip=0&limit=1`, {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${token}`,
@@ -89,10 +110,10 @@ async function logout() {
         text: 'ログアウトしますか？',
         icon: 'question',
         showCancelButton: true,
-        confirmButtonColor: '#3085d6',
-        cancelButtonColor: '#6c757d',
+        confirmButtonColor: USER_SWAL.primary,
+        cancelButtonColor: USER_SWAL.secondary,
         confirmButtonText: 'ログアウト',
-        cancelButtonText: 'キャンセル'
+        cancelButtonText: USER_SWAL.btnClose
     });
 
     if (result.isConfirmed) {
@@ -102,6 +123,7 @@ async function logout() {
             title: 'ログアウトしました',
             text: 'ログイン画面に戻ります',
             icon: 'success',
+            confirmButtonColor: USER_SWAL.primary,
             timer: 1500,
             showConfirmButton: false
         });
@@ -195,13 +217,15 @@ async function showAlert(message, type = 'info') {
     else if (type === 'warning') icon = 'warning';
     else icon = 'info';
 
+    const longMessage = message && String(message).length > 220;
     await Swal.fire({
         title: icon === 'error' ? 'エラー' : icon === 'success' ? '成功' : icon === 'warning' ? '警告' : '情報',
         text: message,
         icon: icon,
-        confirmButtonText: 'OK',
-        timer: 3000,
-        timerProgressBar: true
+        confirmButtonText: USER_SWAL.btnClose,
+        confirmButtonColor: USER_SWAL.primary,
+        timer: longMessage ? undefined : 3000,
+        timerProgressBar: !longMessage
     });
 }
 
@@ -215,6 +239,115 @@ function formatDate(dateString) {
 function getQueryParam(name) {
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get(name);
+}
+
+// JSON整形
+function formatJSON(json) {
+    try {
+        if (typeof json === 'string') {
+            json = JSON.parse(json);
+        }
+        return JSON.stringify(json, null, 2);
+    } catch {
+        return json;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 共通レイアウト（ヘッダー＋ナビゲーション）
+// ---------------------------------------------------------------------------
+const USER_NAV_ITEMS = [
+    { href: 'dashboard.html', label: 'スキル一覧' },
+    { href: 'history.html',   label: '実行履歴' },
+];
+
+/**
+ * ヘッダー + モバイルメニュー + デスクトップナビを自動挿入する。
+ *
+ * @param {string} activePage - 現在のページ href (例: 'dashboard.html')
+ */
+function initUserLayout(activePage) {
+    const container = document.querySelector('.container');
+    if (!container) return;
+
+    const navHtml = () =>
+        USER_NAV_ITEMS.map(n =>
+            `<button class="nav-item${n.href === activePage ? ' active' : ''}" onclick="location.href='${n.href}'">${n.label}</button>`
+        ).join('\n');
+
+    const headerHtml = `
+        <div class="header">
+            <span class="tool-name">Prompt Provision Tool</span>
+            <div class="user-info">
+                <span id="username-display">-</span>
+                <button class="btn-logout" onclick="logout()">ログアウト</button>
+            </div>
+            <button class="hamburger-menu" onclick="toggleMobileMenu()">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
+        <div class="mobile-menu" id="mobile-menu">
+            <div class="mobile-menu-header">
+                <span class="tool-name">Prompt Provision Tool</span>
+                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
+                    <span></span><span></span><span></span>
+                </button>
+            </div>
+            <div class="mobile-menu-content">
+                <div class="nav">${navHtml()}</div>
+                <div class="user-info">
+                    <span id="mobile-username-display">-</span>
+                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
+                </div>
+            </div>
+        </div>`;
+
+    const content = container.querySelector('.content');
+    if (content) {
+        content.insertAdjacentHTML('beforebegin', headerHtml);
+    }
+
+    // デスクトップナビ
+    const desktopNav = document.getElementById('desktop-nav');
+    if (desktopNav) {
+        desktopNav.insertAdjacentHTML('afterbegin', navHtml());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 共通ページネーション
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {string} containerId
+ * @param {number} currentPage
+ * @param {number} totalItems
+ * @param {number} itemsPerPage
+ * @param {string} loadFnName - ページ切替時に呼ぶグローバル関数名
+ */
+function renderUserPagination(containerId, currentPage, totalItems, itemsPerPage, loadFnName) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+    if (totalPages <= 1) {
+        container.style.display = 'none';
+        return;
+    }
+
+    container.style.display = 'flex';
+    const startPage = Math.max(1, currentPage - 2);
+    const endPage = Math.min(totalPages, startPage + 4);
+
+    let html = `<button onclick="${loadFnName}(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>前へ</button>`;
+    for (let i = startPage; i <= endPage; i++) {
+        html += `<button class="page-number ${i === currentPage ? 'active' : ''}" onclick="${loadFnName}(${i})">${i}</button>`;
+    }
+    html += `<span class="page-info">${currentPage} / ${totalPages}</span>`;
+    html += `<button onclick="${loadFnName}(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>次へ</button>`;
+
+    container.innerHTML = html;
 }
 
 // モバイルメニューの開閉
@@ -260,10 +393,11 @@ const PersistentStatusBar = {
     intervalId: null,
     startTime: null,
     executionId: null,
-    promptId: null,
-    promptName: null,
+    skillId: null,
+    skillName: null,
     workflowExecutionId: null,  // ワークフロー実行ID
     workflowName: null,  // ワークフロー名
+    workflowId: null,  // ワークフロー定義ID（遷移用）
     currentStepOrder: null,  // 現在のステップ順序
     currentStepName: null,  // 現在のステップ名
     completedExecutions: [], // 完了した実行のリスト
@@ -456,17 +590,23 @@ const PersistentStatusBar = {
             if (navBtn) {
                 navBtn.addEventListener('click', (e) => {
                     e.stopPropagation(); // Dockのクリックイベントを止める
-                    // 完了状態でも遷移できるように、executionIdがなくてもpromptIdがあれば遷移
-                    if (this.promptId) {
-                        window.location.href = `execute.html?id=${this.promptId}`;
+                    if (this.workflowId) {
+                        // ワークフロー実行の場合はワークフロー実行画面へ遷移
+                        const weParam = this.workflowExecutionId ? `&we_id=${this.workflowExecutionId}` : '';
+                        window.location.href = `workflow-execute.html?id=${this.workflowId}${weParam}`;
+                    } else if (this.skillId) {
+                        window.location.href = `execute.html?id=${this.skillId}`;
                     } else {
                         // localStorageから取得を試みる
                         const completed = localStorage.getItem('completed_execution');
                         if (completed) {
                             try {
                                 const data = JSON.parse(completed);
-                                if (data.promptId) {
-                                    window.location.href = `execute.html?id=${data.promptId}`;
+                                if (data.workflowId) {
+                                    const weP = data.workflowExecutionId ? `&we_id=${data.workflowExecutionId}` : '';
+                                    window.location.href = `workflow-execute.html?id=${data.workflowId}${weP}`;
+                                } else if (data.skillId) {
+                                    window.location.href = `execute.html?id=${data.skillId}`;
                                 }
                             } catch (e) {
                                 console.error('Failed to parse completed_execution:', e);
@@ -652,12 +792,13 @@ const PersistentStatusBar = {
     showPanel() { this.expandDock(); },
     hidePanel() { this.collapseDock(); },
 
-    start(executionId, promptId, promptName, workflowExecutionId = null, workflowName = null, stepOrder = null, stepName = null) {
+    start(executionId, skillId, skillName, workflowExecutionId = null, workflowName = null, stepOrder = null, stepName = null, workflowId = null) {
         this.executionId = executionId;
-        this.promptId = promptId;
-        this.promptName = promptName || '実行中...';
+        this.skillId = skillId;
+        this.skillName = skillName || '実行中...';
         this.workflowExecutionId = workflowExecutionId;
         this.workflowName = workflowName;
+        this.workflowId = workflowId;  // ワークフロー定義ID（遷移用）
         this.currentStepOrder = stepOrder;
         this.currentStepName = stepName;
         this.startTime = Date.now();
@@ -665,10 +806,11 @@ const PersistentStatusBar = {
         // Save to localStorage
         localStorage.setItem('active_execution', JSON.stringify({
             id: executionId,
-            promptId: promptId,
-            promptName: this.promptName,
+            skillId: skillId,
+            skillName: this.skillName,
             workflowExecutionId: workflowExecutionId,
             workflowName: workflowName,
+            workflowId: workflowId,
             currentStepOrder: stepOrder,
             currentStepName: stepName,
             startTime: this.startTime
@@ -679,7 +821,7 @@ const PersistentStatusBar = {
 
         // 実行開始イベントを発火（ダッシュボードでカードを更新するため）
         window.dispatchEvent(new CustomEvent('executionStarted', {
-            detail: { executionId, promptId, promptName: this.promptName, workflowExecutionId, workflowName }
+            detail: { executionId, skillId, skillName: this.skillName, workflowExecutionId, workflowName }
         }));
     },
 
@@ -688,19 +830,19 @@ const PersistentStatusBar = {
         // ワークフロー実行中は「ステップ単位」ではなく「ワークフロー単位」で完了を管理するため、
         // ここでは完了タスクとしては保存せず、現在の実行中ステップのみを更新する
 
-        // 次のステップを開始
-        this.start(nextExecutionId, null, stepName || `Step ${nextStepOrder}`, this.workflowExecutionId, workflowName, nextStepOrder, stepName);
+        // 次のステップを開始（workflowIdを引き継ぐ）
+        this.start(nextExecutionId, null, stepName || `Step ${nextStepOrder}`, this.workflowExecutionId, workflowName, nextStepOrder, stepName, this.workflowId);
     },
 
     stop() {
-        const oldPromptId = this.promptId;
+        const oldPromptId = this.skillId;
         // 完了状態を表示するため、すぐには非表示にしない
         // 代わりに完了状態に移行
         this.markAsCompleted();
         // 実行完了イベントを発火（ダッシュボードでカードを更新するため）
         if (oldPromptId) {
             window.dispatchEvent(new CustomEvent('executionCompleted', {
-                detail: { promptId: oldPromptId }
+                detail: { skillId: oldPromptId }
             }));
         }
     },
@@ -708,22 +850,22 @@ const PersistentStatusBar = {
     markAsCompleted(status = 'success') {
         // 完了タスクを配列に追加
         const completedExecutionId = this.executionId;
-        const completedPromptId = this.promptId;
-        const completedPromptName = this.promptName;
+        const completedPromptId = this.skillId;
+        const completedPromptName = this.skillName;
 
         // 実行完了イベントを発火（ダッシュボードでカードを更新するため）
         if (completedPromptId) {
             window.dispatchEvent(new CustomEvent('executionCompleted', {
-                detail: { executionId: completedExecutionId, promptId: completedPromptId, status }
+                detail: { executionId: completedExecutionId, skillId: completedPromptId, status }
             }));
         }
 
-        // ① 通常のプロンプト実行（workflowExecutionIdなし）の場合は従来通り execution 単位で保存
+        // ① 通常のスキル実行（workflowExecutionIdなし）の場合は従来通り execution 単位で保存
         if (completedExecutionId && completedPromptId && !this.workflowExecutionId) {
             const completedTask = {
                 id: completedExecutionId,
-                promptId: completedPromptId,
-                promptName: completedPromptName,
+                skillId: completedPromptId,
+                skillName: completedPromptName,
                 status: status,
                 completedAt: Date.now()
             };
@@ -740,16 +882,17 @@ const PersistentStatusBar = {
         // ② ワークフロー実行中の場合は「ワークフロー単位」で1件だけ保存
         if (this.workflowExecutionId) {
             const workflowId = this.workflowExecutionId;
-            const workflowName = this.workflowName || this.promptName || 'ワークフロー';
+            const workflowName = this.workflowName || this.skillName || 'ワークフロー';
 
             const workflowTask = {
                 id: workflowId,
-                promptId: null,
-                promptName: workflowName,
+                skillId: null,
+                skillName: workflowName,
                 status: status,
                 completedAt: Date.now(),
                 workflowExecutionId: workflowId,
-                workflowName: workflowName
+                workflowName: workflowName,
+                workflowId: this.workflowId  // ワークフロー定義ID（遷移用）
             };
 
             const existingWorkflowIndex = this.completedExecutions.findIndex(
@@ -790,10 +933,11 @@ const PersistentStatusBar = {
         // 実行中の状態をクリア
         const oldExecutionId = this.executionId;
         this.executionId = null;
-        this.promptId = null;
-        this.promptName = null;
+        this.skillId = null;
+        this.skillName = null;
         this.workflowExecutionId = null;
         this.workflowName = null;
+        this.workflowId = null;
         this.currentStepOrder = null;
         this.currentStepName = null;
         this.startTime = null;
@@ -807,6 +951,9 @@ const PersistentStatusBar = {
 
         // 完了直後はステータスに応じて色を表示、5秒後に紫に戻す
         this.showStatusTemporarily(status);
+
+        // ブラウザ通知（タブが非アクティブでも通知）
+        this._sendCompletionNotification(status, completedPromptName);
 
         // キューから次のタスクを開始
         this.processNextInQueue();
@@ -901,10 +1048,11 @@ const PersistentStatusBar = {
             try {
                 const data = JSON.parse(stored);
                 this.executionId = data.id;
-                this.promptId = data.promptId;
-                this.promptName = data.promptName;
+                this.skillId = data.skillId;
+                this.skillName = data.skillName;
                 this.workflowExecutionId = data.workflowExecutionId || null;
                 this.workflowName = data.workflowName || null;
+                this.workflowId = data.workflowId || null;
                 this.currentStepOrder = data.currentStepOrder || null;
                 this.currentStepName = data.currentStepName || null;
                 this.startTime = data.startTime;
@@ -992,6 +1140,26 @@ const PersistentStatusBar = {
         }
     },
 
+    _sendCompletionNotification(status, taskName) {
+        const name = taskName || 'タスク';
+        const isSuccess = status === 'success';
+        const title = isSuccess ? '実行完了' : '実行失敗';
+        const body = isSuccess ? `${name} が完了しました` : `${name} でエラーが発生しました`;
+
+        // ブラウザ通知（Notification API）
+        if ('Notification' in window) {
+            if (Notification.permission === 'granted') {
+                new Notification(title, { body, icon: '/favicon.ico' });
+            } else if (Notification.permission !== 'denied') {
+                Notification.requestPermission().then(perm => {
+                    if (perm === 'granted') {
+                        new Notification(title, { body, icon: '/favicon.ico' });
+                    }
+                });
+            }
+        }
+    },
+
     async processNextInQueue() {
         // 既に実行中なら何もしない
         if (this.executionId) {
@@ -1019,7 +1187,7 @@ const PersistentStatusBar = {
                 // 他のページの場合、localStorageに次のタスクを保存してexecute.htmlにリダイレクト
                 // URLパラメータではなくlocalStorageを使うことで、長いURLの問題を回避
                 localStorage.setItem('pending_queue_task', JSON.stringify(nextTask));
-                window.location.href = `execute.html?id=${nextTask.promptId}`;
+                window.location.href = `execute.html?id=${nextTask.skillId}`;
             }
         } catch (error) {
             console.error('Failed to process queued task:', error);
@@ -1050,24 +1218,27 @@ const PersistentStatusBar = {
                     const stepInfo = this.currentStepName ? ` - ${this.currentStepName}` : (this.currentStepOrder ? ` - Step ${this.currentStepOrder}` : '');
                     const displayName = `${this.workflowName}${stepInfo}`;
                     if (this.executionQueue && this.executionQueue.length > 0) {
-                        activeTaskName.innerHTML = `${displayName} <span style="color: #ffc107; font-size: 10px; margin-left: 5px;">(+${this.executionQueue.length}待機中)</span>`;
+                        activeTaskName.innerHTML = `${escapeHtmlCommon(displayName)} <span style="color: #ffc107; font-size: 10px; margin-left: 5px;">(+${this.executionQueue.length}待機中)</span>`;
                     } else {
                         activeTaskName.textContent = displayName;
                     }
-                } else if (this.promptName) {
-                    // 通常のプロンプト実行
+                } else if (this.skillName) {
+                    // 通常のスキル実行
                     if (this.executionQueue && this.executionQueue.length > 0) {
-                        activeTaskName.innerHTML = `${this.promptName} <span style="color: #ffc107; font-size: 10px; margin-left: 5px;">(+${this.executionQueue.length}待機中)</span>`;
+                        activeTaskName.innerHTML = `${escapeHtmlCommon(this.skillName)} <span style="color: #ffc107; font-size: 10px; margin-left: 5px;">(+${this.executionQueue.length}待機中)</span>`;
                     } else {
-                        activeTaskName.textContent = this.promptName;
+                        activeTaskName.textContent = this.skillName;
                     }
                 }
             }
             if (activeTaskNavBtn) {
                 activeTaskNavBtn.onclick = (e) => {
                     e.stopPropagation();
-                    if (this.promptId) {
-                        window.location.href = `execute.html?id=${this.promptId}`;
+                    if (this.workflowId) {
+                        const weParam = this.workflowExecutionId ? `&we_id=${this.workflowExecutionId}` : '';
+                        window.location.href = `workflow-execute.html?id=${this.workflowId}${weParam}`;
+                    } else if (this.skillId) {
+                        window.location.href = `execute.html?id=${this.skillId}`;
                     }
                 };
             }
@@ -1091,12 +1262,12 @@ const PersistentStatusBar = {
 
                 taskItem.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <span style="color: #fff; font-size: 12px; font-weight: 500;">${task.promptName || 'プロンプト'}</span>
+                        <span style="color: #fff; font-size: 12px; font-weight: 500;">${escapeHtmlCommon(task.skillName || 'スキル')}</span>
                         <span style="color: #ffc107; font-size: 11px; font-weight: bold;">待機中 #${index + 1}</span>
                     </div>
                     <div style="display: flex; gap: 8px;">
                         <button class="queued-task-nav-btn btn btn-sm btn-secondary"
-                                data-prompt-id="${task.promptId}"
+                                data-prompt-id="${task.skillId}"
                                 style="padding: 4px 8px; font-size: 11px; background-color: rgba(108, 117, 125, 0.8); border: none; pointer-events: auto; flex: 1;">
                             詳細へ
                         </button>
@@ -1113,9 +1284,9 @@ const PersistentStatusBar = {
                 if (navBtn) {
                     navBtn.onclick = (e) => {
                         e.stopPropagation();
-                        const promptId = navBtn.getAttribute('data-prompt-id');
-                        if (promptId) {
-                            window.location.href = `execute.html?id=${promptId}`;
+                        const skillId = navBtn.getAttribute('data-prompt-id');
+                        if (skillId) {
+                            window.location.href = `execute.html?id=${skillId}`;
                         }
                     };
                 }
@@ -1169,12 +1340,14 @@ const PersistentStatusBar = {
 
                 taskItem.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <span style="color: #fff; font-size: 12px; font-weight: 500;">${task.promptName || 'プロンプト'}</span>
+                        <span style="color: #fff; font-size: 12px; font-weight: 500;">${escapeHtmlCommon(task.skillName || 'スキル')}</span>
                         <span style="color: ${statusColor}; font-size: 11px; font-weight: bold;">${statusText}</span>
                     </div>
                     <button class="completed-task-nav-btn btn btn-sm btn-secondary"
-                            data-prompt-id="${task.promptId}"
+                            data-prompt-id="${task.skillId}"
                             data-execution-id="${task.id || task.executionId}"
+                            data-workflow-id="${task.workflowId || ''}"
+                            data-workflow-execution-id="${task.workflowExecutionId || ''}"
                             style="padding: 4px 8px; font-size: 11px; background-color: rgba(108, 117, 125, 0.8); border: none; pointer-events: auto; width: 100%;">
                         詳細へ
                     </button>
@@ -1185,14 +1358,20 @@ const PersistentStatusBar = {
                 if (navBtn) {
                     navBtn.onclick = (e) => {
                         e.stopPropagation();
-                        const promptId = navBtn.getAttribute('data-prompt-id');
-                        const executionId = navBtn.getAttribute('data-execution-id');
-                        if (promptId) {
-                            // executionIdをURLパラメータとして渡す（入力データ復元用）
-                            const url = executionId
-                                ? `execute.html?id=${promptId}&execution_id=${executionId}`
-                                : `execute.html?id=${promptId}`;
-                            window.location.href = url;
+                        const wfId = navBtn.getAttribute('data-workflow-id');
+                        const weId = navBtn.getAttribute('data-workflow-execution-id');
+                        if (wfId) {
+                            const weParam = weId ? `&we_id=${weId}` : '';
+                            window.location.href = `workflow-execute.html?id=${wfId}${weParam}`;
+                        } else {
+                            const skillId = navBtn.getAttribute('data-prompt-id');
+                            const executionId = navBtn.getAttribute('data-execution-id');
+                            if (skillId) {
+                                const url = executionId
+                                    ? `execute.html?id=${skillId}&execution_id=${executionId}`
+                                    : `execute.html?id=${skillId}`;
+                                window.location.href = url;
+                            }
                         }
                     };
                 }
@@ -1232,16 +1411,16 @@ const PersistentStatusBar = {
                         const stepInfo = this.currentStepName ? ` - ${this.currentStepName}` : (this.currentStepOrder ? ` - Step ${this.currentStepOrder}` : '');
                         const displayName = `${this.workflowName}${stepInfo}`;
                         if (this.executionQueue && this.executionQueue.length > 0) {
-                            dockPromptName.innerHTML = `${displayName} <span style="color: #ffc107; font-size: 11px; margin-left: 5px;">+${this.executionQueue.length}</span>`;
+                            dockPromptName.innerHTML = `${escapeHtmlCommon(displayName)} <span style="color: #ffc107; font-size: 11px; margin-left: 5px;">+${this.executionQueue.length}</span>`;
                         } else {
                             dockPromptName.textContent = displayName;
                         }
-                    } else if (this.promptName) {
-                        // 通常のプロンプト実行
+                    } else if (this.skillName) {
+                        // 通常のスキル実行
                         if (this.executionQueue && this.executionQueue.length > 0) {
-                            dockPromptName.innerHTML = `${this.promptName} <span style="color: #ffc107; font-size: 11px; margin-left: 5px;">+${this.executionQueue.length}</span>`;
+                            dockPromptName.innerHTML = `${escapeHtmlCommon(this.skillName)} <span style="color: #ffc107; font-size: 11px; margin-left: 5px;">+${this.executionQueue.length}</span>`;
                         } else {
-                            dockPromptName.textContent = this.promptName;
+                            dockPromptName.textContent = this.skillName;
                         }
                     }
                 }
@@ -1325,7 +1504,7 @@ const PersistentStatusBar = {
             dock.style.borderColor = 'rgba(255, 255, 255, 0.2)';
             if (dockSummary) dockSummary.style.opacity = '0';
             if (expandIcon) expandIcon.style.opacity = '0';
-            // プロンプト名を「バックグラウンド」に戻す
+            // スキル名を「バックグラウンド」に戻す
             if (dockPromptName) {
                 dockPromptName.textContent = 'バックグラウンド';
             }
@@ -1366,21 +1545,21 @@ const PersistentStatusBar = {
                 expandIcon.style.opacity = '1';
             }
 
-            // プロンプト名を表示
-            if (dockPromptName && this.promptName) {
-                dockPromptName.textContent = this.promptName;
+            // スキル名を表示
+            if (dockPromptName && this.skillName) {
+                dockPromptName.textContent = this.skillName;
             }
 
             if (stopBtn) stopBtn.disabled = false;
             if (stopSpinner) stopSpinner.style.display = 'none';
 
-            // Show nav button if promptId is available and we are NOT on the execute page for that prompt
-            if (this.promptId) {
+            // Show nav button if skillId is available and we are NOT on the execute page for that prompt
+            if (this.skillId) {
                 const currentUrl = new URL(window.location.href);
                 const currentPromptId = currentUrl.searchParams.get('id');
                 const isExecutePage = window.location.pathname.includes('execute.html');
 
-                if (!isExecutePage || (isExecutePage && currentPromptId != this.promptId)) {
+                if (!isExecutePage || (isExecutePage && currentPromptId != this.skillId)) {
                     if (navBtn) navBtn.style.display = 'inline-block';
                 } else {
                     if (navBtn) navBtn.style.display = 'none';
@@ -1451,6 +1630,12 @@ const PersistentStatusBar = {
             const execution = await apiRequest(`/api/user/executions/${this.executionId}`);
 
             if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+                // ワークフロー実行中は個別スキルの完了でワークフロー全体を完了扱いにしない
+                if (this.workflowExecutionId && execution.workflow_skill_id) {
+                    // ワークフロー内のスキルステップ完了 → markAsCompleted しない
+                    return;
+                }
+
                 if (execution.status === 'success') {
                     // 成功時は完了状態に移行（履歴として残す）
                     this.markAsCompleted();
@@ -1464,8 +1649,8 @@ const PersistentStatusBar = {
                     const currentUrl = new URL(window.location.href);
                     const currentPromptId = currentUrl.searchParams.get('id');
 
-                    // 現在のプロンプトIDと一致する場合のみ処理
-                    if (currentPromptId && parseInt(currentPromptId) === this.promptId) {
+                    // 現在のスキルIDと一致する場合のみ処理
+                    if (currentPromptId && parseInt(currentPromptId) === this.skillId) {
                         // カスタムイベントを発火して、execute.html側で処理させる
                         window.dispatchEvent(new CustomEvent('executionCompleted', {
                             detail: { execution: execution, executionId: this.executionId || execution.id }
@@ -1516,15 +1701,16 @@ const PersistentStatusBar = {
 
             // 実行IDを保存（後で完了状態として表示するため）
             const executionIdToMark = this.executionId;
-            const promptIdToMark = this.promptId;
-            const promptNameToMark = this.promptName;
+            const skillIdToMark = this.skillId;
+            const skillNameToMark = this.skillName;
 
             // 状態をクリア
             this.executionId = null;
-            this.promptId = null;
-            this.promptName = null;
+            this.skillId = null;
+            this.skillName = null;
             this.workflowExecutionId = null;
             this.workflowName = null;
+            this.workflowId = null;
             this.currentStepOrder = null;
             this.currentStepName = null;
             this.startTime = null;
@@ -1552,8 +1738,8 @@ const PersistentStatusBar = {
             // キャンセル状態として完了タスクに追加
             const cancelledTask = {
                 id: executionIdToMark,  // markAsCompleted()と統一するためidを使用
-                promptId: promptIdToMark,
-                promptName: promptNameToMark || '実行中...',
+                skillId: skillIdToMark,
+                skillName: skillNameToMark || '実行中...',
                 status: 'cancelled',
                 completedAt: Date.now()
             };

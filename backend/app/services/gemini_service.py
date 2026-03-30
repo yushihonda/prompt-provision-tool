@@ -55,7 +55,10 @@ class GeminiService:
             # 新しいSDKを初期化（Deep Think機能用）
             if NEW_SDK_AVAILABLE:
                 try:
-                    self.genai_client = genai_new.Client(api_key=self.api_key)
+                    self.genai_client = genai_new.Client(
+                        api_key=self.api_key,
+                        http_options={"headers": {"Referer": "https://prompt-provision-tool.local"}},
+                    )
                     logger.info("✓ Gemini Service: 直接Gemini API接続で初期化（新SDK対応）")
                 except Exception as e:
                     logger.warning(f"⚠ 新SDKの初期化に失敗: {e}。古いSDKを使用します。")

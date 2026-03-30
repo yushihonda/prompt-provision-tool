@@ -2,29 +2,42 @@
 
 const API_BASE = window.location.origin;
 
+function _loginEsc(s) {
+    if (s == null) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 // 前回の認証エラーを確認
 window.addEventListener('DOMContentLoaded', () => {
     const authError = localStorage.getItem('auth_error');
     if (authError) {
         try {
             const error = JSON.parse(authError);
-            // エラーをアラートで表示
+            const respSnippet = error.response ? String(error.response).substring(0, 200) : '';
             Swal.fire({
                 title: '認証エラー',
                 html: `
-                    <p><strong>エラータイプ:</strong> ${error.type}</p>
-                    <p><strong>メッセージ:</strong> ${error.message || '不明なエラー'}</p>
-                    ${error.status ? `<p><strong>ステータス:</strong> ${error.status}</p>` : ''}
-                    ${error.response ? `<p><strong>レスポンス:</strong> ${error.response.substring(0, 200)}</p>` : ''}
-                    <p><strong>時刻:</strong> ${new Date(error.timestamp).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}</p>
-                    <details style="margin-top: 10px;">
-                        <summary>詳細ログ（クリックで展開）</summary>
-                        <pre style="text-align: left; font-size: 10px; max-height: 200px; overflow: auto;">${JSON.stringify(error, null, 2)}</pre>
-                    </details>
+                    <div class="swal-auth-error" style="text-align:left;font-size:14px;line-height:1.5;">
+                        <p style="margin:0 0 8px;"><span style="color:rgba(255,255,255,0.55);font-size:12px;text-transform:uppercase;">タイプ</span><br>${_loginEsc(error.type)}</p>
+                        <p style="margin:0 0 8px;"><span style="color:rgba(255,255,255,0.55);font-size:12px;text-transform:uppercase;">メッセージ</span><br>${_loginEsc(error.message || '不明なエラー')}</p>
+                        ${error.status ? `<p style="margin:0 0 8px;"><span style="color:rgba(255,255,255,0.55);font-size:12px;text-transform:uppercase;">ステータス</span><br>${_loginEsc(error.status)}</p>` : ''}
+                        ${respSnippet ? `<p style="margin:0 0 8px;"><span style="color:rgba(255,255,255,0.55);font-size:12px;text-transform:uppercase;">レスポンス抜粋</span><br>${_loginEsc(respSnippet)}</p>` : ''}
+                        <p style="margin:0 0 10px;"><span style="color:rgba(255,255,255,0.55);font-size:12px;text-transform:uppercase;">時刻</span><br>${_loginEsc(new Date(error.timestamp).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }))}</p>
+                        <details style="margin-top: 10px;">
+                            <summary style="cursor:pointer;color:rgba(199,182,255,0.95);">詳細ログ（展開）</summary>
+                            <pre style="text-align: left; font-size: 11px; max-height: 200px; overflow: auto; margin-top:8px; padding:10px; border-radius:8px; background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.1);">${_loginEsc(JSON.stringify(error, null, 2))}</pre>
+                        </details>
+                    </div>
                 `,
                 icon: 'error',
-                width: '600px',
-                confirmButtonText: 'OK'
+                width: 'min(92vw, 520px)',
+                confirmButtonText: '閉じる',
+                confirmButtonColor: '#7c3aed',
+                customClass: { popup: 'swal-wide' }
             });
             // エラー情報をクリア
             localStorage.removeItem('auth_error');
@@ -106,13 +119,15 @@ async function showAlert(message, type) {
     else if (type === 'warning') icon = 'warning';
     else icon = 'info';
 
+    const longMessage = message && String(message).length > 220;
     await Swal.fire({
         title: icon === 'error' ? 'エラー' : icon === 'success' ? '成功' : icon === 'warning' ? '警告' : '情報',
         text: message,
         icon: icon,
-        confirmButtonText: 'OK',
-        timer: 3000,
-        timerProgressBar: true
+        confirmButtonText: '閉じる',
+        confirmButtonColor: '#7c3aed',
+        timer: longMessage ? undefined : 3000,
+        timerProgressBar: !longMessage
     });
 }
 
