@@ -875,8 +875,20 @@ async function handleStepComplete(executionId, stepOrder, status, errorMessage =
 
         // ワークフロー単位で完了管理するため、ここではバックグラウンドパネルへの保存は行わない
 
-        // リーダーステップ（workflow_skill_idがNone）の場合はワークフロー全体が完了
-        const isLeaderStep = execution.workflow_skill_id === null || execution.workflow_skill_id === undefined;
+        // 特殊ロール（品質ゲート/ジャッジ/スーパーバイザー）は通常のステップ完了処理をスキップ
+        const execRole = execution.execution_role;
+        if (execRole === 'quality_gate' || execRole === 'debate_judge' || execRole === 'supervisor') {
+            console.log('Special role execution completed, checking next step:', { execRole, executionId });
+            if (execution.workflow_execution_id && workflowExecutionId === execution.workflow_execution_id) {
+                setTimeout(async () => {
+                    await checkAndStartNextStep(execution.workflow_execution_id, stepOrder);
+                }, 2000);
+            }
+            return;
+        }
+
+        // リーダーステップ（workflow_skill_idがNone かつ 特殊ロールでない）の場合はワークフロー全体が完了
+        const isLeaderStep = (execution.workflow_skill_id === null || execution.workflow_skill_id === undefined) && !execRole;
         if (isLeaderStep && execution.workflow_execution_id && workflowExecutionId === execution.workflow_execution_id) {
             console.log('Leader step completed, handling workflow complete');
             // ワークフロー全体が完了したので、スキル実行と同様の処理を実行
@@ -1126,70 +1138,124 @@ function restoreAllWorkflowInputData(executions) {
 // 次のステップが開始されているか確認し、開始されていなければ開始する
 let _checkNextStepRetryCount = 0;
 const _MAX_CHECK_RETRIES = 20;  // 最大20回（約60秒）
-async function checkAndStartNextStep(workflowExecutionId, completedStepOrder) {
+async function checkAndStartNextStep(wfExecId, completedStepOrder) {
     try {
-        console.log('checkAndStartNextStep called:', { workflowExecutionId, completedStepOrder });
-        
+        console.log('checkAndStartNextStep called:', { wfExecId, completedStepOrder });
+
+        // まずWF全体のステータスを確認 → error/successなら即停止
+        try {
+            const wfStatus = await apiRequest(`/api/user/workflow-executions/${wfExecId}/status`);
+            if (wfStatus && (wfStatus.status === 'success' || wfStatus.status === 'error' || wfStatus.status === 'cancelled')) {
+                console.log('Workflow finished:', wfStatus.status);
+                _checkNextStepRetryCount = 0;
+                if (wfStatus.status === 'error') {
+                    showAlert(`ワークフローがエラーで停止しました: ${wfStatus.error_message || ''}`, 'error');
+                    if (typeof PersistentStatusBar !== 'undefined') PersistentStatusBar.markAsCompleted('error');
+                }
+                if (wfStatus.status === 'success') {
+                    if (typeof PersistentStatusBar !== 'undefined') PersistentStatusBar.markAsCompleted('success');
+                }
+                // 全Workerを停止
+                streamingWorkers.forEach((w, id) => { w.terminate(); });
+                streamingWorkers.clear();
+                return;
+            }
+        } catch (e) {
+            // ステータスAPIがない場合は従来の方法にフォールバック
+            console.log('WF status check failed, falling back:', e.message);
+        }
+
         // ワークフロー実行の全実行を取得
         const response = await apiRequest(`/api/user/executions?limit=100`);
         const responseExecutions = response.items || response;
-        const workflowExecutions = responseExecutions.filter(exec => exec.workflow_execution_id === workflowExecutionId);
+        const workflowExecutions = responseExecutions.filter(exec => exec.workflow_execution_id === wfExecId);
 
-        console.log('Workflow executions found:', { 
-            count: workflowExecutions.length,
-            executionIds: workflowExecutions.map(e => e.id),
-            stepOrders: workflowExecutions.map(e => e.skill_order)
+        // 特殊ロール(品質ゲート/ジャッジ/スーパーバイザー)を除外した通常スキルのみ
+        const normalExecutions = workflowExecutions.filter(exec => !exec.execution_role);
+
+        console.log('Workflow executions found:', {
+            total: workflowExecutions.length,
+            normal: normalExecutions.length,
+            special: workflowExecutions.length - normalExecutions.length,
         });
 
-        // 次のステップの実行を探す
-        const nextStepOrder = completedStepOrder + 1;
-        const nextExecution = workflowExecutions.find(exec => exec.skill_order === nextStepOrder);
+        // WFステータスを確認（バックエンドでジャッジ/SV/Reflection等が進行中の場合に対応）
+        let wfStatus = null;
+        try {
+            wfStatus = await apiRequest(`/api/user/workflow-executions/${wfExecId}/status`);
+        } catch (e) {
+            console.log('WF status check failed:', e.message);
+        }
+
+        // WFが完了/エラーなら即停止
+        if (wfStatus && (wfStatus.status === 'success' || wfStatus.status === 'error' || wfStatus.status === 'cancelled')) {
+            console.log('Workflow finished:', wfStatus.status, wfStatus.error_message);
+            _checkNextStepRetryCount = 0;
+            if (wfStatus.status === 'error') {
+                showAlert(`ワークフローがエラーで停止しました: ${wfStatus.error_message || ''}`, 'error');
+            }
+            if (typeof PersistentStatusBar !== 'undefined') {
+                PersistentStatusBar.markAsCompleted(wfStatus.status === 'success' ? 'success' : 'error');
+            }
+            streamingWorkers.forEach((w) => w.terminate());
+            streamingWorkers.clear();
+            return;
+        }
+
+        // 次のステップを探す:
+        // 1. pending/processing中の通常スキル（SVのrepeat後の再実行、品質ゲート後の再実行など）
+        // 2. なければcompleted以降のskill_orderで未ストリーミングのもの
+        let nextExecution = normalExecutions
+            .filter(exec => ['pending_local', 'pending', 'processing'].includes(exec.status) && !streamingWorkers.has(exec.id))
+            .sort((a, b) => a.id - b.id)[0];  // IDが新しいものを優先
+
+        if (!nextExecution) {
+            nextExecution = normalExecutions
+                .filter(exec => exec.skill_order > completedStepOrder && !streamingWorkers.has(exec.id) && exec.status !== 'cancelled')
+                .sort((a, b) => a.skill_order - b.skill_order)[0];
+        }
 
         if (nextExecution) {
-            _checkNextStepRetryCount = 0;  // リセット
+            _checkNextStepRetryCount = 0;
+            const nextStepOrder = nextExecution.skill_order;
             console.log('Next step execution found:', {
-                nextExecutionId: nextExecution.id, 
+                nextExecutionId: nextExecution.id,
                 nextStepOrder,
                 status: nextExecution.status,
-                alreadyStreaming: streamingWorkers.has(nextExecution.id)
             });
 
-            // 既にストリーミング中の場合はスキップ
-            if (streamingWorkers.has(nextExecution.id)) {
-                console.log('Next step already streaming, skipping');
-                return;
-            }
-
-            // 次のステップの情報を取得
             const nextStepInfo = workflowDetail?.skills?.find(s => s.skill_order == nextStepOrder);
-            const nextStepName = nextStepInfo?.skill_name || nextStepInfo?.skill_name || nextExecution.skill_name || `Step ${nextStepOrder}`;
+            const nextStepName = nextStepInfo?.skill_name || nextExecution.skill_name || `Step ${nextStepOrder}`;
             const nextPromptName = nextStepInfo?.skill_name || nextStepName;
             const workflowName = workflowDetail?.workflow?.name || 'ワークフロー';
 
-            // バックグラウンドパネルを次のステップに更新
             if (typeof PersistentStatusBar !== 'undefined') {
-                PersistentStatusBar.handleWorkflowNextStep(
-                    nextExecution.id,
-                    nextStepOrder,
-                    nextStepName,
-                    workflowName
-                );
+                PersistentStatusBar.handleWorkflowNextStep(nextExecution.id, nextStepOrder, nextStepName, workflowName);
             }
 
-            // 次のステップのストリーミングを開始
             console.log('Starting next step streaming:', { nextExecutionId: nextExecution.id, nextStepOrder, nextStepName });
             startStepStreaming(nextExecution.id, nextStepOrder, nextStepName, nextPromptName);
+        } else if (wfStatus && wfStatus.status === 'processing') {
+            // WFはまだ処理中（ジャッジ/SV/Reflectionがバックエンドで進行中）→ リトライ
+            _checkNextStepRetryCount++;
+            if (_checkNextStepRetryCount >= _MAX_CHECK_RETRIES) {
+                console.log('Max retries but WF still processing, continuing to poll...');
+                _checkNextStepRetryCount = 0;  // リセットして継続
+            }
+            console.log('WF processing, waiting for backend orchestration...', { retry: _checkNextStepRetryCount });
+            setTimeout(async () => {
+                await checkAndStartNextStep(wfExecId, completedStepOrder);
+            }, 3000);
         } else {
             _checkNextStepRetryCount++;
             if (_checkNextStepRetryCount >= _MAX_CHECK_RETRIES) {
-                console.error('Max retries reached for next step check, giving up', { nextStepOrder });
+                console.error('Max retries reached and WF status unknown');
                 showAlert('次のステップの起動がタイムアウトしました。履歴から詳細を確認してください。', 'error');
                 return;
             }
-            console.log('Next step execution not found yet, will retry...', { nextStepOrder, retry: _checkNextStepRetryCount });
-            // 次のステップが見つからない場合は、少し待ってから再試行
+            console.log('Next step not found yet, will retry...', { retry: _checkNextStepRetryCount });
             setTimeout(async () => {
-                await checkAndStartNextStep(workflowExecutionId, completedStepOrder);
+                await checkAndStartNextStep(wfExecId, completedStepOrder);
             }, 3000);
         }
     } catch (error) {

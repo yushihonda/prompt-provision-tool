@@ -97,6 +97,19 @@
     overflow-x: hidden !important;
 }
 
+/* SweetAlert2 スクロール可能ポップアップ（長いフォーム用） */
+.swal2-popup.swal-scrollable-popup {
+    max-height: 90vh !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+.swal-scrollable-container {
+    overflow-y: auto !important;
+    max-height: calc(90vh - 150px) !important;
+    max-width: 100% !important;
+}
+
 .swal2-html-container {
     overflow-x: hidden !important;
     max-width: 100% !important;
@@ -810,11 +823,6 @@ body:not(.login-page) {
     min-height: 150px;
     resize: vertical;
     font-family: 'Courier New', monospace;
-}
-
-/* 実行画面の入力フィールドのtextareaはさらに高く */
-.execute-input-panel .form-group textarea {
-    min-height: 400px;
 }
 
 .form-group input[type="checkbox"] {

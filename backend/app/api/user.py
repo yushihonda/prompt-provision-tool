@@ -552,6 +552,7 @@ async def list_my_executions(
             "executed_at": execution.executed_at,
             "output_format": output_format,
             "skill_name": skill_name,
+            "execution_role": getattr(execution, 'execution_role', None),
             "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
         }
         items.append(execution_dict)
@@ -561,6 +562,28 @@ async def list_my_executions(
         "total": total,
         "skip": skip,
         "limit": limit
+    }
+
+
+@router.get("/workflow-executions/{wf_execution_id}/status")
+async def get_workflow_execution_status(
+    wf_execution_id: int,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user)
+):
+    """ワークフロー実行のステータスを取得"""
+    wf_exec = db.query(WorkflowExecution).filter(
+        WorkflowExecution.id == wf_execution_id,
+        WorkflowExecution.account_id == current_user.id,
+    ).first()
+    if not wf_exec:
+        raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
+    return {
+        "id": wf_exec.id,
+        "status": wf_exec.status,
+        "error_message": wf_exec.error_message,
+        "current_step": wf_exec.current_step,
+        "total_steps": wf_exec.total_steps,
     }
 
 
@@ -641,6 +664,7 @@ async def get_execution_detail(
         status=execution.status,
         error_message=execution.error_message,
         output_format=output_format,
+        execution_role=getattr(execution, 'execution_role', None),
         executed_at=execution.executed_at,
         enable_deep_think=bool(enable_deep_think) if enable_deep_think is not None else None,
     )

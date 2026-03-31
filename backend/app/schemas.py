@@ -184,6 +184,7 @@ class ExecutionResponse(BaseModel):
     status: str
     error_message: Optional[str] = None
     output_format: Optional[str] = "txt"  # 出力形式（csv, pdf, docx, md, txt）
+    execution_role: Optional[str] = None  # null | "quality_gate" | "supervisor" | "debate_judge"
     executed_at: datetime
     # Deep Think有効フラグ（履歴詳細表示用）
     enable_deep_think: Optional[bool] = None
@@ -320,6 +321,20 @@ class WorkflowGroupSkillItem(BaseModel):
     skill_display_name: Optional[str] = None
     workflow_skill_id: Optional[int] = None
     skill_order: Optional[int] = None
+    # エラーリカバリ
+    on_error: str = "stop"  # "stop" | "skip" | "retry"
+    max_retries: int = 0
+    retry_delay_seconds: int = 5
+    # 明示的データマッピング
+    input_mapping: Optional[Dict[str, str]] = None  # {"target_field": "steps.<key>.output"}
+    output_key: Optional[str] = None
+    # 品質ゲート (Reflection)
+    quality_gate_type: str = "disabled"  # "disabled" | "regex" | "json_schema" | "llm"
+    quality_gate_prompt: Optional[str] = None
+    quality_gate_model: Optional[str] = None
+    max_reflection_loops: int = 0
+    # ハンドオフ
+    handoff_rules: Optional[List[Dict[str, Any]]] = None
 
 
 class WorkflowGroupItem(BaseModel):
@@ -328,6 +343,16 @@ class WorkflowGroupItem(BaseModel):
     group_order: int = 1
     group_name: Optional[str] = None
     execution_type: str = "serial"  # "serial" | "parallel"
+    condition_expression: Optional[Dict[str, Any]] = None  # 条件分岐式
+    skip_on_condition_fail: bool = True
+    # スーパーバイザー
+    supervisor_prompt: Optional[str] = None
+    supervisor_model: Optional[str] = None
+    # 動的モード
+    dynamic_mode: str = "static"  # "static" | "dynamic"
+    # ジャッジ (並列合議)
+    judge_prompt: Optional[str] = None
+    judge_model: Optional[str] = None
     skills: List[WorkflowGroupSkillItem] = []
 
 
@@ -344,6 +369,8 @@ class WorkflowCreate(BaseModel):
     parent_enable_web_search: bool = False
     parent_enable_code_interpreter: bool = False
     parent_enable_file_search: bool = False
+    parent_skill_mode: str = "required"  # "required" | "optional" | "disabled"
+    supervisor_mode: str = "disabled"  # "disabled" | "after_each_group" | "after_marked_groups"
     # グループ構造
     groups: List[WorkflowGroupItem] = []
 
@@ -360,6 +387,8 @@ class WorkflowUpdate(BaseModel):
     parent_enable_web_search: Optional[bool] = None
     parent_enable_code_interpreter: Optional[bool] = None
     parent_enable_file_search: Optional[bool] = None
+    parent_skill_mode: Optional[str] = None
+    supervisor_mode: Optional[str] = None
     groups: Optional[List[WorkflowGroupItem]] = None
 
 
@@ -377,6 +406,8 @@ class WorkflowResponse(BaseModel):
     parent_enable_web_search: bool = False
     parent_enable_code_interpreter: bool = False
     parent_enable_file_search: bool = False
+    parent_skill_mode: str = "required"
+    supervisor_mode: str = "disabled"
     # メタ
     created_by: int
     created_at: datetime
@@ -442,6 +473,8 @@ class WorkflowCreateWithParentSkill(BaseModel):
     input_schema: Optional[Dict[str, Any]] = None
     is_active: bool = True
     parent_skill: ParentSkillData
+    parent_skill_mode: str = "required"  # "required" | "optional" | "disabled"
+    supervisor_mode: str = "disabled"  # "disabled" | "after_each_group" | "after_marked_groups"
     skills: List[WorkflowSkillUpdateItem] = []
     groups: Optional[List[WorkflowGroupItem]] = None
 

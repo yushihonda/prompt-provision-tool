@@ -257,7 +257,7 @@ function formatJSON(json) {
 // 共通レイアウト（ヘッダー＋ナビゲーション）
 // ---------------------------------------------------------------------------
 const USER_NAV_ITEMS = [
-    { href: 'dashboard.html', label: 'スキル一覧' },
+    { href: 'dashboard.html', label: 'ワークフロー / スキル管理' },
     { href: 'history.html',   label: '実行履歴' },
 ];
 

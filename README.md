@@ -1,6 +1,6 @@
 # Prompt Provision Tool
 
-スキルを秘匿したまま、AI 実行機能を提供する汎用ワークフロー実行フレームワーク。
+スキルを秘匿したまま、AI 実行機能を提供する **次世代AIオーケストレーションフレームワーク**。
 
 ## 構成
 
@@ -8,7 +8,7 @@
 サーバー (Docker)                    ローカル (ターミナル)
   スキル暗号化保存                     全ての AI 実行
   バンドル配信 (復号+署名)             リトライ・ストリーミング
-  結果保存・課金・SSE                  並列実行制御
+  結果保存・課金・SSE                  並列実行制御 (最大8並列)
   AI 処理なし                          ユーザーの API キーで実行
 ```
 
@@ -41,6 +41,7 @@ cp .env.worker.sample .env.worker
 | `WORKER_API_KEY` | ※1 | Worker API Key（`wpk_...`形式、管理画面で発行） |
 | `OPENAI_API_KEY` | ※2 | OpenAI APIキー |
 | `GEMINI_API_KEY` | ※2 | Gemini APIキー |
+| `ANTHROPIC_API_KEY` | ※2 | Anthropic APIキー |
 | `WORKER_MAX_CONCURRENT` | - | 最大同時実行数（デフォルト: 8） |
 | `WORKER_POLL_INTERVAL` | - | ポーリング間隔 秒（デフォルト: 2.0） |
 | `WORKER_REQUEST_TIMEOUT` | - | リクエストタイムアウト 秒（デフォルト: 3600） |
@@ -64,7 +65,7 @@ python -m local_worker skill 260 --input '{"topic":"AI最新動向"}'
 python -m local_worker workflow 3 --input '{"topic":"AI記事"}'
 
 # モデル切り替え
-python -m local_worker skill 260 --input '{"topic":"AI"}' --model gpt-4o
+python -m local_worker skill 260 --input '{"topic":"AI"}' --model gpt-5.4
 
 # 常駐デーモン (UI から自動実行)
 python -m local_worker daemon
@@ -72,27 +73,70 @@ python -m local_worker daemon
 
 ## 対応モデル
 
-| OpenAI | Google Gemini |
-|--------|---------------|
-| gpt-5.2, gpt-5.2-pro | gemini-3-pro-preview |
-| gpt-5.1, gpt-5.1-thinking | gemini-2.5-pro, gemini-2.5-flash |
-| gpt-5, gpt-5-pro | gemini-2.0-flash |
-| gpt-4o, gpt-4o-mini | + deep-think variants |
+| OpenAI | Google Gemini | Anthropic Claude |
+|--------|---------------|------------------|
+| gpt-5.4, gpt-5.4-pro | gemini-3.1-pro-preview | claude-sonnet-4-6 |
+| gpt-5.4-mini, gpt-5.4-thinking | gemini-3.1-pro-preview-deep-think | claude-sonnet-4-6-thinking |
+| gpt-5.2, gpt-5.2-pro | gemini-3-pro-preview | claude-opus-4-6 |
+| gpt-5.2-thinking | gemini-2.5-pro, gemini-2.5-flash | claude-opus-4-6-thinking |
+| o4-mini | + deep-think variants | claude-haiku-4-5 |
 
-## ワークフロー
+## ワークフロー オーケストレーション
 
-管理画面でスキルとワークフローを作成。グループ単位で直列/並列を設定:
+管理画面でスキルとワークフローを作成。2026年最新のAIオーケストレーションパターンに対応:
 
 ```
-[Group 1: 並列] ──→ [Group 2: 直列] ──→ [親スキル]
-  リサーチ             記事生成              最終統合
-  市場分析
+[Group 1: 並列]                   [Group 2: 直列]           [親スキル]
+  リサーチA ──→ 品質ゲート           記事生成 ──→ 品質ゲート     最終統合
+  リサーチB ──→ 品質ゲート           (BBから調査結果読取)
+  市場分析  ──→ 品質ゲート
+       ↓
+  ジャッジ (3結果を比較・統合)
+       ↓
+  スーパーバイザー (十分か判断)
 ```
 
-- **グループ内並列**: 同じグループのスキルを同時実行
+### 基本機能
+
+- **グループ内並列**: 同じグループのスキルを同時実行（最大8並列）
 - **グループ間直列**: グループ順に実行、前グループの出力を次に渡す
-- **親スキル**: 全結果を統合する親スキル。ワークフローに埋め込み
-- **ドラッグ&ドロップ**: 管理画面でグループ・スキルを視覚的に配置
+- **親スキル**: 全結果を統合する親スキル（必須/任意/無効を選択可能）
+- **条件分岐**: グループに条件式を設定、結果に応じてスキップ可能
+- **エラーリカバリ**: スキルごとに stop / skip / retry ポリシーを設定
+- **明示的データマッピング**: input_mapping / output_key でステップ間データ参照を明示的に指定
+
+### 次世代オーケストレーション機能
+
+| 機能 | 概要 |
+|------|------|
+| **Reflection (自己修正)** | スキル完了後に品質ゲート（正規表現/JSON検証/LLM判定）で検証。不合格なら critique 付きで自動再実行 |
+| **Blackboard (共有メモリ)** | 全スキルが読み書きできるKey-Valueストア。output_key を持つスキルの出力を自動保存 |
+| **Supervisor (中間監視)** | グループ完了後にLLMが進捗を評価。continue / repeat / stop でルーティング判断 |
+| **Dynamic Decomposition (動的分解)** | プランナースキルが実行時にタスクを動的生成。直列/並列を計画に応じて自動制御 |
+| **Debate/Judge (議論・合議)** | 並列グループ完了後にジャッジが全結果を比較・統合。最良の回答を選択 |
+
+### ワークフロー実行フロー
+
+```
+ユーザー入力
+  ↓
+Group 1 (parallel)
+  ├── Skill A → 品質ゲート → (不合格なら critique 付き再実行)
+  ├── Skill B → 品質ゲート → OK → Blackboard に自動保存
+  └── Skill C → OK
+  ↓ 全完了
+  Judge: 3結果を比較して最良を選択 → Blackboard に保存
+  ↓
+  Supervisor: "調査は十分か?" → continue / repeat / stop
+  ↓
+Group 2 (dynamic)
+  └── Planner Skill → {"steps": [...]} → スキルを動的起動
+  ↓
+Group 3 (serial)
+  └── 執筆Skill → Blackboard から調査結果を読む → 品質ゲート
+  ↓
+親スキル: 全結果統合 → 最終出力
+```
 
 ## ディレクトリ構成
 
@@ -101,16 +145,15 @@ backend/                  FastAPI サーバー
   app/api/                API エンドポイント (auth, admin, user, execute, worker)
   app/models.py           DB モデル (Workflow, WorkflowGroup, WorkflowSkill, Execution)
   app/services/           Redis, 暗号化, 完了処理, ワーカー認証
-  app/tasks/              ワークフロー継続ロジック
-  alembic/                マイグレーション
+  app/tasks/              ワークフロー継続ロジック (オーケストレーション)
+  alembic/                マイグレーション (001-003)
 frontend/                 Web UI
-  admin/                  管理画面 (スキル管理, ワークフロービルダー)
+  admin/                  管理画面 (ワークフロー/スキル管理)
   user/                   ユーザー画面 (実行, 履歴, ダウンロード)
 local_worker/             ローカル実行 CLI
   cli.py                  コマンド定義 (list, skill, workflow, daemon)
-  engine.py               実行エンジン (グループベース直列/並列)
-  executor.py             LLM 呼び出し (OpenAI/Gemini, リトライ, tiktoken)
-  daemon.py               常駐ワーカー (ポーリング→自動実行→SSE)
+  executor.py             LLM 呼び出し (OpenAI/Gemini/Claude, リトライ, tiktoken)
+  daemon.py               常駐ワーカー (asyncio, Semaphore並列制御)
 deployment/               Docker, Nginx, systemd
 docs/                     詳細資料 (要件定義, デプロイ手順, etc.)
 ```
@@ -122,14 +165,10 @@ docs/                     詳細資料 (要件定義, デプロイ手順, etc.)
 - 認証: JWT (ユーザー) + job_token (ワーカー) + Worker API Key
 - 出力: サニタイズ (テンプレート漏洩防止)
 - ガードレール: スキル先頭に安全ポリシー注入
+- 楽観ロック: 並列完了時の二重起動防止
 
 ## 詳細資料
 
 - [docs/README_FULL.md](docs/README_FULL.md) - 全仕様 (API, DB, 運用手順)
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) - 要件定義
 - [docs/DEPLOYMENT_CHECKLIST.md](docs/DEPLOYMENT_CHECKLIST.md) - デプロイチェックリスト
-
-次の変更箇所
-並列処理などで同じスキルだと同じ検索してて意味ない　入力データが同じなので
-サブスクでも実行可能にしたい
-コード生成も可能にプレビューもあったがいいかもWP環境にも対応したい

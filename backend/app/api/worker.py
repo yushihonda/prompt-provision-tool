@@ -255,8 +255,42 @@ async def get_execution_bundle(
 
     # スキル復号・展開
     model_type = execution.model_used or ""
+    exec_role = getattr(execution, 'execution_role', None)
 
-    if execution.skill_id:
+    if exec_role == "quality_gate":
+        # 品質ゲート: WorkflowSkill.quality_gate_prompt から復号
+        from app.models import WorkflowSkill as WS
+        ws = db.query(WS).filter(WS.id == execution.workflow_skill_id).first() if execution.workflow_skill_id else None
+        if not ws or not ws.quality_gate_prompt:
+            raise HTTPException(status_code=404, detail="品質ゲートプロンプトが見つかりません")
+        try:
+            decrypted = encryption_service.decrypt(ws.quality_gate_prompt)
+        except Exception:
+            decrypted = ws.quality_gate_prompt  # 暗号化されていない場合
+        model_type = ws.quality_gate_model or model_type
+    elif exec_role == "supervisor":
+        # スーパーバイザー: WorkflowGroup.supervisor_prompt から復号
+        from app.models import WorkflowGroup as WG
+        group = db.query(WG).filter(WG.id == execution.execution_group_id).first() if getattr(execution, 'execution_group_id', None) else None
+        if not group or not group.supervisor_prompt:
+            raise HTTPException(status_code=404, detail="スーパーバイザープロンプトが見つかりません")
+        try:
+            decrypted = encryption_service.decrypt(group.supervisor_prompt)
+        except Exception:
+            decrypted = group.supervisor_prompt
+        model_type = group.supervisor_model or model_type
+    elif exec_role == "debate_judge":
+        # ジャッジ: WorkflowGroup.judge_prompt から復号
+        from app.models import WorkflowGroup as WG
+        group = db.query(WG).filter(WG.id == execution.execution_group_id).first() if getattr(execution, 'execution_group_id', None) else None
+        if not group or not group.judge_prompt:
+            raise HTTPException(status_code=404, detail="ジャッジプロンプトが見つかりません")
+        try:
+            decrypted = encryption_service.decrypt(group.judge_prompt)
+        except Exception:
+            decrypted = group.judge_prompt
+        model_type = group.judge_model or model_type
+    elif execution.skill_id:
         # 通常スキル: skills テーブルから復号
         skill = db.query(Skill).filter(Skill.id == execution.skill_id).first()
         if not skill:
@@ -500,6 +534,9 @@ async def report_execution_error(
         publish_error(execution_id, body.error_message)
     except Exception as e:
         logger.warning(f"Failed to publish error event: {e}")
+
+    # ワークフロー継続（エラーリカバリ: retry/skip/stop をトリガー）
+    trigger_workflow_continuation(execution, db)
 
     return {"status": "error", "execution_id": execution_id}
 

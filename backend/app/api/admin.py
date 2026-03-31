@@ -509,6 +509,8 @@ async def create_workflow_with_parent_skill(
         parent_enable_web_search=request.parent_skill.enable_web_search,
         parent_enable_code_interpreter=request.parent_skill.enable_code_interpreter,
         parent_enable_file_search=request.parent_skill.enable_file_search,
+        parent_skill_mode=getattr(request, 'parent_skill_mode', 'required') or 'required',
+        supervisor_mode=getattr(request, 'supervisor_mode', 'disabled') or 'disabled',
     )
     db.add(db_wf)
     db.flush()  # IDを取得
@@ -530,11 +532,31 @@ async def create_workflow_with_parent_skill(
     if request.groups is not None and len(request.groups) > 0:
         step_counter = 1
         for grp_data in request.groups:
+            condition_expr_str = None
+            if getattr(grp_data, 'condition_expression', None):
+                condition_expr_str = json.dumps(grp_data.condition_expression, ensure_ascii=False)
+            # supervisor_prompt / judge_prompt の暗号化
+            encrypted_supervisor_prompt = None
+            raw_supervisor_prompt = getattr(grp_data, 'supervisor_prompt', None)
+            if raw_supervisor_prompt:
+                encrypted_supervisor_prompt = encryption_service.encrypt(raw_supervisor_prompt)
+            encrypted_judge_prompt = None
+            raw_judge_prompt = getattr(grp_data, 'judge_prompt', None)
+            if raw_judge_prompt:
+                encrypted_judge_prompt = encryption_service.encrypt(raw_judge_prompt)
+
             grp = WorkflowGroup(
                 workflow_id=db_wf.id,
                 group_order=grp_data.group_order,
                 group_name=grp_data.group_name,
                 execution_type=grp_data.execution_type or "serial",
+                condition_expression=condition_expr_str,
+                skip_on_condition_fail=getattr(grp_data, 'skip_on_condition_fail', True),
+                supervisor_prompt=encrypted_supervisor_prompt,
+                supervisor_model=getattr(grp_data, 'supervisor_model', None),
+                dynamic_mode=getattr(grp_data, 'dynamic_mode', 'static') or 'static',
+                judge_prompt=encrypted_judge_prompt,
+                judge_model=getattr(grp_data, 'judge_model', None),
             )
             db.add(grp)
             db.flush()
@@ -546,6 +568,19 @@ async def create_workflow_with_parent_skill(
                     config_json_str = json.dumps(
                         skill_data.config_json, ensure_ascii=False
                     )
+                input_mapping_str = None
+                if getattr(skill_data, "input_mapping", None):
+                    input_mapping_str = json.dumps(skill_data.input_mapping, ensure_ascii=False)
+                # quality_gate_prompt の暗号化
+                encrypted_qg_prompt = None
+                raw_qg_prompt = getattr(skill_data, 'quality_gate_prompt', None)
+                if raw_qg_prompt:
+                    encrypted_qg_prompt = encryption_service.encrypt(raw_qg_prompt)
+                # handoff_rules の JSON 化
+                handoff_rules_str = None
+                raw_handoff = getattr(skill_data, 'handoff_rules', None)
+                if raw_handoff:
+                    handoff_rules_str = json.dumps(raw_handoff, ensure_ascii=False)
                 ws = WorkflowSkill(
                     workflow_id=db_wf.id,
                     skill_id=skill_data.skill_id,
@@ -554,6 +589,16 @@ async def create_workflow_with_parent_skill(
                     config_json=config_json_str,
                     group_id=grp.id,
                     order_in_group=skill_data.order_in_group,
+                    on_error=getattr(skill_data, 'on_error', 'stop') or 'stop',
+                    max_retries=getattr(skill_data, 'max_retries', 0) or 0,
+                    retry_delay_seconds=getattr(skill_data, 'retry_delay_seconds', 5) or 5,
+                    input_mapping=input_mapping_str,
+                    output_key=getattr(skill_data, 'output_key', None),
+                    quality_gate_type=getattr(skill_data, 'quality_gate_type', 'disabled') or 'disabled',
+                    quality_gate_prompt=encrypted_qg_prompt,
+                    quality_gate_model=getattr(skill_data, 'quality_gate_model', None),
+                    max_reflection_loops=getattr(skill_data, 'max_reflection_loops', 0) or 0,
+                    handoff_rules=handoff_rules_str,
                 )
                 db.add(ws)
                 step_counter += 1
@@ -646,6 +691,8 @@ async def create_workflow(
         parent_enable_web_search=workflow.parent_enable_web_search,
         parent_enable_code_interpreter=workflow.parent_enable_code_interpreter,
         parent_enable_file_search=workflow.parent_enable_file_search,
+        parent_skill_mode=getattr(workflow, 'parent_skill_mode', 'required') or 'required',
+        supervisor_mode=getattr(workflow, 'supervisor_mode', 'disabled') or 'disabled',
     )
     db.add(db_wf)
     db.commit()
@@ -674,6 +721,26 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
         grp_skills = []
         for ws in sorted(grp.skills, key=lambda s: s.order_in_group or s.skill_order or 0):
             skill = ws.skill
+            input_mapping_parsed = None
+            if ws.input_mapping:
+                try:
+                    input_mapping_parsed = json.loads(ws.input_mapping) if isinstance(ws.input_mapping, str) else ws.input_mapping
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            # quality_gate_prompt の復号
+            quality_gate_prompt_val = None
+            if getattr(ws, 'quality_gate_prompt', None):
+                try:
+                    quality_gate_prompt_val = encryption_service.decrypt(ws.quality_gate_prompt)
+                except Exception:
+                    quality_gate_prompt_val = "(復号エラー)"
+            # handoff_rules のパース
+            handoff_rules_parsed = None
+            if getattr(ws, 'handoff_rules', None):
+                try:
+                    handoff_rules_parsed = json.loads(ws.handoff_rules) if isinstance(ws.handoff_rules, str) else ws.handoff_rules
+                except (json.JSONDecodeError, TypeError):
+                    pass
             skill_item = WorkflowGroupSkillItem(
                 id=ws.id,
                 skill_id=ws.skill_id,
@@ -681,6 +748,16 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
                 model_type=skill.model_type if skill else None,
                 order_in_group=ws.order_in_group or ws.skill_order or 0,
                 skill_display_name=ws.skill_name,
+                on_error=ws.on_error or "stop",
+                max_retries=ws.max_retries or 0,
+                retry_delay_seconds=ws.retry_delay_seconds or 5,
+                input_mapping=input_mapping_parsed,
+                output_key=ws.output_key,
+                quality_gate_type=getattr(ws, 'quality_gate_type', 'disabled') or 'disabled',
+                quality_gate_prompt=quality_gate_prompt_val,
+                quality_gate_model=getattr(ws, 'quality_gate_model', None),
+                max_reflection_loops=getattr(ws, 'max_reflection_loops', 0) or 0,
+                handoff_rules=handoff_rules_parsed,
             )
             grp_skills.append(skill_item)
             # 後方互換: フラット skills
@@ -692,11 +769,38 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
                 skill_display_name=skill.name if skill else None,
             ))
 
+        condition_parsed = None
+        if grp.condition_expression:
+            try:
+                condition_parsed = json.loads(grp.condition_expression) if isinstance(grp.condition_expression, str) else grp.condition_expression
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # supervisor_prompt / judge_prompt の復号
+        supervisor_prompt_val = None
+        if getattr(grp, 'supervisor_prompt', None):
+            try:
+                supervisor_prompt_val = encryption_service.decrypt(grp.supervisor_prompt)
+            except Exception:
+                supervisor_prompt_val = "(復号エラー)"
+        judge_prompt_val = None
+        if getattr(grp, 'judge_prompt', None):
+            try:
+                judge_prompt_val = encryption_service.decrypt(grp.judge_prompt)
+            except Exception:
+                judge_prompt_val = "(復号エラー)"
+
         groups_list.append(WorkflowGroupItem(
             id=grp.id,
             group_order=grp.group_order,
             group_name=grp.group_name,
             execution_type=grp.execution_type,
+            condition_expression=condition_parsed,
+            skip_on_condition_fail=grp.skip_on_condition_fail if grp.skip_on_condition_fail is not None else True,
+            supervisor_prompt=supervisor_prompt_val,
+            supervisor_model=getattr(grp, 'supervisor_model', None),
+            dynamic_mode=getattr(grp, 'dynamic_mode', 'static') or 'static',
+            judge_prompt=judge_prompt_val,
+            judge_model=getattr(grp, 'judge_model', None),
             skills=grp_skills,
         ))
 
@@ -732,6 +836,8 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
         parent_enable_web_search=db_wf.parent_enable_web_search,
         parent_enable_code_interpreter=db_wf.parent_enable_code_interpreter,
         parent_enable_file_search=db_wf.parent_enable_file_search,
+        parent_skill_mode=getattr(db_wf, 'parent_skill_mode', 'required') or 'required',
+        supervisor_mode=getattr(db_wf, 'supervisor_mode', 'disabled') or 'disabled',
         created_by=db_wf.created_by,
         created_at=db_wf.created_at,
         updated_at=db_wf.updated_at,
@@ -805,6 +911,10 @@ async def update_workflow(
         wf.parent_enable_code_interpreter = workflow_update.parent_enable_code_interpreter
     if workflow_update.parent_enable_file_search is not None:
         wf.parent_enable_file_search = workflow_update.parent_enable_file_search
+    if workflow_update.parent_skill_mode is not None:
+        wf.parent_skill_mode = workflow_update.parent_skill_mode
+    if getattr(workflow_update, 'supervisor_mode', None) is not None:
+        wf.supervisor_mode = workflow_update.supervisor_mode
 
     # グループ構造更新（全置換）
     if workflow_update.groups is not None:
@@ -817,16 +927,49 @@ async def update_workflow(
         # 新規グループ・スキル作成
         step_counter = 1
         for grp_data in workflow_update.groups:
+            condition_expr_str = None
+            if getattr(grp_data, 'condition_expression', None):
+                condition_expr_str = json.dumps(grp_data.condition_expression, ensure_ascii=False)
+            # supervisor_prompt / judge_prompt の暗号化
+            encrypted_supervisor_prompt = None
+            raw_supervisor_prompt = getattr(grp_data, 'supervisor_prompt', None)
+            if raw_supervisor_prompt:
+                encrypted_supervisor_prompt = encryption_service.encrypt(raw_supervisor_prompt)
+            encrypted_judge_prompt = None
+            raw_judge_prompt = getattr(grp_data, 'judge_prompt', None)
+            if raw_judge_prompt:
+                encrypted_judge_prompt = encryption_service.encrypt(raw_judge_prompt)
+
             grp = WorkflowGroup(
                 workflow_id=workflow_id,
                 group_order=grp_data.group_order,
                 group_name=grp_data.group_name,
                 execution_type=grp_data.execution_type,
+                condition_expression=condition_expr_str,
+                skip_on_condition_fail=getattr(grp_data, 'skip_on_condition_fail', True),
+                supervisor_prompt=encrypted_supervisor_prompt,
+                supervisor_model=getattr(grp_data, 'supervisor_model', None),
+                dynamic_mode=getattr(grp_data, 'dynamic_mode', 'static') or 'static',
+                judge_prompt=encrypted_judge_prompt,
+                judge_model=getattr(grp_data, 'judge_model', None),
             )
             db.add(grp)
             db.flush()
 
             for skill_data in grp_data.skills:
+                input_mapping_str = None
+                if getattr(skill_data, 'input_mapping', None):
+                    input_mapping_str = json.dumps(skill_data.input_mapping, ensure_ascii=False)
+                # quality_gate_prompt の暗号化
+                encrypted_qg_prompt = None
+                raw_qg_prompt = getattr(skill_data, 'quality_gate_prompt', None)
+                if raw_qg_prompt:
+                    encrypted_qg_prompt = encryption_service.encrypt(raw_qg_prompt)
+                # handoff_rules の JSON 化
+                handoff_rules_str = None
+                raw_handoff = getattr(skill_data, 'handoff_rules', None)
+                if raw_handoff:
+                    handoff_rules_str = json.dumps(raw_handoff, ensure_ascii=False)
                 ws = WorkflowSkill(
                     workflow_id=workflow_id,
                     skill_id=skill_data.skill_id,
@@ -834,6 +977,16 @@ async def update_workflow(
                     skill_name=skill_data.skill_display_name or skill_data.skill_name,
                     group_id=grp.id,
                     order_in_group=skill_data.order_in_group,
+                    on_error=getattr(skill_data, 'on_error', 'stop') or 'stop',
+                    max_retries=getattr(skill_data, 'max_retries', 0) or 0,
+                    retry_delay_seconds=getattr(skill_data, 'retry_delay_seconds', 5) or 5,
+                    input_mapping=input_mapping_str,
+                    output_key=getattr(skill_data, 'output_key', None),
+                    quality_gate_type=getattr(skill_data, 'quality_gate_type', 'disabled') or 'disabled',
+                    quality_gate_prompt=encrypted_qg_prompt,
+                    quality_gate_model=getattr(skill_data, 'quality_gate_model', None),
+                    max_reflection_loops=getattr(skill_data, 'max_reflection_loops', 0) or 0,
+                    handoff_rules=handoff_rules_str,
                 )
                 db.add(ws)
                 step_counter += 1

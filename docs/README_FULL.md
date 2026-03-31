@@ -16,22 +16,55 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 
 ## 対応モデル
 - **OpenAI**:
-  - gpt-5.2（最新モデル）
-  - gpt-5.2-pro（GPT-5.2 Pro）
-  - gpt-5.2-thinking（思考時間自動調整モデル）
-  - gpt-5.1
-  - gpt-5.1-thinking（思考時間自動調整モデル）
-  - gpt-5-pro
-  - gpt-5
-  - gpt-4o
-  - gpt-4o-mini
+  - gpt-5.4, gpt-5.4-mini, gpt-5.4-pro, gpt-5.4-thinking（最新）
+  - gpt-5.2, gpt-5.2-pro, gpt-5.2-thinking
+  - o4-mini（推論コスパ）
 - **Google**:
-  - gemini-3-pro-preview（最新モデル）
-  - gemini-3-pro-preview-deep-think（Deep Think対応）
-  - gemini-2.5-pro
-  - gemini-2.5-pro-deep-think（Deep Think対応）
-  - gemini-2.5-flash
-  - gemini-2.0-flash
+  - gemini-3.1-pro-preview, gemini-3.1-pro-preview-deep-think（最新）
+  - gemini-3-pro-preview, gemini-3-pro-preview-deep-think
+  - gemini-2.5-pro, gemini-2.5-flash
+- **Anthropic**:
+  - claude-sonnet-4-6, claude-sonnet-4-6-thinking
+  - claude-opus-4-6, claude-opus-4-6-thinking
+  - claude-haiku-4-5
+
+## ワークフロー オーケストレーション
+
+### 基本構造
+
+ワークフローは **スキル（部品）** を **グループ** で組み合わせて構成する:
+
+```
+ワークフロー
+├── Group 1 (並列): [調査A, 調査B, 市場分析] → ジャッジ → スーパーバイザー
+├── Group 2 (直列): [分析 → 執筆]  (各スキルに品質ゲート付き)
+├── Group 3 (動的): [プランナー → 動的にスキル起動]
+└── 親スキル: 全結果を統合して最終出力
+```
+
+### オーケストレーション機能
+
+| 機能 | 設定場所 | 概要 |
+|------|----------|------|
+| **エラーリカバリ** | スキル単位 | stop / skip / retry ポリシー（最大N回リトライ） |
+| **条件分岐** | グループ単位 | 条件式（equals, contains, regex等）でグループスキップ |
+| **Reflection (自己修正)** | スキル単位 | 品質ゲート（正規表現/JSON検証/LLM判定）→ 不合格なら critique 付き再実行 |
+| **Blackboard (共有メモリ)** | ワークフロー全体 | output_key を持つスキルの出力を自動保存。全スキルから参照可能 |
+| **Supervisor (中間監視)** | グループ単位 | グループ完了後にLLMが判断: continue / repeat / stop |
+| **Dynamic (動的分解)** | グループ単位 | プランナースキルがタスクを動的に生成・起動 |
+| **Debate/Judge (合議)** | グループ単位 | 並列グループ完了後にジャッジが全結果を比較・統合 |
+| **明示的データマッピング** | スキル単位 | input_mapping でステップ間のデータ参照をドット記法で指定 |
+| **親スキルモード** | ワークフロー | required（必須）/ optional（任意）/ disabled（無効） |
+
+### DB モデル
+
+| テーブル | 主要カラム |
+|----------|-----------|
+| `workflows` | name, parent_skill_mode, supervisor_mode, encrypted_parent_content |
+| `workflow_groups` | group_order, execution_type, condition_expression, supervisor_prompt, judge_prompt, dynamic_mode |
+| `workflow_skills` | skill_id, on_error, max_retries, input_mapping, output_key, quality_gate_type, quality_gate_prompt, max_reflection_loops |
+| `workflow_executions` | status, blackboard_data, dynamic_plan_data, continuation_lock_version |
+| `executions` | status, execution_role, reflection_loop, retry_count, execution_group_id |
 
 ## リポジトリ構成（ディレクトリ一覧）
 
@@ -43,19 +76,19 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 
 | パス | 役割 |
 |------|------|
-| `backend/app/` | FastAPI 本体。`main.py`、`api/`（`auth` / `admin` / `user` / `execute`）、`services/`（OpenAI・Gemini・Redis・実行）、`tasks/`（Celery）、`utils/`（スキル・出力ファイル等）、`models.py`・`schemas.py`・`config.py`・`encryption.py`・`auth.py`・`database.py` など |
-| `backend/alembic/` | MySQL マイグレーション（`alembic upgrade head`） |
+| `backend/app/` | FastAPI 本体。`main.py`、`api/`（`auth` / `admin` / `user` / `execute` / `worker`）、`services/`（Redis・暗号化・完了処理・ワーカー認証）、`tasks/`（ワークフロー継続ロジック）、`utils/`（スキル・出力ファイル等）、`models.py`・`schemas.py`・`config.py`・`encryption.py`・`auth.py`・`database.py` など |
+| `backend/alembic/` | DB マイグレーション（`alembic upgrade head`、001-003） |
 | `backend/requirements.txt` , `Dockerfile` , `alembic.ini` | Python 依存・コンテナ・Alembic 設定 |
 
 ### 管理画面（親アカウント / `frontend/admin/`）
 
 | パス | 役割 |
 |------|------|
-| `frontend/admin/*.html` | ログイン、ダッシュボード、アカウント、スキル、実行一覧（管理側） |
-| `frontend/admin/js/admin-common.js` | 認証・`apiRequest` 等の共通処理 |
-| `frontend/admin/js/*.js` | 画面別（`prompts.js`、`accounts.js`、`executions.js`、`dashboard.js`、`login.js`） |
+| `frontend/admin/*.html` | ログイン、ワークフロー/スキル管理、アカウント管理、実行ログ |
+| `frontend/admin/js/admin-common.js` | 認証・`apiRequest` 等の共通処理・ナビゲーション |
+| `frontend/admin/js/*.js` | 画面別（`skills.js`（スキル+ワークフロー管理）、`accounts.js`、`executions.js`、`login.js`） |
 
-**API の目安**: `POST /api/auth/login`（親）および `/api/admin/*`（ダッシュボード・スキル・アカウント等）。
+**API の目安**: `POST /api/auth/login`（親）および `/api/admin/*`（スキル・ワークフロー・アカウント等）。
 
 ### ユーザー画面（子アカウント / `frontend/user/`）
 
@@ -90,22 +123,26 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 prompt-provision-tool/
 ├── backend/                         # 【バックエンド】
 │   ├── app/
-│   │   ├── api/                     # auth, admin, user, execute
-│   │   ├── services/
-│   │   ├── tasks/
-│   │   ├── utils/
+│   │   ├── api/                     # auth, admin, user, execute, worker
+│   │   ├── services/                # Redis, 暗号化, 完了処理, ワーカー認証
+│   │   ├── tasks/                   # ワークフロー継続ロジック (オーケストレーション)
+│   │   ├── utils/                   # スキル・出力ファイル等
 │   │   ├── main.py, config.py, models.py, schemas.py, ...
-│   ├── alembic/versions/
+│   ├── alembic/versions/            # 001-003 マイグレーション
 │   ├── requirements.txt, Dockerfile, alembic.ini
 ├── frontend/
-│   ├── admin/                       # 【管理画面・親】*.html, js/
-│   ├── user/                        # 【ユーザー画面・子】*.html, js/（含: execution-worker.js）
-│   ├── css/, img/                 # 【フロント共通】
-├── deployment/                      # 本番補助（+ local/）
-├── docs/
+│   ├── admin/                       # 【管理画面】ワークフロー/スキル管理, アカウント, 実行ログ
+│   ├── user/                        # 【ユーザー画面】実行, 履歴, ダウンロード
+│   ├── css/, img/                   # 【フロント共通】
+├── local_worker/                    # 【ローカル実行 CLI】
+│   ├── cli.py                       # コマンド定義 (list, skill, workflow, daemon)
+│   ├── executor.py                  # LLM 呼び出し (OpenAI/Gemini/Claude, リトライ)
+│   ├── daemon.py                    # 常駐ワーカー (asyncio, Semaphore並列制御)
+│   ├── config.py                    # 設定 (環境変数, デフォルト値)
+├── deployment/                      # 本番補助（Docker, Nginx, systemd）
+├── docs/                            # 詳細資料
 ├── .github/workflows/
 ├── docker-compose.local.yml
-├── audit.sh, package.json
 └── README.md
 ```
 

@@ -267,8 +267,7 @@ function formatJSON(json) {
 // 共通レイアウト（ヘッダー＋ナビゲーション）
 // ---------------------------------------------------------------------------
 const ADMIN_NAV_ITEMS = [
-    { href: 'dashboard.html', label: 'ダッシュボード' },
-    { href: 'skills.html',   label: 'スキル管理' },
+    { href: 'skills.html',   label: 'ワークフロー / スキル管理' },
     { href: 'accounts.html',  label: 'アカウント管理' },
     { href: 'executions.html', label: '実行ログ' },
 ];

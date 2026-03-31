@@ -1,4 +1,4 @@
-// 管理者 スキル一覧画面 JavaScript
+// 管理者 ワークフロー / スキル管理画面 JavaScript
 
 let skills = [];
 let currentPage = 1;
@@ -10,6 +10,17 @@ let workflows = [];
 let wfCurrentPage = 1;
 const wfItemsPerPage = 10;
 let wfTotalItems = 0;
+
+async function loadDashboardStats() {
+    try {
+        const stats = await apiRequest('/api/admin/dashboard');
+        document.getElementById('total-accounts').textContent = stats.total_accounts;
+        document.getElementById('total-skills').textContent = stats.total_skills;
+        document.getElementById('total-executions').textContent = stats.total_executions;
+    } catch (error) {
+        console.error('Dashboard stats error:', error);
+    }
+}
 
 async function loadSkills(page = 1) {
     try {
@@ -87,7 +98,7 @@ function renderPagination() {
 
 async function showCreateModal() {
     const { value: formValues } = await Swal.fire({
-        title: '新しいスキル',
+        title: 'スキルを作成',
         html: `
             <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
                 <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">スキル名 <span style="color: #ff6b6b;">*</span></label>
@@ -174,8 +185,8 @@ async function showCreateModal() {
         cancelButtonColor: ADMIN_SWAL.secondary,
         width: '800px',
         customClass: {
-            popup: 'swal-no-scroll',
-            htmlContainer: 'swal-no-scroll'
+            popup: 'swal-scrollable-popup',
+            htmlContainer: 'swal-scrollable-container'
         },
         didOpen: () => {
             // チェックボックスロジックは削除されました
@@ -337,8 +348,8 @@ async function editSkill(id) {
         cancelButtonColor: ADMIN_SWAL.secondary,
         width: '800px',
         customClass: {
-            popup: 'swal-no-scroll',
-            htmlContainer: 'swal-no-scroll'
+            popup: 'swal-scrollable-popup',
+            htmlContainer: 'swal-scrollable-container'
         },
         didOpen: () => {
             // チェックボックスロジックは削除されました
@@ -471,8 +482,8 @@ async function viewSkillContent(id) {
             confirmButtonText: ADMIN_SWAL.btnClose,
             confirmButtonColor: ADMIN_SWAL.primary,
             customClass: {
-                popup: 'swal-wide swal-no-scroll',
-                htmlContainer: 'swal-no-scroll'
+                popup: 'swal-wide swal-scrollable-popup',
+                htmlContainer: 'swal-scrollable-container'
             }
         });
     } catch (error) {
@@ -792,6 +803,23 @@ async function showCreateWorkflowFromSkills() {
                     <span ${WF_SWAL.secTitle}>親スキル（Parent Skill）</span>
                     <small style="color: rgba(255, 255, 255, 0.6); display: block; margin: 0 0 12px 0; font-size: 13px;">全ステップ完了後に結果を統合し、最終出力を生成するスキルです。</small>
                     <div ${WF_SWAL.fld}>
+                        <label ${WF_SWAL.lbl}>親スキルモード</label>
+                        <select id="swal-parent-mode" ${WF_SWAL.sel}>
+                            <option value="required" selected>必須（全グループ完了後に実行）</option>
+                            <option value="optional">任意（設定があれば実行）</option>
+                            <option value="disabled">無効（親スキルを実行しない）</option>
+                        </select>
+                        <small ${WF_SWAL.hint}>「無効」にすると最後のステップ出力がワークフロー結果になります。</small>
+                    </div>
+                    <div ${WF_SWAL.fld}>
+                        <label ${WF_SWAL.lbl}>スーパーバイザーモード</label>
+                        <select id="swal-supervisor-mode" ${WF_SWAL.sel}>
+                            <option value="disabled" selected>無効</option>
+                            <option value="after_each_group">各グループ後</option>
+                            <option value="after_marked_groups">指定グループのみ</option>
+                        </select>
+                    </div>
+                    <div ${WF_SWAL.fld}>
                         <label ${WF_SWAL.lbl}>リーダー用スキル名 <span style="color: #ff6b6b;">*</span></label>
                         <input id="swal-leader-name" type="text" ${WF_SWAL.inp} placeholder="例: 記事統合スキル">
                     </div>
@@ -946,18 +974,37 @@ async function showCreateWorkflowFromSkills() {
                 group_order: gi + 1,
                 group_name: g.group_name,
                 execution_type: g.execution_type || 'serial',
+                condition_expression: g.condition_expression || null,
+                skip_on_condition_fail: g.skip_on_condition_fail !== false,
+                supervisor_prompt: g.supervisor_prompt || '',
+                supervisor_model: g.supervisor_model || '',
+                dynamic_mode: g.dynamic_mode || 'static',
+                judge_prompt: g.judge_prompt || '',
+                judge_model: g.judge_model || '',
                 skills: g.skills.map((sk, si) => ({
                     skill_id: sk.skill_id,
                     order_in_group: si + 1,
                     skill_name: sk.skill_name || `Step ${si + 1}`,
+                    on_error: sk.on_error || 'stop',
+                    max_retries: parseInt(sk.max_retries) || 0,
+                    retry_delay_seconds: parseInt(sk.retry_delay_seconds) || 5,
+                    output_key: sk.output_key || null,
+                    input_mapping: sk.input_mapping || null,
+                    quality_gate_type: sk.quality_gate_type || 'disabled',
+                    quality_gate_prompt: sk.quality_gate_prompt || '',
+                    max_reflection_loops: parseInt(sk.max_reflection_loops) || 0,
                 })),
             }));
 
-            return { 
-                name, 
-                description, 
-                isActive, 
+            const parentSkillMode = document.getElementById('swal-parent-mode')?.value || 'required';
+            const supervisorMode = document.getElementById('swal-supervisor-mode')?.value || 'disabled';
+            return {
+                name,
+                description,
+                isActive,
                 groups,
+                parent_skill_mode: parentSkillMode,
+                supervisor_mode: supervisorMode,
                 leaderPrompt: {
                     name: leaderName,
                     description: leaderDescription,
@@ -976,13 +1023,15 @@ async function showCreateWorkflowFromSkills() {
 
     try {
         // 新しいAPI（親スキル＋子スキルを一括作成）を使用
-        const created = await apiRequest('/api/admin/workflows/with-skill', {
+        const created = await apiRequest('/api/admin/workflows/with-parent-skill', {
             method: 'POST',
             body: JSON.stringify({
                 name: formValues.name,
                 description: formValues.description,
                 is_active: formValues.isActive,
-                leader_prompt: formValues.leaderPrompt,
+                parent_skill: formValues.leaderPrompt,
+                parent_skill_mode: formValues.parent_skill_mode || 'required',
+                supervisor_mode: formValues.supervisor_mode || 'disabled',
                 groups: formValues.groups
             })
         });
@@ -1059,28 +1108,66 @@ function wfCreateRenderGroups() {
         grp.skills.forEach((sk, si) => {
             const sName = _wfbEsc(sk.skill_name || '');
             const sModel = _wfbEsc(sk.model_type || '');
+            const onErr = sk.on_error || 'stop';
+            const errBadge = onErr === 'retry' ? '<span style="font-size:10px; color:#ffc107; margin-left:4px;">⟳retry</span>'
+                           : onErr === 'skip' ? '<span style="font-size:10px; color:#17a2b8; margin-left:4px;">▷skip</span>' : '';
+            const advHtml = `
+                <div style="margin-top:6px; padding:6px 8px; background:rgba(0,0,0,0.15); border-radius:4px; font-size:11px;">
+                    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                        <label style="color:rgba(255,255,255,0.7);">エラー時:</label>
+                        <select onchange="wfCreateUpdateSkillField(${sk._uid},'on_error',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            <option value="stop" ${onErr === 'stop' ? 'selected' : ''}>停止</option>
+                            <option value="skip" ${onErr === 'skip' ? 'selected' : ''}>スキップ</option>
+                            <option value="retry" ${onErr === 'retry' ? 'selected' : ''}>リトライ</option>
+                        </select>
+                        ${onErr === 'retry' ? `
+                        <label style="color:rgba(255,255,255,0.7);">回数:</label>
+                        <input type="number" min="1" max="10" value="${sk.max_retries || 3}" onchange="wfCreateUpdateSkillField(${sk._uid},'max_retries',this.value)" style="width:40px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        ` : ''}
+                        <label style="color:rgba(255,255,255,0.7);">出力キー:</label>
+                        <input type="text" value="${_wfbEsc(sk.output_key || '')}" onchange="wfCreateUpdateSkillField(${sk._uid},'output_key',this.value)" placeholder="例: research" style="width:80px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        <label style="color:rgba(255,255,255,0.7);">品質ゲート:</label>
+                        <select onchange="wfCreateUpdateSkillField(${sk._uid},'quality_gate_type',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            <option value="disabled" ${(sk.quality_gate_type || 'disabled') === 'disabled' ? 'selected' : ''}>無効</option>
+                            <option value="regex" ${sk.quality_gate_type === 'regex' ? 'selected' : ''}>正規表現</option>
+                            <option value="json_schema" ${sk.quality_gate_type === 'json_schema' ? 'selected' : ''}>JSON検証</option>
+                            <option value="llm" ${sk.quality_gate_type === 'llm' ? 'selected' : ''}>LLM判定</option>
+                        </select>
+                        ${sk.quality_gate_type && sk.quality_gate_type !== 'disabled' ? `
+                        <input type="text" placeholder="パターン/プロンプト..." value="${_wfbEsc(sk.quality_gate_prompt || '')}" onchange="wfCreateUpdateSkillField(${sk._uid},'quality_gate_prompt',this.value)" style="flex:1; min-width:80px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        <label style="color:rgba(255,255,255,0.7);">最大:</label>
+                        <input type="number" min="1" max="5" value="${sk.max_reflection_loops || 2}" onchange="wfCreateUpdateSkillField(${sk._uid},'max_reflection_loops',this.value)" style="width:35px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        ` : ''}
+                    </div>
+                </div>`;
             if (useParallelLayout) {
                 skillsHtml += `
-                <div class="wf-create-skill" data-gi="${gi}" data-si="${si}" style="flex:1; min-width:120px; display:flex; align-items:flex-start; gap:6px; padding:10px; background:rgba(0,0,0,0.2); border-radius:6px; border-left:3px solid ${gColor}; cursor:grab;">
-                    <span class="wf-create-skill-drag" style="cursor:grab; opacity:0.45; flex-shrink:0; padding-top:2px;">&#x2261;</span>
-                    <div style="flex:1; min-width:0;">
-                        <div style="font-size:13px; font-weight:bold; color:rgba(255,255,255,0.9); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sName}</div>
-                        <div style="font-size:12px; color:rgba(255,255,255,0.55);">${sModel}</div>
+                <div class="wf-create-skill" data-gi="${gi}" data-si="${si}" style="flex:1; min-width:180px; display:flex; flex-direction:column; gap:4px; padding:10px; background:rgba(0,0,0,0.2); border-radius:6px; border-left:3px solid ${gColor}; cursor:grab;">
+                    <div style="display:flex; align-items:flex-start; gap:6px;">
+                        <span class="wf-create-skill-drag" style="cursor:grab; opacity:0.45; flex-shrink:0; padding-top:2px;">&#x2261;</span>
+                        <div style="flex:1; min-width:0;">
+                            <div style="font-size:13px; font-weight:bold; color:rgba(255,255,255,0.9); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sName}${errBadge}</div>
+                            <div style="font-size:12px; color:rgba(255,255,255,0.55);">${sModel}</div>
+                        </div>
+                        <button type="button" onclick="wfCreateRemoveSkill(${sk._uid})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:14px; flex-shrink:0;" title="削除">&times;</button>
                     </div>
-                    <button type="button" onclick="wfCreateRemoveSkill(${sk._uid})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:14px; flex-shrink:0;" title="削除">&times;</button>
+                    ${advHtml}
                 </div>`;
             } else {
                 const connector = si > 0
                     ? '<div style="display:flex; justify-content:flex-start; padding:2px 0 2px 20px;"><div style="width:1px; height:10px; background:rgba(255,255,255,0.1);"></div></div>'
                     : '';
                 skillsHtml += `${connector}
-                <div class="wf-create-skill" data-gi="${gi}" data-si="${si}" style="display:flex; align-items:center; gap:10px; padding:8px 10px; background:rgba(0,0,0,0.15); border-radius:6px; border-left:3px solid ${gColor}; cursor:grab; ${si > 0 ? 'margin-top:6px;' : ''}">
-                    <span class="wf-create-skill-drag" style="cursor:grab; opacity:0.45; flex-shrink:0;">&#x2261;</span>
-                    <div style="flex:1; min-width:0;">
-                        <div style="font-size:13px; font-weight:bold; color:rgba(255,255,255,0.9);">${sName}</div>
-                        <div style="font-size:12px; color:rgba(255,255,255,0.55);">${sModel}</div>
+                <div class="wf-create-skill" data-gi="${gi}" data-si="${si}" style="padding:8px 10px; background:rgba(0,0,0,0.15); border-radius:6px; border-left:3px solid ${gColor}; cursor:grab; ${si > 0 ? 'margin-top:6px;' : ''}">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span class="wf-create-skill-drag" style="cursor:grab; opacity:0.45; flex-shrink:0;">&#x2261;</span>
+                        <div style="flex:1; min-width:0;">
+                            <div style="font-size:13px; font-weight:bold; color:rgba(255,255,255,0.9);">${sName}${errBadge}</div>
+                            <div style="font-size:12px; color:rgba(255,255,255,0.55);">${sModel}</div>
+                        </div>
+                        <button type="button" onclick="wfCreateRemoveSkill(${sk._uid})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:14px; flex-shrink:0;" title="削除">&times;</button>
                     </div>
-                    <button type="button" onclick="wfCreateRemoveSkill(${sk._uid})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:14px; flex-shrink:0;" title="削除">&times;</button>
+                    ${advHtml}
                 </div>`;
             }
         });
@@ -1104,6 +1191,20 @@ function wfCreateRenderGroups() {
                         </select>
                         <input type="text" id="wf-create-gname-${gi}" value="${_wfbEsc(grp.group_name)}" onchange="wfCreateUpdateGroup(${gi},'name',this.value)" placeholder="グループ名" class="swal2-input" style="flex:1; min-width:140px; margin-top:0; max-width:none; background:rgba(0,0,0,0.2); font-size:13px;">
                         <button type="button" onclick="wfCreateRemoveGroup(${gi})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:16px; flex-shrink:0;" title="グループ削除">&times;</button>
+                    </div>
+                    ${grp.condition_expression ? `<div style="padding:4px 14px; background:rgba(255,193,7,0.08); font-size:11px; color:#ffc107;">条件: ${_wfbEsc(JSON.stringify(grp.condition_expression))}</div>` : ''}
+                    <div style="padding:6px 14px; background:rgba(0,0,0,0.08); border-top:1px solid rgba(255,255,255,0.06); font-size:11px;">
+                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                            <label style="color:rgba(255,255,255,0.7);">動的:</label>
+                            <select onchange="wfCreateUpdateGroup(${gi},'dynamic_mode',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                                <option value="static" ${grp.dynamic_mode === 'static' ? 'selected' : ''}>静的</option>
+                                <option value="dynamic" ${grp.dynamic_mode === 'dynamic' ? 'selected' : ''}>動的(プランナー)</option>
+                            </select>
+                            <label style="color:rgba(255,255,255,0.7);">ジャッジ:</label>
+                            <input type="text" placeholder="ジャッジプロンプト..." value="${_wfbEsc(grp.judge_prompt || '')}" onchange="wfCreateUpdateGroup(${gi},'judge_prompt',this.value)" style="flex:1; min-width:100px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            <label style="color:rgba(255,255,255,0.7);">SV:</label>
+                            <input type="text" placeholder="スーパーバイザー..." value="${_wfbEsc(grp.supervisor_prompt || '')}" onchange="wfCreateUpdateGroup(${gi},'supervisor_prompt',this.value)" style="flex:1; min-width:100px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        </div>
                     </div>
                     <div id="wf-create-skills-${gi}" style="${skillsWrapStyle}">
                         ${skillsHtml || skillsEmpty}
@@ -1163,6 +1264,13 @@ function wfCreateAddGroup() {
         group_order: _wfCreateGroups.length + 1,
         group_name: `グループ ${_wfCreateGroups.length + 1}`,
         execution_type: 'serial',
+        condition_expression: null,
+        skip_on_condition_fail: true,
+        supervisor_prompt: '',
+        supervisor_model: '',
+        dynamic_mode: 'static',
+        judge_prompt: '',
+        judge_model: '',
         skills: [],
     });
     wfCreateRenderGroups();
@@ -1179,7 +1287,20 @@ function wfCreateUpdateGroup(gi, field, value) {
     wfCreateSyncGroupFieldsFromDom();
     if (field === 'name') _wfCreateGroups[gi].group_name = value;
     if (field === 'type') _wfCreateGroups[gi].execution_type = value;
+    if (field === 'skip_on_condition_fail') _wfCreateGroups[gi].skip_on_condition_fail = value;
+    if (field === 'supervisor_prompt') _wfCreateGroups[gi].supervisor_prompt = value;
+    if (field === 'supervisor_model') _wfCreateGroups[gi].supervisor_model = value;
+    if (field === 'dynamic_mode') _wfCreateGroups[gi].dynamic_mode = value;
+    if (field === 'judge_prompt') _wfCreateGroups[gi].judge_prompt = value;
+    if (field === 'judge_model') _wfCreateGroups[gi].judge_model = value;
     wfCreateRenderGroups();
+}
+
+function wfCreateUpdateSkillField(uid, field, value) {
+    for (const g of _wfCreateGroups) {
+        const sk = g.skills.find(s => s._uid === uid);
+        if (sk) { sk[field] = value; break; }
+    }
 }
 
 function wfCreatePickSkill(sel) {
@@ -1194,8 +1315,15 @@ function wfCreatePickSkill(sel) {
         skill_id: p.id,
         skill_name: p.name,
         model_type: p.model_type || '',
-        skill_name: p.name,
         order_in_group: _wfCreateGroups[gi].skills.length + 1,
+        on_error: 'stop',
+        max_retries: 0,
+        retry_delay_seconds: 5,
+        output_key: '',
+        input_mapping: null,
+        quality_gate_type: 'disabled',
+        quality_gate_prompt: '',
+        max_reflection_loops: 0,
     });
     sel.value = '';
     wfCreateRenderGroups();
@@ -1318,6 +1446,71 @@ function _wfbEsc(text) {
         .replace(/"/g, '&quot;');
 }
 
+/** ワークフロー親スキル用・スキル編集と同じ選択肢の value 一覧（一覧外モデル用フォールバック判定） */
+const _WFB_PARENT_MODEL_OPTION_VALUES = new Set([
+    'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-pro', 'gpt-5.4-thinking', 'gpt-5.2', 'gpt-5.2-pro', 'gpt-5.2-thinking', 'o4-mini',
+    'gemini-3.1-pro-preview', 'gemini-3.1-pro-preview-deep-think', 'gemini-3-pro-preview', 'gemini-3-pro-preview-deep-think',
+    'gemini-2.5-pro', 'gemini-2.5-flash',
+    'claude-sonnet-4-6', 'claude-sonnet-4-6-thinking', 'claude-opus-4-6', 'claude-opus-4-6-thinking', 'claude-haiku-4-5',
+]);
+
+/** DB の parent_model_type + parent_enable_deep_think を select の value に合わせる */
+function _wfbParentModelCurrentSelectValue(s) {
+    const pm = s.parent_model_type || '';
+    const dt = !!s.parent_enable_deep_think;
+    if (pm.includes('deep-think')) return pm;
+    if (pm === 'gemini-3.1-pro-preview' && dt) return 'gemini-3.1-pro-preview-deep-think';
+    if (pm === 'gemini-3-pro-preview' && dt) return 'gemini-3-pro-preview-deep-think';
+    return pm;
+}
+
+/** select の値 → API 用にベース model と deep_think フラグへ（スキル保存の deep-think 判定と同趣旨） */
+function _wfbNormalizeParentModelFromSelect(raw) {
+    const v = raw || '';
+    const parent_enable_deep_think = v.includes('deep-think');
+    const parent_model_type = v.endsWith('-deep-think') ? v.slice(0, -'-deep-think'.length) : v;
+    return { parent_model_type, parent_enable_deep_think };
+}
+
+/** ワークフロー編集モーダル用 AIモデル select の内側 HTML（OpenAI / Gemini / Claude の optgroup） */
+function _wfbParentModelSelectInnerHtml(s) {
+    const cur = _wfbParentModelCurrentSelectValue(s);
+    const sel = (v) => (v === cur ? ' selected' : '');
+    let html = `
+                    <optgroup label="OpenAI">
+                        <option value="gpt-5.4"${sel('gpt-5.4')}>GPT-5.4 NEW</option>
+                        <option value="gpt-5.4-mini"${sel('gpt-5.4-mini')}>GPT-5.4 Mini NEW</option>
+                        <option value="gpt-5.4-pro"${sel('gpt-5.4-pro')}>GPT-5.4 Pro NEW</option>
+                        <option value="gpt-5.4-thinking"${sel('gpt-5.4-thinking')}>GPT-5.4 Thinking NEW</option>
+                        <option value="gpt-5.2"${sel('gpt-5.2')}>GPT-5.2</option>
+                        <option value="gpt-5.2-pro"${sel('gpt-5.2-pro')}>GPT-5.2 Pro</option>
+                        <option value="gpt-5.2-thinking"${sel('gpt-5.2-thinking')}>GPT-5.2 Thinking</option>
+                        <option value="o4-mini"${sel('o4-mini')}>o4-mini（推論コスパ）</option>
+                    </optgroup>
+                    <optgroup label="Gemini">
+                        <option value="gemini-3.1-pro-preview"${sel('gemini-3.1-pro-preview')}>Gemini 3.1 Pro NEW</option>
+                        <option value="gemini-3.1-pro-preview-deep-think"${sel('gemini-3.1-pro-preview-deep-think')}>Gemini 3.1 Pro Deep Think NEW</option>
+                        <option value="gemini-3-pro-preview"${sel('gemini-3-pro-preview')}>Gemini 3.0 Pro</option>
+                        <option value="gemini-3-pro-preview-deep-think"${sel('gemini-3-pro-preview-deep-think')}>Gemini 3.0 Pro Deep Think</option>
+                        <option value="gemini-2.5-pro"${sel('gemini-2.5-pro')}>Gemini 2.5 Pro</option>
+                        <option value="gemini-2.5-flash"${sel('gemini-2.5-flash')}>Gemini 2.5 Flash</option>
+                    </optgroup>
+                    <optgroup label="Claude">
+                        <option value="claude-sonnet-4-6"${sel('claude-sonnet-4-6')}>Claude Sonnet 4.6</option>
+                        <option value="claude-sonnet-4-6-thinking"${sel('claude-sonnet-4-6-thinking')}>Claude Sonnet 4.6 Thinking</option>
+                        <option value="claude-opus-4-6"${sel('claude-opus-4-6')}>Claude Opus 4.6</option>
+                        <option value="claude-opus-4-6-thinking"${sel('claude-opus-4-6-thinking')}>Claude Opus 4.6 Thinking</option>
+                        <option value="claude-haiku-4-5"${sel('claude-haiku-4-5')}>Claude Haiku 4.5</option>
+                    </optgroup>`;
+    if (cur && !_WFB_PARENT_MODEL_OPTION_VALUES.has(cur)) {
+        html += `
+                    <optgroup label="現在の値（一覧外）">
+                        <option value="${_wfbEsc(cur)}" selected>${_wfbEsc(cur)}</option>
+                    </optgroup>`;
+    }
+    return html;
+}
+
 let _wfBuilderState = null;
 let _availableSkills = [];
 
@@ -1356,16 +1549,32 @@ async function openWorkflowDetail(id) {
             parent_prompt_content: wf.parent_prompt_content || '',
             parent_model_type: wf.parent_model_type || 'gpt-5.1',
             parent_enable_deep_think: wf.parent_enable_deep_think ?? true,
+            parent_skill_mode: wf.parent_skill_mode || 'required',
+            supervisor_mode: wf.supervisor_mode || 'disabled',
             groups: (wf.groups || []).map(g => ({
                 group_order: g.group_order,
                 group_name: g.group_name || '',
                 execution_type: g.execution_type || 'serial',
+                condition_expression: g.condition_expression || null,
+                skip_on_condition_fail: g.skip_on_condition_fail !== false,
+                supervisor_prompt: g.supervisor_prompt || '',
+                supervisor_model: g.supervisor_model || '',
+                dynamic_mode: g.dynamic_mode || 'static',
+                judge_prompt: g.judge_prompt || '',
+                judge_model: g.judge_model || '',
                 skills: (g.skills || []).map(s => ({
                     skill_id: s.skill_id,
-                    skill_name: s.skill_name || s.skill_name || '',
+                    skill_name: s.skill_name || '',
                     model_type: s.model_type || '',
                     order_in_group: s.order_in_group || 1,
-                    skill_name: s.skill_name || '',
+                    on_error: s.on_error || 'stop',
+                    max_retries: s.max_retries || 0,
+                    retry_delay_seconds: s.retry_delay_seconds || 5,
+                    output_key: s.output_key || '',
+                    input_mapping: s.input_mapping || null,
+                    quality_gate_type: s.quality_gate_type || 'disabled',
+                    quality_gate_prompt: s.quality_gate_prompt || '',
+                    max_reflection_loops: s.max_reflection_loops || 0,
                 })),
             })),
         };
@@ -1384,9 +1593,7 @@ async function openWorkflowDetail(id) {
 
 function _renderWorkflowBuilder() {
     const s = _wfBuilderState;
-    const MODEL_OPTIONS = ['gpt-5.4','gpt-5.4-mini','gpt-5.4-pro','gpt-5.4-thinking','gpt-5.2','gpt-5.2-pro','gpt-5.2-thinking','o4-mini','gemini-3.1-pro-preview','gemini-3-pro-preview','gemini-2.5-pro','gemini-2.5-flash','claude-sonnet-4-6','claude-sonnet-4-6-thinking','claude-opus-4-6','claude-opus-4-6-thinking','claude-haiku-4-5'].map(m =>
-        `<option value="${m}" ${s.parent_model_type === m ? 'selected' : ''}>${m}</option>`
-    ).join('');
+    const MODEL_OPTIONS = _wfbParentModelSelectInnerHtml(s);
 
     const scPending = 'rgba(255,255,255,0.2)';
     const siPending = '&#9711;';
@@ -1402,28 +1609,66 @@ function _renderWorkflowBuilder() {
         grp.skills.forEach((sk, si) => {
             const sName = _wfbEsc(sk.skill_name || '');
             const sModel = _wfbEsc(sk.model_type || '');
+            const onErr = sk.on_error || 'stop';
+            const errBadge = onErr === 'retry' ? '<span style="font-size:10px; color:#ffc107; margin-left:4px;">⟳retry</span>'
+                           : onErr === 'skip' ? '<span style="font-size:10px; color:#17a2b8; margin-left:4px;">▷skip</span>' : '';
+            const advHtml = `
+                <div style="margin-top:6px; padding:6px 8px; background:rgba(0,0,0,0.15); border-radius:4px; font-size:11px;">
+                    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                        <label style="color:rgba(255,255,255,0.7);">エラー時:</label>
+                        <select onchange="_wfbUpdateSkillField(${gi},${si},'on_error',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            <option value="stop" ${onErr === 'stop' ? 'selected' : ''}>停止</option>
+                            <option value="skip" ${onErr === 'skip' ? 'selected' : ''}>スキップ</option>
+                            <option value="retry" ${onErr === 'retry' ? 'selected' : ''}>リトライ</option>
+                        </select>
+                        ${onErr === 'retry' ? `
+                        <label style="color:rgba(255,255,255,0.7);">回数:</label>
+                        <input type="number" min="1" max="10" value="${sk.max_retries || 3}" onchange="_wfbUpdateSkillField(${gi},${si},'max_retries',this.value)" style="width:40px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        ` : ''}
+                        <label style="color:rgba(255,255,255,0.7);">出力キー:</label>
+                        <input type="text" value="${_wfbEsc(sk.output_key || '')}" onchange="_wfbUpdateSkillField(${gi},${si},'output_key',this.value)" placeholder="例: research" style="width:80px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        <label style="color:rgba(255,255,255,0.7);">品質ゲート:</label>
+                        <select onchange="_wfbUpdateSkillField(${gi},${si},'quality_gate_type',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            <option value="disabled" ${(sk.quality_gate_type || 'disabled') === 'disabled' ? 'selected' : ''}>無効</option>
+                            <option value="regex" ${sk.quality_gate_type === 'regex' ? 'selected' : ''}>正規表現</option>
+                            <option value="json_schema" ${sk.quality_gate_type === 'json_schema' ? 'selected' : ''}>JSON検証</option>
+                            <option value="llm" ${sk.quality_gate_type === 'llm' ? 'selected' : ''}>LLM判定</option>
+                        </select>
+                        ${sk.quality_gate_type && sk.quality_gate_type !== 'disabled' ? `
+                        <input type="text" placeholder="パターン/プロンプト..." value="${_wfbEsc(sk.quality_gate_prompt || '')}" onchange="_wfbUpdateSkillField(${gi},${si},'quality_gate_prompt',this.value)" style="flex:1; min-width:80px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        <label style="color:rgba(255,255,255,0.7);">最大:</label>
+                        <input type="number" min="1" max="5" value="${sk.max_reflection_loops || 2}" onchange="_wfbUpdateSkillField(${gi},${si},'max_reflection_loops',this.value)" style="width:35px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        ` : ''}
+                    </div>
+                </div>`;
             if (useParallelLayout) {
                 skillsHtml += `
-                <div class="wfb-skill" data-gi="${gi}" data-si="${si}" style="flex:1; min-width:120px; display:flex; align-items:flex-start; gap:6px; padding:10px; background:rgba(0,0,0,0.2); border-radius:6px; border-left:3px solid ${gColor}; cursor:grab;">
-                    <span class="wfb-skill-drag" style="cursor:grab; opacity:0.45; flex-shrink:0; padding-top:2px;">&#x2261;</span>
-                    <div style="flex:1; min-width:0;">
-                        <div style="font-size:13px; font-weight:bold; color:rgba(255,255,255,0.9); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sName}</div>
-                        <div style="font-size:12px; color:rgba(255,255,255,0.55);">${sModel}</div>
+                <div class="wfb-skill" data-gi="${gi}" data-si="${si}" style="flex:1; min-width:180px; display:flex; flex-direction:column; gap:4px; padding:10px; background:rgba(0,0,0,0.2); border-radius:6px; border-left:3px solid ${gColor}; cursor:grab;">
+                    <div style="display:flex; align-items:flex-start; gap:6px;">
+                        <span class="wfb-skill-drag" style="cursor:grab; opacity:0.45; flex-shrink:0; padding-top:2px;">&#x2261;</span>
+                        <div style="flex:1; min-width:0;">
+                            <div style="font-size:13px; font-weight:bold; color:rgba(255,255,255,0.9); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sName}${errBadge}</div>
+                            <div style="font-size:12px; color:rgba(255,255,255,0.55);">${sModel}</div>
+                        </div>
+                        <button type="button" onclick="_wfbRemoveSkill(${gi},${si})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:14px; flex-shrink:0;" title="削除">&times;</button>
                     </div>
-                    <button type="button" onclick="_wfbRemoveSkill(${gi},${si})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:14px; flex-shrink:0;" title="削除">&times;</button>
+                    ${advHtml}
                 </div>`;
             } else {
                 const connector = si > 0
                     ? `<div style="display:flex; justify-content:flex-start; padding:2px 0 2px 20px;"><div style="width:1px; height:10px; background:rgba(255,255,255,0.1);"></div></div>`
                     : '';
                 skillsHtml += `${connector}
-                <div class="wfb-skill" data-gi="${gi}" data-si="${si}" style="display:flex; align-items:center; gap:10px; padding:8px 10px; background:rgba(0,0,0,0.15); border-radius:6px; border-left:3px solid ${gColor}; cursor:grab; ${si > 0 ? 'margin-top:6px;' : ''}">
-                    <span class="wfb-skill-drag" style="cursor:grab; opacity:0.45; flex-shrink:0;">&#x2261;</span>
-                    <div style="flex:1; min-width:0;">
-                        <div style="font-size:13px; font-weight:bold; color:rgba(255,255,255,0.9);">${sName}</div>
-                        <div style="font-size:12px; color:rgba(255,255,255,0.55);">${sModel}</div>
+                <div class="wfb-skill" data-gi="${gi}" data-si="${si}" style="padding:8px 10px; background:rgba(0,0,0,0.15); border-radius:6px; border-left:3px solid ${gColor}; cursor:grab; ${si > 0 ? 'margin-top:6px;' : ''}">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span class="wfb-skill-drag" style="cursor:grab; opacity:0.45; flex-shrink:0;">&#x2261;</span>
+                        <div style="flex:1; min-width:0;">
+                            <div style="font-size:13px; font-weight:bold; color:rgba(255,255,255,0.9);">${sName}${errBadge}</div>
+                            <div style="font-size:12px; color:rgba(255,255,255,0.55);">${sModel}</div>
+                        </div>
+                        <button type="button" onclick="_wfbRemoveSkill(${gi},${si})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:14px; flex-shrink:0;" title="削除">&times;</button>
                     </div>
-                    <button type="button" onclick="_wfbRemoveSkill(${gi},${si})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:14px; flex-shrink:0;" title="削除">&times;</button>
+                    ${advHtml}
                 </div>`;
             }
         });
@@ -1447,6 +1692,20 @@ function _renderWorkflowBuilder() {
                         </select>
                         <input type="text" value="${_wfbEsc(grp.group_name)}" onchange="_wfbUpdateGroup(${gi},'name',this.value)" placeholder="グループ名" class="swal2-input" style="flex:1; min-width:140px; margin-top:0; max-width:none; background:rgba(0,0,0,0.2); font-size:13px;">
                         <button type="button" onclick="_wfbRemoveGroup(${gi})" style="background:none; border:none; color:#ff6b6b; cursor:pointer; font-size:16px; flex-shrink:0;" title="グループ削除">&times;</button>
+                    </div>
+                    ${grp.condition_expression ? `<div style="padding:4px 14px; background:rgba(255,193,7,0.08); font-size:11px; color:#ffc107;">条件: ${_wfbEsc(JSON.stringify(grp.condition_expression))}</div>` : ''}
+                    <div style="padding:6px 14px; background:rgba(0,0,0,0.08); border-top:1px solid rgba(255,255,255,0.06); font-size:11px;">
+                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                            <label style="color:rgba(255,255,255,0.7);">動的:</label>
+                            <select onchange="_wfbUpdateGroup(${gi},'dynamic_mode',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                                <option value="static" ${grp.dynamic_mode === 'static' ? 'selected' : ''}>静的</option>
+                                <option value="dynamic" ${grp.dynamic_mode === 'dynamic' ? 'selected' : ''}>動的(プランナー)</option>
+                            </select>
+                            <label style="color:rgba(255,255,255,0.7);">ジャッジ:</label>
+                            <input type="text" placeholder="ジャッジプロンプト..." value="${_wfbEsc(grp.judge_prompt || '')}" onchange="_wfbUpdateGroup(${gi},'judge_prompt',this.value)" style="flex:1; min-width:100px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            <label style="color:rgba(255,255,255,0.7);">SV:</label>
+                            <input type="text" placeholder="スーパーバイザー..." value="${_wfbEsc(grp.supervisor_prompt || '')}" onchange="_wfbUpdateGroup(${gi},'supervisor_prompt',this.value)" style="flex:1; min-width:100px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                        </div>
                     </div>
                     <div id="wfb-skills-${gi}" style="${skillsWrapStyle}">
                         ${skillsHtml || skillsEmpty}
@@ -1517,6 +1776,23 @@ function _renderWorkflowBuilder() {
 
                 <div ${WF_SWAL.leaderCard}>
                     <span ${WF_SWAL.secTitle}>親スキル（Parent Skill）</span>
+                    <div ${WF_SWAL.fld}>
+                        <label ${WF_SWAL.lbl}>親スキルモード</label>
+                        <select id="wfb-parent-mode" ${WF_SWAL.sel}>
+                            <option value="required" ${s.parent_skill_mode === 'required' ? 'selected' : ''}>必須（全グループ完了後に実行）</option>
+                            <option value="optional" ${s.parent_skill_mode === 'optional' ? 'selected' : ''}>任意（設定があれば実行）</option>
+                            <option value="disabled" ${s.parent_skill_mode === 'disabled' ? 'selected' : ''}>無効（親スキルを実行しない）</option>
+                        </select>
+                        <small ${WF_SWAL.hint}>「無効」にすると最後のステップ出力がワークフロー結果になります。</small>
+                    </div>
+                    <div ${WF_SWAL.fld}>
+                        <label ${WF_SWAL.lbl}>スーパーバイザーモード</label>
+                        <select id="wfb-supervisor-mode" ${WF_SWAL.sel}>
+                            <option value="disabled" ${(s.supervisor_mode || 'disabled') === 'disabled' ? 'selected' : ''}>無効</option>
+                            <option value="after_each_group" ${s.supervisor_mode === 'after_each_group' ? 'selected' : ''}>各グループ後</option>
+                            <option value="after_marked_groups" ${s.supervisor_mode === 'after_marked_groups' ? 'selected' : ''}>指定グループのみ</option>
+                        </select>
+                    </div>
                     <div ${WF_SWAL.fld}>
                         <label ${WF_SWAL.lbl}>AIモデル <span style="color: #ff6b6b;">*</span></label>
                         <select id="wfb-parent-model" ${WF_SWAL.sel}>
@@ -1603,7 +1879,14 @@ function _wfbInitAddSkillSelects() {
                     skill_name: p.name,
                     model_type: p.model_type,
                     order_in_group: grp.skills.length + 1,
-                    skill_name: p.name,
+                    on_error: 'stop',
+                    max_retries: 0,
+                    retry_delay_seconds: 5,
+                    output_key: '',
+                    input_mapping: null,
+                    quality_gate_type: 'disabled',
+                    quality_gate_prompt: '',
+                    max_reflection_loops: 0,
                 });
                 _renderWorkflowBuilder();
             });
@@ -1611,11 +1894,25 @@ function _wfbInitAddSkillSelects() {
     });
 }
 
+function _wfbUpdateSkillField(gi, si, field, value) {
+    if (_wfBuilderState.groups[gi] && _wfBuilderState.groups[gi].skills[si]) {
+        _wfBuilderState.groups[gi].skills[si][field] = value;
+        if (field === 'on_error') _renderWorkflowBuilder(); // re-render to show/hide retry count
+    }
+}
+
 function _wfbAddGroup() {
     _wfBuilderState.groups.push({
         group_order: _wfBuilderState.groups.length + 1,
         group_name: `グループ ${_wfBuilderState.groups.length + 1}`,
         execution_type: 'serial',
+        condition_expression: null,
+        skip_on_condition_fail: true,
+        supervisor_prompt: '',
+        supervisor_model: '',
+        dynamic_mode: 'static',
+        judge_prompt: '',
+        judge_model: '',
         skills: [],
     });
     _renderWorkflowBuilder();
@@ -1636,6 +1933,12 @@ function _wfbRemoveSkill(gi, si) {
 function _wfbUpdateGroup(gi, field, value) {
     if (field === 'name') _wfBuilderState.groups[gi].group_name = value;
     if (field === 'type') _wfBuilderState.groups[gi].execution_type = value;
+    if (field === 'skip_on_condition_fail') _wfBuilderState.groups[gi].skip_on_condition_fail = value;
+    if (field === 'supervisor_prompt') _wfBuilderState.groups[gi].supervisor_prompt = value;
+    if (field === 'supervisor_model') _wfBuilderState.groups[gi].supervisor_model = value;
+    if (field === 'dynamic_mode') _wfBuilderState.groups[gi].dynamic_mode = value;
+    if (field === 'judge_prompt') _wfBuilderState.groups[gi].judge_prompt = value;
+    if (field === 'judge_model') _wfBuilderState.groups[gi].judge_model = value;
     // Re-render to update flow view & colors
     _renderWorkflowBuilder();
 }
@@ -1646,7 +1949,17 @@ async function _wfbSave() {
     s.name = document.getElementById('wfb-name')?.value || s.name;
     s.description = document.getElementById('wfb-desc')?.value || s.description;
     s.parent_prompt_content = document.getElementById('wfb-parent-content')?.value || s.parent_prompt_content;
-    s.parent_model_type = document.getElementById('wfb-parent-model')?.value || s.parent_model_type;
+    const rawModel = document.getElementById('wfb-parent-model')?.value;
+    if (rawModel != null && rawModel !== '') {
+        const norm = _wfbNormalizeParentModelFromSelect(rawModel);
+        s.parent_model_type = norm.parent_model_type;
+        s.parent_enable_deep_think = norm.parent_enable_deep_think;
+    }
+    const parentModeEl = document.getElementById('wfb-parent-mode');
+    if (parentModeEl) s.parent_skill_mode = parentModeEl.value;
+
+    const supervisorModeEl = document.getElementById('wfb-supervisor-mode');
+    if (supervisorModeEl) s.supervisor_mode = supervisorModeEl.value;
 
     const payload = {
         name: s.name,
@@ -1654,14 +1967,31 @@ async function _wfbSave() {
         parent_prompt_content: s.parent_prompt_content,
         parent_model_type: s.parent_model_type,
         parent_enable_deep_think: s.parent_enable_deep_think,
+        parent_skill_mode: s.parent_skill_mode || 'required',
+        supervisor_mode: s.supervisor_mode || 'disabled',
         groups: s.groups.map((g, gi) => ({
             group_order: gi + 1,
             group_name: g.group_name,
             execution_type: g.execution_type,
+            condition_expression: g.condition_expression || null,
+            skip_on_condition_fail: g.skip_on_condition_fail !== false,
+            supervisor_prompt: g.supervisor_prompt || '',
+            supervisor_model: g.supervisor_model || '',
+            dynamic_mode: g.dynamic_mode || 'static',
+            judge_prompt: g.judge_prompt || '',
+            judge_model: g.judge_model || '',
             skills: g.skills.map((sk, si) => ({
                 skill_id: sk.skill_id,
                 order_in_group: si + 1,
                 skill_name: sk.skill_name || '',
+                on_error: sk.on_error || 'stop',
+                max_retries: parseInt(sk.max_retries) || 0,
+                retry_delay_seconds: parseInt(sk.retry_delay_seconds) || 5,
+                output_key: sk.output_key || null,
+                input_mapping: sk.input_mapping || null,
+                quality_gate_type: sk.quality_gate_type || 'disabled',
+                quality_gate_prompt: sk.quality_gate_prompt || '',
+                max_reflection_loops: parseInt(sk.max_reflection_loops) || 0,
             })),
         })),
     };
@@ -1684,6 +2014,7 @@ async function _wfbSave() {
 (async () => {
     initAdminLayout('skills.html');
     await checkAuth();
+    loadDashboardStats();
     loadSkills(1);
     loadWorkflows(1);
 })();

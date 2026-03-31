@@ -105,6 +105,11 @@ class Workflow(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
+    # 親スキルモード: "required" | "optional" | "disabled"
+    parent_skill_mode = Column(String(20), nullable=False, default="required", server_default="required")
+    # スーパーバイザーモード: "disabled" | "after_each_group" | "after_marked_groups"
+    supervisor_mode = Column(String(20), nullable=False, default="disabled", server_default="disabled")
+
     # 親スキル (Parent Skill) — ワークフローに直接埋め込み
     encrypted_parent_content = Column(Text, nullable=True)
     parent_model_type = Column(String(100), nullable=True, default="gpt-4o")
@@ -128,6 +133,16 @@ class WorkflowGroup(Base):
     group_order = Column(Integer, nullable=False)
     group_name = Column(String(255), nullable=True)
     execution_type = Column(String(20), nullable=False, default="serial")  # 'serial' | 'parallel'
+    condition_expression = Column(Text, nullable=True)  # JSON: 条件分岐式
+    skip_on_condition_fail = Column(Boolean, default=True, nullable=False, server_default="1")  # 条件不成立時スキップ
+    # スーパーバイザー (Group完了後の中間レビュー)
+    supervisor_prompt = Column(Text, nullable=True)  # 暗号化プロンプト
+    supervisor_model = Column(String(100), nullable=True)
+    # 動的タスク分解: "static" | "dynamic"
+    dynamic_mode = Column(String(20), nullable=False, default="static", server_default="static")
+    # ジャッジ (並列Group完了後の合議)
+    judge_prompt = Column(Text, nullable=True)  # 暗号化プロンプト
+    judge_model = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # リレーション
@@ -146,6 +161,24 @@ class WorkflowSkill(Base):
     skill_name = Column(String(255))
     config_json = Column(Text)
     depends_on = Column(Text, nullable=True)
+
+    # エラーリカバリ
+    on_error = Column(String(20), nullable=False, default="stop", server_default="stop")  # 'stop' | 'skip' | 'retry'
+    max_retries = Column(Integer, nullable=False, default=0, server_default="0")
+    retry_delay_seconds = Column(Integer, nullable=False, default=5, server_default="5")
+
+    # 明示的データマッピング
+    input_mapping = Column(Text, nullable=True)  # JSON: {"target_field": "steps.<ws_id>.output"}
+    output_key = Column(String(100), nullable=True)  # このステップの出力キー名
+
+    # 品質ゲート (Reflection / 自己修正ループ)
+    quality_gate_type = Column(String(20), nullable=False, default="disabled", server_default="disabled")  # "disabled" | "regex" | "json_schema" | "llm"
+    quality_gate_prompt = Column(Text, nullable=True)  # LLMゲート用プロンプト or regex/jsonスキーマ
+    quality_gate_model = Column(String(100), nullable=True)
+    max_reflection_loops = Column(Integer, nullable=False, default=0, server_default="0")
+
+    # ハンドオフ (条件付き引継ぎ)
+    handoff_rules = Column(Text, nullable=True)  # JSON: [{"condition": {...}, "target_skill_id": int}]
 
     # グループ所属
     group_id = Column(Integer, ForeignKey("workflow_groups.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -169,6 +202,9 @@ class WorkflowExecution(Base):
     total_steps = Column(Integer, nullable=False)
     global_input_data = Column(Text)
     per_skill_input_data = Column(Text)  # JSON: {workflow_skill_id: {field: value}}
+    continuation_lock_version = Column(Integer, nullable=False, default=0, server_default="0")  # 楽観ロック
+    blackboard_data = Column(Text, nullable=True)  # JSON: 共有メモリ (Blackboard)
+    dynamic_plan_data = Column(Text, nullable=True)  # JSON: 動的分解プラン
     error_message = Column(Text)
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -211,6 +247,10 @@ class Execution(Base):
     execution_time = Column(Integer)  # ミリ秒
     status = Column(String(50))  # success, error, timeout, pending, processing, pending_local, cancelled
     error_message = Column(Text)
+    retry_count = Column(Integer, nullable=False, default=0, server_default="0")
+    reflection_loop = Column(Integer, nullable=False, default=0, server_default="0")  # 品質ゲートリフレクション回数
+    execution_role = Column(String(30), nullable=True)  # null | "quality_gate" | "supervisor" | "debate_judge"
+    execution_group_id = Column(Integer, nullable=True)  # ジャッジ/スーパーバイザー用: 対象グループID
     enable_deep_think = Column(Boolean, nullable=True)
     output_format = Column(String(10), nullable=True, default="txt")
     dispatch_mode = Column(String(30), nullable=False, default="server")

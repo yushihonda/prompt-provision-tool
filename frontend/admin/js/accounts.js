@@ -217,8 +217,8 @@ async function showCreateModal() {
         cancelButtonColor: ADMIN_SWAL.secondary,
         width: '800px',
         customClass: {
-            popup: 'swal-no-scroll',
-            htmlContainer: 'swal-no-scroll'
+            popup: 'swal-scrollable-popup',
+            htmlContainer: 'swal-scrollable-container'
         },
         preConfirm: () => {
             const username = document.getElementById('swal-account-username').value.trim();
@@ -360,8 +360,8 @@ async function editAccount(id) {
         cancelButtonColor: ADMIN_SWAL.secondary,
         width: '800px',
         customClass: {
-            popup: 'swal-no-scroll',
-            htmlContainer: 'swal-no-scroll'
+            popup: 'swal-scrollable-popup',
+            htmlContainer: 'swal-scrollable-container'
         },
         preConfirm: () => {
             const email = document.getElementById('swal-account-email').value.trim();
@@ -640,8 +640,8 @@ async function showAssignModal(accountId) {
             confirmButtonText: ADMIN_SWAL.btnClose,
             confirmButtonColor: ADMIN_SWAL.primary,
             customClass: {
-                popup: 'swal-wide',
-                htmlContainer: 'swal-no-scroll'
+                popup: 'swal-wide swal-scrollable-popup',
+                htmlContainer: 'swal-scrollable-container'
             },
             didOpen: () => {
                 // ボタンのスタイルを調整
