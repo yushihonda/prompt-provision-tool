@@ -238,14 +238,18 @@ class APIConfigResponse(APIConfigBase):
 class DashboardStats(BaseModel):
     total_accounts: int
     total_skills: int
+    total_workflows: int = 0
     total_executions: int
 
 
 class UserDashboardStats(BaseModel):
     available_skills: int  # 利用可能なスキル数
+    available_workflows: int = 0  # 利用可能なワークフロー数
     executions_this_month: int  # 今月の実行回数
     total_tokens_this_month: int  # 今月の総トークン数
     total_cost_this_month: float  # 今月の総トークン料金（USD）
+    total_executions: int = 0  # 累計実行回数
+    total_tokens: int = 0  # 累計トークン数
 
 
 class AccountWithSkillCount(BaseModel):
@@ -377,7 +381,6 @@ class WorkflowCreate(BaseModel):
     parent_enable_web_search: bool = False
     parent_enable_code_interpreter: bool = False
     parent_enable_file_search: bool = False
-    parent_skill_mode: str = "required"  # "required" | "optional" | "disabled"
     supervisor_mode: str = "disabled"  # "disabled" | "after_each_group" | "after_marked_groups"
     # グループ構造
     groups: List[WorkflowGroupItem] = []
@@ -395,7 +398,6 @@ class WorkflowUpdate(BaseModel):
     parent_enable_web_search: Optional[bool] = None
     parent_enable_code_interpreter: Optional[bool] = None
     parent_enable_file_search: Optional[bool] = None
-    parent_skill_mode: Optional[str] = None
     supervisor_mode: Optional[str] = None
     groups: Optional[List[WorkflowGroupItem]] = None
 
@@ -414,7 +416,6 @@ class WorkflowResponse(BaseModel):
     parent_enable_web_search: bool = False
     parent_enable_code_interpreter: bool = False
     parent_enable_file_search: bool = False
-    parent_skill_mode: str = "required"
     supervisor_mode: str = "disabled"
     # メタ
     created_by: int
@@ -483,7 +484,6 @@ class WorkflowCreateWithParentSkill(BaseModel):
     input_schema: Optional[Dict[str, Any]] = None
     is_active: bool = True
     parent_skill: ParentSkillData
-    parent_skill_mode: str = "required"  # "required" | "optional" | "disabled"
     supervisor_mode: str = "disabled"  # "disabled" | "after_each_group" | "after_marked_groups"
     skills: List[WorkflowSkillUpdateItem] = []
     groups: Optional[List[WorkflowGroupItem]] = None

@@ -167,9 +167,13 @@ async function restoreActiveWorkflowExecution() {
                     };
                 });
 
-            // リーダー出力をフロービュー用に保存
-            const finalOutput = leaderExec?.output_data || '';
+            // リーダー出力をフロービュー用に保存（リーダーがなければ最後のステップ出力をフォールバック）
+            const lastStepOutput = allStepResults.length > 0 ? allStepResults[allStepResults.length - 1].output : '';
+            const finalOutput = leaderExec?.output_data || lastStepOutput || '';
             _flowLeaderOutput = finalOutput;
+            if (!leaderExec && finalOutput) {
+                _flowStepStatuses['leader'] = 'success';
+            }
 
             // Blackboardキー復元
             try {
@@ -191,11 +195,17 @@ async function restoreActiveWorkflowExecution() {
             // 実行中: ステップごとの進捗を表示
             renderStepExecutions();
 
-            // ボタンを無効化
+            // ボタン・入力フィールドを無効化（実行完了まで）
             const executeBtn = document.getElementById('workflow-execute-btn');
             if (executeBtn) executeBtn.disabled = true;
             const executeBtnText = document.getElementById('workflow-execute-btn-text');
             if (executeBtnText) executeBtnText.textContent = '実行中...';
+            const executeBtnSpinner = document.getElementById('workflow-execute-btn-spinner');
+            if (executeBtnSpinner) executeBtnSpinner.style.display = 'inline';
+            const form = document.getElementById('workflow-execute-form');
+            if (form) {
+                form.querySelectorAll('input, textarea, select').forEach(el => { el.disabled = true; });
+            }
         }
     } catch (error) {
         console.error('Failed to restore workflow execution:', error);
@@ -245,6 +255,15 @@ async function generateWorkflowInputFields(detail) {
     }
 
     // 3. 各ステップごとに入力セクションを生成（同じスキルでもステップが異なれば別の入力欄）
+    // ワークフロー共通入力に含まれるフィールドは各ステップから除外
+    const globalFieldNames = new Set();
+    if (hasWorkflowGlobalSchema) {
+        const gProps = workflowInputSchema.properties || workflowInputSchema;
+        for (const name of Object.keys(gProps)) {
+            globalFieldNames.add(name);
+        }
+    }
+
     // input_mapping が設定されているフィールドはユーザー入力不要（自動注入される）
     const mappedFieldsByWsId = {};
     for (const grp of (detail.groups || detail.workflow?.groups || [])) {
@@ -279,14 +298,26 @@ async function generateWorkflowInputFields(detail) {
                 .map(([name]) => name);
         }
 
-        // input_mapping で自動注入されるフィールドを除外
+        // 自動注入・内部メタフィールドを除外
         const wsId = step.workflow_skill_id;
         const mappedFields = mappedFieldsByWsId[wsId] || [];
-        if (mappedFields.length > 0) {
-            for (const mf of mappedFields) {
-                delete properties[mf];
-            }
+        const autoInjectedFields = new Set([
+            ...mappedFields,
+            // ワークフローエンジンが自動注入するフィールド
+            'previous_output', 'previous_step_result', 'all_step_results',
+            'global_input_data', 'steps', 'blackboard',
+        ]);
+        const filteredProperties = {};
+        for (const [name, cfg] of Object.entries(properties)) {
+            // _ppt_ プレフィックス（内部メタデータ）を除外
+            if (name.startsWith('_ppt_')) continue;
+            // 自動注入フィールドを除外
+            if (autoInjectedFields.has(name)) continue;
+            // ワークフロー共通入力と重複するフィールドを除外
+            if (globalFieldNames.has(name)) continue;
+            filteredProperties[name] = cfg;
         }
+        properties = filteredProperties;
 
         if (Object.keys(properties).length === 0) continue;
 
@@ -566,7 +597,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
         flowEl.style.display = 'none';
         return;
     }
-    flowEl.style.display = 'flex';
+    flowEl.style.display = 'block';
 
     const esc = typeof escapeHtml === 'function' ? escapeHtml : (t => t);
 
@@ -685,7 +716,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
             html += `<div style="display:flex; gap:6px; padding:10px 14px;">`;
             skills.forEach((sk) => {
                 const sName = sk.skill_name || '?';
-                const sModel = sk.model_type || '';
+                const sModel = typeof formatModelDisplay === 'function' ? formatModelDisplay(sk.model_type || '', null, {}) : (sk.model_type || '');
                 const sStatus = (allStepStatuses && (allStepStatuses['ws_' + sk.workflow_skill_id] || allStepStatuses[sk.skill_id])) || 'pending';
                 html += `
                     <div style="flex:1; padding:10px; background:rgba(0,0,0,0.2); border-radius:6px; border-left:3px solid ${sc(sStatus)}; min-width:0;">
@@ -704,7 +735,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
             html += `<div style="padding:8px 14px;">`;
             skills.forEach((sk, si_idx) => {
                 const sName = sk.skill_name || '?';
-                const sModel = sk.model_type || '';
+                const sModel = typeof formatModelDisplay === 'function' ? formatModelDisplay(sk.model_type || '', null, {}) : (sk.model_type || '');
                 const sStatus = (allStepStatuses && (allStepStatuses['ws_' + sk.workflow_skill_id] || allStepStatuses[sk.skill_id])) || 'pending';
                 html += `
                     <div style="padding:8px 10px; background:rgba(0,0,0,0.15); border-radius:6px; border-left:3px solid ${sc(sStatus)}; ${si_idx > 0 ? 'margin-top:6px;' : ''}">
@@ -752,8 +783,8 @@ function renderFlowView(wfDetail, allStepStatuses) {
     // --- 矢印 ---
     html += `<div style="display:flex; justify-content:center; padding:2px 0;"><div style="width:2px; height:16px; background:rgba(255,255,255,0.15);"></div></div>`;
 
-    // --- 親スキル統合（最終結果を表示 / 残りの高さを埋める） ---
-    html += `<div style="background:rgba(156,39,176,0.12); border:1px solid rgba(156,39,176,0.3); border-radius:8px; margin-top:4px; overflow:hidden; flex:1; display:flex; flex-direction:column;">`;
+    // --- 親スキル統合（最終結果を表示） ---
+    html += `<div id="leader-result-section" style="background:rgba(156,39,176,0.12); border:1px solid rgba(156,39,176,0.3); border-radius:8px; margin-top:4px; overflow:hidden; display:flex; flex-direction:column;">`;
     html += `<div style="display:flex; align-items:center; gap:10px; padding:12px 16px;">`;
     html += `<div style="width:28px; height:28px; border-radius:50%; background:${sc(leaderEndStatus)}; display:flex; align-items:center; justify-content:center; font-size:14px; color:white; flex-shrink:0;">${si(leaderEndStatus)}</div>`;
     html += `<div style="flex:1;"><div style="font-size:13px; font-weight:bold; color:#ce93d8;">親スキル: 結果統合</div><div style="font-size:11px; color:rgba(255,255,255,0.5);">全結果を統合して最終出力を生成</div></div>`;
@@ -762,7 +793,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
     }
     html += `</div>`;
     if (leaderOutput) {
-        html += `<div style="padding:0 16px 12px 16px; flex:1; display:flex; flex-direction:column; min-height:0;"><div id="leader-output-content" style="padding:12px; background:rgba(0,0,0,0.3); border-radius:6px; flex:1; overflow-y:auto;"><div style="color:rgba(255,255,255,0.9); white-space:pre-wrap; word-wrap:break-word; font-size:12px; line-height:1.6;">${esc(leaderOutput)}</div></div></div>`;
+        html += `<div style="padding:0 16px 12px 16px;"><div id="leader-output-content" style="padding:12px; background:rgba(0,0,0,0.3); border-radius:6px; max-height:60vh; overflow-y:auto;"><div style="color:rgba(255,255,255,0.9); white-space:pre-wrap; word-wrap:break-word; font-size:12px; line-height:1.6;">${esc(leaderOutput)}</div></div></div>`;
     }
     html += `</div>`;
 
@@ -1120,14 +1151,19 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
         if (typeof PersistentStatusBar !== 'undefined') {
             // ワークフロー実行IDが一致する場合のみ更新
             if (PersistentStatusBar.workflowExecutionId === workflowExecutionId) {
-                const finalStatus = leaderExecution?.status === 'success' ? 'success' : 'error';
+                const allStepsSuccess = allStepResults.every(s => s.status === 'success');
+                const finalStatus = (leaderExecution?.status === 'success' || (!leaderExecution && allStepsSuccess)) ? 'success' : 'error';
                 PersistentStatusBar.markAsCompleted(finalStatus);
                 console.log('Workflow completed, PersistentStatusBar updated:', finalStatus);
             }
         }
 
-        // リーダー出力をフロービュー用に保存
-        _flowLeaderOutput = leaderExecution.output_data || '';
+        // リーダー出力をフロービュー用に保存（リーダーがなければ最後のステップ出力をフォールバック）
+        const lastStepResult = allStepResults.length > 0 ? allStepResults[allStepResults.length - 1].output : '';
+        _flowLeaderOutput = leaderExecution?.output_data || lastStepResult || '';
+        if (!leaderExecution?.output_data && _flowLeaderOutput) {
+            _flowStepStatuses['leader'] = 'success';
+        }
 
         // Blackboardキー・オーケストレーション状況を復元
         try {
@@ -1170,10 +1206,11 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
             });
         }
 
-        // 全ステップの結果を統合して表示（リーダーステップの結果を最終結果として表示）
-        const finalOutput = leaderExecution.output_data || '';
-        displayWorkflowResult(finalOutput, allStepResults, leaderExecution);
-        
+        // 全ステップの結果を統合して表示
+        const finalOutput = _flowLeaderOutput;
+        const effectiveLeader = leaderExecution || (allStepResults.length > 0 ? allStepResults[allStepResults.length - 1] : null);
+        displayWorkflowResult(finalOutput, allStepResults, effectiveLeader);
+
         // 出力パネルを確実に表示（スキル実行と同様）
         const outputContent = document.getElementById('workflow-output-content');
         if (outputContent) {
@@ -1182,10 +1219,11 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
         }
 
         // 完了ポップアップを表示（スキル実行と同様）
+        const allSuccess = allStepResults.every(s => s.status === 'success');
         await Swal.fire({
             title: 'ワークフロー実行完了',
             text: 'ワークフロー実行が完了しました',
-            icon: leaderExecution?.status === 'success' ? 'success' : 'error',
+            icon: (leaderExecution?.status === 'success' || (!leaderExecution && allSuccess)) ? 'success' : 'error',
             confirmButtonText: USER_SWAL.btnClose,
             confirmButtonColor: USER_SWAL.primary
         });
@@ -1211,6 +1249,14 @@ function displayWorkflowResult(finalOutput, allStepResults, leaderExecution) {
     if (_flowViewDetail) {
         renderFlowView(_flowViewDetail, _flowStepStatuses);
     }
+
+    // 結果統合セクションまで自動スクロール
+    setTimeout(() => {
+        const leaderSection = document.getElementById('leader-result-section');
+        if (leaderSection) {
+            leaderSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }, 200);
 }
 
 // ワークフロー入力データを復元（単一Executionから）
@@ -1870,10 +1916,12 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
 
         // 履歴を再読み込み
         await loadHistory();
+        // 実行成功 — ボタンは完了まで非活性のまま維持
+        return;
     } catch (error) {
         await showAlert('ワークフロー実行に失敗しました', 'error');
         console.error('execute workflow error:', error);
-    } finally {
+        // エラー時のみボタンを再有効化
         executeBtn.disabled = false;
         executeBtnText.textContent = 'ワークフロー実行';
         if (executeBtnSpinner) executeBtnSpinner.style.display = 'none';

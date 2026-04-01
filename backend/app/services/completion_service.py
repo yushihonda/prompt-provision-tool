@@ -19,6 +19,42 @@ from app.services.agent_profiles import detect_readonly_violation, extract_verdi
 logger = logging.getLogger(__name__)
 
 
+def _compute_overrides_for_step(db, execution) -> dict:
+    """completion_service 内で使う軽量オーバーライド計算"""
+    try:
+        if not execution.workflow_execution_id:
+            return {}
+        wf_exec = db.query(WorkflowExecution).filter(
+            WorkflowExecution.id == execution.workflow_execution_id
+        ).first()
+        if not wf_exec:
+            return {}
+        from app.models import Workflow, WorkflowGroup, WorkflowSkill, Skill
+        workflow = db.query(Workflow).filter(Workflow.id == wf_exec.workflow_id).first()
+        if not workflow:
+            return {}
+        groups = db.query(WorkflowGroup).filter(
+            WorkflowGroup.workflow_id == workflow.id
+        ).order_by(WorkflowGroup.group_order.asc()).all()
+        all_ws = []
+        all_skills_map = {}
+        for g in groups:
+            g_skills = db.query(WorkflowSkill).filter(
+                WorkflowSkill.group_id == g.id
+            ).order_by(WorkflowSkill.order_in_group.asc()).all()
+            all_ws.extend(g_skills)
+            for ws in g_skills:
+                if ws.skill_id and ws.skill_id not in all_skills_map:
+                    sk = db.query(Skill).filter(Skill.id == ws.skill_id).first()
+                    if sk:
+                        all_skills_map[ws.skill_id] = sk
+        from app.services.auto_orchestration import compute_orchestration_overrides
+        return compute_orchestration_overrides(workflow, groups, all_ws, all_skills_map)
+    except Exception as e:
+        logger.warning(f"Failed to compute orchestration overrides: {e}")
+        return {}
+
+
 def _safe_json_loads(value, default=None):
     if value is None:
         return {} if default is None else default
@@ -68,7 +104,10 @@ def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
     blackboard = _safe_json_loads(getattr(wf_exec, "blackboard_data", None), {})
     summary_source = execution.output_data if execution.status == "success" else (execution.error_message or execution.output_data)
     wf_exec.handoff_summary = json.dumps({
+        "schema_version": 1,
         "from_profile": profile,
+        # to_profile は次 step の launch 時に _set_handoff_target_profile() が補完する。
+        # 次 step が存在しない終端 step では null のまま保持する。
         "to_profile": None,
         "source_execution_id": execution.id,
         "summary": _summarize_output(summary_source),
@@ -302,6 +341,9 @@ def trigger_workflow_continuation(
         return
 
     # --- 通常スキル完了 ---
+    # 自動オーケストレーションのオーバーライドを計算
+    orch_overrides = _compute_overrides_for_step(db, execution)
+
     # Blackboard自動書き込み (Feature 2: output_keyがあれば自動でBBに書く)
     try:
         wf_exec = db.query(WorkflowExecution).filter(
@@ -309,7 +351,7 @@ def trigger_workflow_continuation(
         ).first()
         if wf_exec and execution.status == "success":
             from app.tasks.execution_tasks import _auto_write_blackboard
-            _auto_write_blackboard(db, wf_exec, execution)
+            _auto_write_blackboard(db, wf_exec, execution, orch_overrides)
             db.commit()
     except Exception as e:
         logger.warning(f"Blackboard auto-write failed: {e}")
@@ -318,41 +360,47 @@ def trigger_workflow_continuation(
         except Exception:
             pass
 
-    # 品質ゲートチェック (Feature 1)
+    # 品質ゲートチェック (Feature 1 — 自動オーバーライド対応)
     if execution.status == "success" and execution.workflow_skill_id:
         try:
             from app.models import WorkflowSkill as WS
+            from app.services.auto_orchestration import get_effective
             ws = db.query(WS).filter(WS.id == execution.workflow_skill_id).first()
-            if ws and ws.quality_gate_type and ws.quality_gate_type != "disabled":
-                can_reflect = ws.max_reflection_loops > 0 and execution.reflection_loop < ws.max_reflection_loops
+            if ws:
+                eff_gate_type = get_effective(ws, "quality_gate_type", orch_overrides, ws.id, "workflow_skills") or "disabled"
+                eff_max_loops = get_effective(ws, "max_reflection_loops", orch_overrides, ws.id, "workflow_skills") or 0
+                eff_gate_prompt = get_effective(ws, "quality_gate_prompt", orch_overrides, ws.id, "workflow_skills")
 
-                if ws.quality_gate_type == "llm":
-                    if can_reflect:
-                        from app.tasks.execution_tasks import _launch_quality_gate_llm
-                        _launch_quality_gate_llm(db, wf_exec, ws, execution)
-                        return
-                else:
-                    # inline品質ゲート (regex/json_schema)
-                    from app.tasks.execution_tasks import _check_quality_gate_inline
-                    verdict = _check_quality_gate_inline(ws, execution.output_data or "")
-                    if not verdict["pass"]:
+                if eff_gate_type != "disabled" and eff_gate_prompt:
+                    can_reflect = eff_max_loops > 0 and execution.reflection_loop < eff_max_loops
+
+                    if eff_gate_type == "llm":
                         if can_reflect:
-                            from types import SimpleNamespace
-                            from app.tasks.execution_tasks import _handle_quality_gate_result
-                            gate_result_data = json.dumps(verdict, ensure_ascii=False)
-                            gate_result = SimpleNamespace(
-                                output_data=gate_result_data,
-                                workflow_skill_id=ws.id,
-                                reflection_loop=execution.reflection_loop,
-                                skill_order=execution.skill_order,
-                            )
-                            _handle_quality_gate_result(db, wf_exec, gate_result)
+                            from app.tasks.execution_tasks import _launch_quality_gate_llm
+                            _launch_quality_gate_llm(db, wf_exec, ws, execution)
                             return
-                        else:
-                            logger.warning(
-                                f"Quality gate failed for ws={ws.id} but max_reflection_loops=0, proceeding. "
-                                f"Critique: {verdict.get('critique', '')}"
-                            )
+                    else:
+                        # inline品質ゲート (regex/json_schema — 自動はregex)
+                        from app.tasks.execution_tasks import _check_quality_gate_inline
+                        verdict = _check_quality_gate_inline(ws, execution.output_data or "", orch_overrides)
+                        if not verdict["pass"]:
+                            if can_reflect:
+                                from types import SimpleNamespace
+                                from app.tasks.execution_tasks import _handle_quality_gate_result
+                                gate_result_data = json.dumps(verdict, ensure_ascii=False)
+                                gate_result = SimpleNamespace(
+                                    output_data=gate_result_data,
+                                    workflow_skill_id=ws.id,
+                                    reflection_loop=execution.reflection_loop,
+                                    skill_order=execution.skill_order,
+                                )
+                                _handle_quality_gate_result(db, wf_exec, gate_result)
+                                return
+                            else:
+                                logger.warning(
+                                    f"Quality gate failed for ws={ws.id} but max_reflection_loops=0, proceeding. "
+                                    f"Critique: {verdict.get('critique', '')}"
+                                )
         except Exception as e:
             logger.warning(f"Quality gate check failed: {e}")
 

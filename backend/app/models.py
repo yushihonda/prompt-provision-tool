@@ -106,7 +106,7 @@ class Workflow(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
-    # 親スキルモード: "required" | "optional" | "disabled"
+    # 親スキルモード: 常に "required"（optional/disabled は廃止）
     parent_skill_mode = Column(String(20), nullable=False, default="required", server_default="required")
     # スーパーバイザーモード: "disabled" | "after_each_group" | "after_marked_groups"
     supervisor_mode = Column(String(20), nullable=False, default="disabled", server_default="disabled")

@@ -16,8 +16,18 @@
 
             <div class="dashboard-stats" id="stats-container">
                 <div class="stat-card">
-                    <h3>利用可能なスキル</h3>
-                    <div class="value" id="available-skills">-</div>
+                    <h3>利用可能数</h3>
+                    <div style="display: flex; align-items: center; gap: 0;">
+                        <div style="flex: 1; text-align: center;">
+                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">ワークフロー</div>
+                            <div class="value" id="available-workflows">-</div>
+                        </div>
+                        <div style="width: 1px; height: 36px; background: rgba(255,255,255,0.15); flex-shrink: 0;"></div>
+                        <div style="flex: 1; text-align: center;">
+                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">スキル</div>
+                            <div class="value" id="available-skills">-</div>
+                        </div>
+                    </div>
                 </div>
                 <div class="stat-card">
                     <h3>実行回数</h3>
@@ -49,8 +59,12 @@
                 </div>
                 <div class="stat-card">
                     <h3>トークン料金</h3>
-                    <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">今月</div>
-                    <div class="value" id="total-cost-month">-</div>
+                    <div style="display: flex; align-items: center; justify-content: center; min-height: 50px;">
+                        <div>
+                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px; text-align: center;">今月</div>
+                            <div class="value" id="total-cost-month">-</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 

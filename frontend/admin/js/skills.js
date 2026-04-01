@@ -32,6 +32,7 @@ async function loadDashboardStats() {
         const stats = await apiRequest('/api/admin/dashboard');
         document.getElementById('total-accounts').textContent = stats.total_accounts;
         document.getElementById('total-skills').textContent = stats.total_skills;
+        document.getElementById('total-workflows').textContent = stats.total_workflows || 0;
         document.getElementById('total-executions').textContent = stats.total_executions;
     } catch (error) {
         console.error('Dashboard stats error:', error);
@@ -837,23 +838,8 @@ async function showCreateWorkflowFromSkills() {
                 <div ${WF_SWAL.leaderCard}>
                     <span ${WF_SWAL.secTitle}>親スキル（Parent Skill）</span>
                     <small style="color: rgba(255, 255, 255, 0.6); display: block; margin: 0 0 12px 0; font-size: 13px;">全ステップ完了後に結果を統合し、最終出力を生成するスキルです。</small>
-                    <div ${WF_SWAL.fld}>
-                        <label ${WF_SWAL.lbl}>親スキルモード</label>
-                        <select id="swal-parent-mode" ${WF_SWAL.sel}>
-                            <option value="required" selected>必須（全グループ完了後に実行）</option>
-                            <option value="optional">任意（設定があれば実行）</option>
-                            <option value="disabled">無効（親スキルを実行しない）</option>
-                        </select>
-                        <small ${WF_SWAL.hint}>「無効」にすると最後のステップ出力がワークフロー結果になります。</small>
-                    </div>
-                    <div ${WF_SWAL.fld}>
-                        <label ${WF_SWAL.lbl}>スーパーバイザーモード</label>
-                        <select id="swal-supervisor-mode" ${WF_SWAL.sel}>
-                            <option value="disabled" selected>無効</option>
-                            <option value="after_each_group">各グループ後</option>
-                            <option value="after_marked_groups">指定グループのみ</option>
-                        </select>
-                    </div>
+                    <input type="hidden" id="swal-parent-mode" value="required">
+                    <input type="hidden" id="swal-supervisor-mode" value="disabled">
                     <div ${WF_SWAL.fld}>
                         <label ${WF_SWAL.lbl}>リーダー用スキル名 <span style="color: #ff6b6b;">*</span></label>
                         <input id="swal-leader-name" type="text" ${WF_SWAL.inp} placeholder="例: 記事統合スキル">
@@ -887,20 +873,8 @@ async function showCreateWorkflowFromSkills() {
                             </optgroup>
                         </select>
                     </div>
-                    <div ${WF_SWAL.fld}>
-                        <label ${WF_SWAL.lbl}>リーダースキル内容 <span style="color: #ff6b6b;">*</span></label>
-                        <textarea id="swal-leader-content" rows="8" class="swal2-textarea" style="min-height: 160px; width: 100%; margin-top: 0; box-sizing: border-box; resize: vertical; max-width: 100%; font-family: 'Courier New', monospace; font-size: 13px;" placeholder="親スキルの内容を入力してください">あなたはワークフローの統合エージェントです。
-
-# 利用可能な入力データ
-- all_step_results: これまでのすべてのステップ結果（配列）
-  - 各要素: {"skill_order": int, "workflow_skill_id": int, "skill_id": int, "output": str}
-- previous_output: 直前のステップの出力
-- global_input_data: ワークフロー共通入力データ
-
-# あなたの役割
-すべてのステップ結果を統合し、ユーザーへの最終的な出力を日本語でわかりやすく生成してください。</textarea>
-                        <small ${WF_SWAL.hint}>利用可能な入力: all_step_results, previous_output, global_input_data</small>
-                    </div>
+                    <input type="hidden" id="swal-leader-content" value="(自動生成)">
+                    <small style="color: rgba(255,255,255,0.5); display:block; margin: 0 0 8px; font-size:11px;">リーダースキル内容はワークフロー名・説明から自動生成されます</small>
                     <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; text-align: left; margin-bottom: 0; width: 100%; box-sizing: border-box;">
                         <label style="display: flex; align-items: center; cursor: pointer;">
                             <input type="checkbox" id="swal-leader-deep-think" checked style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;">
@@ -989,10 +963,7 @@ async function showCreateWorkflowFromSkills() {
                 return false;
             }
 
-            if (!leaderContent) {
-                Swal.showValidationMessage('リーダースキル内容は必須です');
-                return false;
-            }
+            // リーダースキル内容は自動生成のため検証不要
 
             wfCreateSyncGroupFieldsFromDom();
             if (!_wfCreateGroups.length) {
@@ -1031,14 +1002,12 @@ async function showCreateWorkflowFromSkills() {
                 })),
             }));
 
-            const parentSkillMode = document.getElementById('swal-parent-mode')?.value || 'required';
             const supervisorMode = document.getElementById('swal-supervisor-mode')?.value || 'disabled';
             return {
                 name,
                 description,
                 isActive,
                 groups,
-                parent_skill_mode: parentSkillMode,
                 supervisor_mode: supervisorMode,
                 leaderPrompt: {
                     name: leaderName,
@@ -1065,7 +1034,6 @@ async function showCreateWorkflowFromSkills() {
                 description: formValues.description,
                 is_active: formValues.isActive,
                 parent_skill: formValues.leaderPrompt,
-                parent_skill_mode: formValues.parent_skill_mode || 'required',
                 supervisor_mode: formValues.supervisor_mode || 'disabled',
                 groups: formValues.groups
             })
@@ -1149,34 +1117,11 @@ function wfCreateRenderGroups() {
             const advHtml = `
                 <div style="margin-top:6px; padding:6px 8px; background:rgba(0,0,0,0.15); border-radius:4px; font-size:11px;">
                     <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-                        <label style="color:rgba(255,255,255,0.7);">エラー時:</label>
-                        <select onchange="wfCreateUpdateSkillField(${sk._uid},'on_error',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                            <option value="stop" ${onErr === 'stop' ? 'selected' : ''}>停止</option>
-                            <option value="skip" ${onErr === 'skip' ? 'selected' : ''}>スキップ</option>
-                            <option value="retry" ${onErr === 'retry' ? 'selected' : ''}>リトライ</option>
-                        </select>
-                        ${onErr === 'retry' ? `
-                        <label style="color:rgba(255,255,255,0.7);">回数:</label>
-                        <input type="number" min="1" max="10" value="${sk.max_retries || 3}" onchange="wfCreateUpdateSkillField(${sk._uid},'max_retries',this.value)" style="width:40px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                        ` : ''}
-                        <label style="color:rgba(255,255,255,0.7);">出力キー:</label>
-                        <input type="text" value="${_wfbEsc(sk.output_key || '')}" onchange="wfCreateUpdateSkillField(${sk._uid},'output_key',this.value)" placeholder="例: research" style="width:80px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                        <label style="color:rgba(255,255,255,0.7);">品質ゲート:</label>
-                        <select onchange="wfCreateUpdateSkillField(${sk._uid},'quality_gate_type',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                            <option value="disabled" ${(sk.quality_gate_type || 'disabled') === 'disabled' ? 'selected' : ''}>無効</option>
-                            <option value="regex" ${sk.quality_gate_type === 'regex' ? 'selected' : ''}>正規表現</option>
-                            <option value="json_schema" ${sk.quality_gate_type === 'json_schema' ? 'selected' : ''}>JSON検証</option>
-                            <option value="llm" ${sk.quality_gate_type === 'llm' ? 'selected' : ''}>LLM判定</option>
-                        </select>
-                        ${sk.quality_gate_type && sk.quality_gate_type !== 'disabled' ? `
-                        <input type="text" placeholder="パターン/プロンプト..." value="${_wfbEsc(sk.quality_gate_prompt || '')}" onchange="wfCreateUpdateSkillField(${sk._uid},'quality_gate_prompt',this.value)" style="flex:1; min-width:80px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                        <label style="color:rgba(255,255,255,0.7);">最大:</label>
-                        <input type="number" min="1" max="5" value="${sk.max_reflection_loops || 2}" onchange="wfCreateUpdateSkillField(${sk._uid},'max_reflection_loops',this.value)" style="width:35px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                        ` : ''}
                         <label style="color:rgba(255,255,255,0.7);">Profile:</label>
                         <select onchange="_wfbUpdateSkillField(${gi},${si},'agent_profile',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
                             ${renderAgentProfileOptions(sk.agent_profile || 'default')}
                         </select>
+                        <span style="color:rgba(255,255,255,0.4); font-size:10px; margin-left:4px;">エラー時・品質ゲート・出力キーは自動設定</span>
                     </div>
                 </div>`;
             if (useParallelLayout) {
@@ -1239,10 +1184,7 @@ function wfCreateRenderGroups() {
                                 <option value="static" ${grp.dynamic_mode === 'static' ? 'selected' : ''}>静的</option>
                                 <option value="dynamic" ${grp.dynamic_mode === 'dynamic' ? 'selected' : ''}>動的(プランナー)</option>
                             </select>
-                            <label style="color:rgba(255,255,255,0.7);">ジャッジ:</label>
-                            <input type="text" placeholder="ジャッジプロンプト..." value="${_wfbEsc(grp.judge_prompt || '')}" onchange="wfCreateUpdateGroup(${gi},'judge_prompt',this.value)" style="flex:1; min-width:100px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                            <label style="color:rgba(255,255,255,0.7);">SV:</label>
-                            <input type="text" placeholder="スーパーバイザー..." value="${_wfbEsc(grp.supervisor_prompt || '')}" onchange="wfCreateUpdateGroup(${gi},'supervisor_prompt',this.value)" style="flex:1; min-width:100px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            <span style="color:rgba(255,255,255,0.4); font-size:10px; margin-left:4px;">ジャッジ・SVは自動適用</span>
                         </div>
                     </div>
                     <div id="wf-create-skills-${gi}" style="${skillsWrapStyle}">
@@ -1405,7 +1347,7 @@ function renderWorkflows() {
     if (!tbody) return;
 
     if (!workflows || workflows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: rgba(255, 255, 255, 0.6);">ワークフローがまだ登録されていません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: rgba(255, 255, 255, 0.6);">ワークフローがまだ登録されていません</td></tr>';
         return;
     }
 
@@ -1414,6 +1356,7 @@ function renderWorkflows() {
             <td>${wf.id}</td>
             <td>${wf.name}</td>
             <td>${wf.description || '説明なし'}</td>
+            <td>${typeof formatModelDisplay === 'function' ? formatModelDisplay(wf.parent_model_type || '', null, {}) : (wf.parent_model_type || '-')}</td>
             <td>
                 <div style="display: flex; align-items: center; gap: 6px;">
                     ${wf.is_active ? `
@@ -1588,7 +1531,6 @@ async function openWorkflowDetail(id) {
             parent_prompt_content: wf.parent_prompt_content || '',
             parent_model_type: wf.parent_model_type || 'gpt-5.1',
             parent_enable_deep_think: wf.parent_enable_deep_think ?? true,
-            parent_skill_mode: wf.parent_skill_mode || 'required',
             supervisor_mode: wf.supervisor_mode || 'disabled',
             groups: (wf.groups || []).map(g => ({
                 group_order: g.group_order,
@@ -1655,30 +1597,11 @@ function _renderWorkflowBuilder() {
             const advHtml = `
                 <div style="margin-top:6px; padding:6px 8px; background:rgba(0,0,0,0.15); border-radius:4px; font-size:11px;">
                     <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-                        <label style="color:rgba(255,255,255,0.7);">エラー時:</label>
-                        <select onchange="_wfbUpdateSkillField(${gi},${si},'on_error',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                            <option value="stop" ${onErr === 'stop' ? 'selected' : ''}>停止</option>
-                            <option value="skip" ${onErr === 'skip' ? 'selected' : ''}>スキップ</option>
-                            <option value="retry" ${onErr === 'retry' ? 'selected' : ''}>リトライ</option>
+                        <label style="color:rgba(255,255,255,0.7);">Profile:</label>
+                        <select onchange="_wfbUpdateSkillField(${gi},${si},'agent_profile',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            ${renderAgentProfileOptions(sk.agent_profile || 'default')}
                         </select>
-                        ${onErr === 'retry' ? `
-                        <label style="color:rgba(255,255,255,0.7);">回数:</label>
-                        <input type="number" min="1" max="10" value="${sk.max_retries || 3}" onchange="_wfbUpdateSkillField(${gi},${si},'max_retries',this.value)" style="width:40px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                        ` : ''}
-                        <label style="color:rgba(255,255,255,0.7);">出力キー:</label>
-                        <input type="text" value="${_wfbEsc(sk.output_key || '')}" onchange="_wfbUpdateSkillField(${gi},${si},'output_key',this.value)" placeholder="例: research" style="width:80px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                        <label style="color:rgba(255,255,255,0.7);">品質ゲート:</label>
-                        <select onchange="_wfbUpdateSkillField(${gi},${si},'quality_gate_type',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                            <option value="disabled" ${(sk.quality_gate_type || 'disabled') === 'disabled' ? 'selected' : ''}>無効</option>
-                            <option value="regex" ${sk.quality_gate_type === 'regex' ? 'selected' : ''}>正規表現</option>
-                            <option value="json_schema" ${sk.quality_gate_type === 'json_schema' ? 'selected' : ''}>JSON検証</option>
-                            <option value="llm" ${sk.quality_gate_type === 'llm' ? 'selected' : ''}>LLM判定</option>
-                        </select>
-                        ${sk.quality_gate_type && sk.quality_gate_type !== 'disabled' ? `
-                        <input type="text" placeholder="パターン/プロンプト..." value="${_wfbEsc(sk.quality_gate_prompt || '')}" onchange="_wfbUpdateSkillField(${gi},${si},'quality_gate_prompt',this.value)" style="flex:1; min-width:80px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                        <label style="color:rgba(255,255,255,0.7);">最大:</label>
-                        <input type="number" min="1" max="5" value="${sk.max_reflection_loops || 2}" onchange="_wfbUpdateSkillField(${gi},${si},'max_reflection_loops',this.value)" style="width:35px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                        ` : ''}
+                        <span style="color:rgba(255,255,255,0.4); font-size:10px; margin-left:4px;">エラー時・品質ゲート・出力キーは自動設定</span>
                     </div>
                 </div>`;
             if (useParallelLayout) {
@@ -1741,10 +1664,7 @@ function _renderWorkflowBuilder() {
                                 <option value="static" ${grp.dynamic_mode === 'static' ? 'selected' : ''}>静的</option>
                                 <option value="dynamic" ${grp.dynamic_mode === 'dynamic' ? 'selected' : ''}>動的(プランナー)</option>
                             </select>
-                            <label style="color:rgba(255,255,255,0.7);">ジャッジ:</label>
-                            <input type="text" placeholder="ジャッジプロンプト..." value="${_wfbEsc(grp.judge_prompt || '')}" onchange="_wfbUpdateGroup(${gi},'judge_prompt',this.value)" style="flex:1; min-width:100px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
-                            <label style="color:rgba(255,255,255,0.7);">SV:</label>
-                            <input type="text" placeholder="スーパーバイザー..." value="${_wfbEsc(grp.supervisor_prompt || '')}" onchange="_wfbUpdateGroup(${gi},'supervisor_prompt',this.value)" style="flex:1; min-width:100px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            <span style="color:rgba(255,255,255,0.4); font-size:10px; margin-left:4px;">ジャッジ・SVは自動適用</span>
                         </div>
                     </div>
                     <div id="wfb-skills-${gi}" style="${skillsWrapStyle}">
@@ -1816,34 +1736,16 @@ function _renderWorkflowBuilder() {
 
                 <div ${WF_SWAL.leaderCard}>
                     <span ${WF_SWAL.secTitle}>親スキル（Parent Skill）</span>
-                    <div ${WF_SWAL.fld}>
-                        <label ${WF_SWAL.lbl}>親スキルモード</label>
-                        <select id="wfb-parent-mode" ${WF_SWAL.sel}>
-                            <option value="required" ${s.parent_skill_mode === 'required' ? 'selected' : ''}>必須（全グループ完了後に実行）</option>
-                            <option value="optional" ${s.parent_skill_mode === 'optional' ? 'selected' : ''}>任意（設定があれば実行）</option>
-                            <option value="disabled" ${s.parent_skill_mode === 'disabled' ? 'selected' : ''}>無効（親スキルを実行しない）</option>
-                        </select>
-                        <small ${WF_SWAL.hint}>「無効」にすると最後のステップ出力がワークフロー結果になります。</small>
-                    </div>
-                    <div ${WF_SWAL.fld}>
-                        <label ${WF_SWAL.lbl}>スーパーバイザーモード</label>
-                        <select id="wfb-supervisor-mode" ${WF_SWAL.sel}>
-                            <option value="disabled" ${(s.supervisor_mode || 'disabled') === 'disabled' ? 'selected' : ''}>無効</option>
-                            <option value="after_each_group" ${s.supervisor_mode === 'after_each_group' ? 'selected' : ''}>各グループ後</option>
-                            <option value="after_marked_groups" ${s.supervisor_mode === 'after_marked_groups' ? 'selected' : ''}>指定グループのみ</option>
-                        </select>
-                    </div>
+                    <input type="hidden" id="wfb-parent-mode" value="required">
+                    <input type="hidden" id="wfb-supervisor-mode" value="disabled">
                     <div ${WF_SWAL.fld}>
                         <label ${WF_SWAL.lbl}>AIモデル <span style="color: #ff6b6b;">*</span></label>
                         <select id="wfb-parent-model" ${WF_SWAL.sel}>
                             ${MODEL_OPTIONS}
                         </select>
                     </div>
-                    <div ${WF_SWAL.fld}>
-                        <label ${WF_SWAL.lbl}>リーダースキル内容 <span style="color: #ff6b6b;">*</span></label>
-                        <textarea id="wfb-parent-content" rows="6" ${WF_SWAL.txa(160)}>${s.parent_prompt_content}</textarea>
-                        <small ${WF_SWAL.hint}>タスク振り分け・中間指示に使われます。変数は {{variable_name}} 形式で記述できます。</small>
-                    </div>
+                    <input type="hidden" id="wfb-parent-content" value="${s.parent_prompt_content || '(自動生成)'}">
+                    <small style="color: rgba(255,255,255,0.5); display:block; margin: 0 0 8px; font-size:11px;">リーダースキル内容はワークフロー名・説明から自動生成されます</small>
                 </div>
 
                 ${flowColumn}
@@ -1996,9 +1898,6 @@ async function _wfbSave() {
         s.parent_model_type = norm.parent_model_type;
         s.parent_enable_deep_think = norm.parent_enable_deep_think;
     }
-    const parentModeEl = document.getElementById('wfb-parent-mode');
-    if (parentModeEl) s.parent_skill_mode = parentModeEl.value;
-
     const supervisorModeEl = document.getElementById('wfb-supervisor-mode');
     if (supervisorModeEl) s.supervisor_mode = supervisorModeEl.value;
 
@@ -2010,7 +1909,6 @@ async function _wfbSave() {
         parent_prompt_content: s.parent_prompt_content,
         parent_model_type: s.parent_model_type,
         parent_enable_deep_think: s.parent_enable_deep_think,
-        parent_skill_mode: s.parent_skill_mode || 'required',
         supervisor_mode: s.supervisor_mode || 'disabled',
         groups: s.groups.map((g, gi) => ({
             group_order: gi + 1,

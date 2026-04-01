@@ -349,11 +349,6 @@ async def execute_workflow(
     # 並列モードの場合は全ステップを一括作成
     skills_to_launch = [executable_skills[0]] if workflow_execution_mode == "serial" else executable_skills
 
-    # 実行時のDeep Think判定（既存ロジックに合わせる）
-    final_enable_deep_think = getattr(skill, "enable_deep_think", True)
-    if final_enable_deep_think is None:
-        final_enable_deep_think = True
-
     # output_format
     output_format_value = request.output_format or "txt"
 

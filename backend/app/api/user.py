@@ -37,6 +37,12 @@ async def get_user_dashboard_stats(
         Skill.deleted_at.is_(None)
     ).count()
 
+    # 利用可能なワークフロー数
+    available_workflows = db.query(Workflow).filter(
+        Workflow.is_active == True,
+        Workflow.deleted_at.is_(None),
+    ).count()
+
     # 月が変わっていたら月次カウンターをリセット
     from app.services.account_stats import check_and_reset_monthly_stats
     check_and_reset_monthly_stats(current_user, db)
@@ -48,6 +54,7 @@ async def get_user_dashboard_stats(
 
     return {
         "available_skills": available_skills,
+        "available_workflows": available_workflows,
         "executions_this_month": executions_this_month,
         "total_tokens_this_month": total_tokens_this_month,
         "total_cost_this_month": total_cost_this_month,

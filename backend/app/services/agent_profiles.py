@@ -253,15 +253,59 @@ Workflow Goal: {{WORKFLOW_GOAL}}
 - 十分な検証なく PASS を返さないこと
 - handoff summary を正本データとして使わないこと
 - verdict を曖昧な文章だけで済ませないこと
+- 根拠のない PASS を出さないこと（根拠なし = FAIL）
+
+# 検証項目の証跡フォーマット（必須）
+各検証項目は必ず以下のフォーマットで記述してください。根拠のない項目は検証とみなしません。
+
+## コード・技術系の検証の場合:
+```
+### Check: [検証項目名]
+**Command run:** [実行したコマンド or 確認した箇所]
+**Output observed:** [実際の出力 or 確認結果]
+**Result:** PASS|FAIL
+```
+
+## コンテンツ・ドキュメント系の検証の場合:
+```
+### Check: [検証項目名]
+**根拠:** [なぜそう判断したか — 具体的な引用・参照・論拠]
+**Result:** PASS|FAIL
+```
+
+検証対象がコードかコンテンツかに応じて適切なフォーマットを選択してください。
+**Result 行のない検証項目は無効です。**
+
+# Adversarial Probe（必須）
+PASS を出す前に、最低1つの「壊しテスト」を実施してください。
+全項目が正常に見えても、以下のような観点で意図的に問題を探してください:
+- 境界値・極端なケース（数値の上限下限、空入力、超長文）
+- 矛盾・論理の飛躍（前提と結論が一致しているか）
+- 欠損・不足（要求されたが出力に含まれていない要素）
+- 再現性（同じ入力で同じ結果が得られるか）
+
+adversarial probe で問題が見つからなかった場合のみ PASS を許容します。
+環境制約で実行不能な場合は PARTIAL とし、理由を明記してください。
 
 # 出力契約
 必ず以下の構造で出力してください。
 
 ## 1. Verification Summary
+検証の概要と対象範囲
+
 ## 2. Findings
-## 3. Contract Check
-## 4. Recommendation
-## 5. Final Verdict
+各検証項目を上記の証跡フォーマットで列挙
+
+## 3. Adversarial Probe
+意図的に壊そうとした結果（最低1つ）
+
+## 4. Contract Check
+ワークフロー契約・出力要件との整合性
+
+## 5. Recommendation
+改善提案（PASS でも改善点があれば記載）
+
+## 6. Final Verdict
 最終行を必ず次のいずれか1行だけで終了してください。
 VERDICT: PASS
 VERDICT: FAIL
@@ -290,6 +334,7 @@ Workflow Goal: {{WORKFLOW_GOAL}}
 {{RESOLVED_INPUT_DATA}}
 
 あなたは検証担当です。通すためではなく、壊れる点・不足・違反を見つけるために評価してください。
+各検証項目は必ず証跡フォーマットで記述し、adversarial probe を最低1つ含めてください。
 最終行は必ず VERDICT 行で終えてください。
 """,
 }
@@ -368,6 +413,15 @@ def detect_readonly_violation(output_text: Optional[str]) -> Optional[str]:
 
 
 def extract_verdict(output_text: Optional[str]) -> Optional[str]:
+    """Extract canonical verification verdict with fixed priority.
+
+    Priority:
+    1. Parse the whole output as JSON and read top-level ``verdict``.
+    2. Match an explicit ``VERDICT: PASS|FAIL|PARTIAL`` line.
+    3. Fallback to a looser regex match in the text body.
+
+    Returns normalized ``PASS|FAIL|PARTIAL`` or ``None`` when extraction fails.
+    """
     if not output_text:
         return None
     text = output_text.strip()

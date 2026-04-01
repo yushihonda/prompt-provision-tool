@@ -38,6 +38,10 @@ from app.services.agent_profiles import (
     READONLY_PROFILES,
     VERDICT_REQUIRED_PROFILES,
 )
+from app.services.auto_orchestration import (
+    compute_orchestration_overrides,
+    get_effective,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +116,8 @@ def _set_handoff_target_profile(wf_exec, agent_profile: str):
     payload = _parse_json_text(getattr(wf_exec, "handoff_summary", None), {})
     if not isinstance(payload, dict) or not payload:
         return
+    # handoff_summary は実行契約の正本ではなく派生メタデータなので、
+    # 次 step が実際に launch されたタイミングで only-if-known で to_profile を補完する。
     payload["to_profile"] = normalize_agent_profile(agent_profile)
     wf_exec.handoff_summary = json.dumps(payload, ensure_ascii=False)
 
@@ -196,7 +202,7 @@ def _eval_cond(cond: dict, context: dict) -> bool:
 # ヘルパー: 構造化コンテキスト構築 + Blackboard (Feature 2)
 # ===========================================================================
 
-def _build_structured_context(db, wf_exec, global_input, completed_executions):
+def _build_structured_context(db, wf_exec, global_input, completed_executions, overrides=None):
     steps = {}
     all_step_results = []
 
@@ -224,8 +230,10 @@ def _build_structured_context(db, wf_exec, global_input, completed_executions):
         steps[str(ex.workflow_skill_id)] = step_data
 
         ws = db.query(WorkflowSkill).filter(WorkflowSkill.id == ex.workflow_skill_id).first()
-        if ws and ws.output_key:
-            steps[ws.output_key] = step_data
+        if ws:
+            output_key = get_effective(ws, "output_key", overrides or {}, ws.id, "workflow_skills")
+            if output_key:
+                steps[output_key] = step_data
 
         all_step_results.append({
             "skill_order": ex.skill_order,
@@ -304,35 +312,39 @@ def _merge_blackboard(db, wf_exec, key: str, value):
     wf_exec.blackboard_data = json.dumps(bb, ensure_ascii=False)
 
 
-def _auto_write_blackboard(db, wf_exec, execution):
-    """output_key があるスキルの出力を自動でBlackboardに書き込む"""
+def _auto_write_blackboard(db, wf_exec, execution, overrides=None):
+    """output_key があるスキルの出力を自動でBlackboardに書き込む（オーバーライド対応）"""
     if not execution.workflow_skill_id or not execution.output_data:
         return
     ws = db.query(WorkflowSkill).filter(WorkflowSkill.id == execution.workflow_skill_id).first()
-    if ws and ws.output_key:
+    if not ws:
+        return
+    output_key = get_effective(ws, "output_key", overrides or {}, ws.id, "workflow_skills")
+    if output_key:
         parsed = execution.output_data
         try:
             parsed = json.loads(execution.output_data)
         except (json.JSONDecodeError, TypeError):
             pass
-        _merge_blackboard(db, wf_exec, ws.output_key, parsed)
+        _merge_blackboard(db, wf_exec, output_key, parsed)
 
 
 # ===========================================================================
 # 品質ゲート / Reflection (Feature 1)
 # ===========================================================================
 
-def _check_quality_gate_inline(ws, output_text: str) -> dict:
+def _check_quality_gate_inline(ws, output_text: str, overrides=None) -> dict:
     """
-    inline品質ゲート(regex/json_schema)。LLM不要。
+    inline品質ゲート(regex/json_schema)。LLM不要。自動オーバーライド対応。
     Returns: {"pass": bool, "critique": str}
     """
-    gate_type = ws.quality_gate_type or "disabled"
-    if gate_type == "disabled" or not ws.quality_gate_prompt:
+    gate_type = get_effective(ws, "quality_gate_type", overrides or {}, ws.id, "workflow_skills") or "disabled"
+    gate_prompt = get_effective(ws, "quality_gate_prompt", overrides or {}, ws.id, "workflow_skills")
+    if gate_type == "disabled" or not gate_prompt:
         return {"pass": True, "critique": ""}
 
-    # プロンプトが暗号化されている場合は復号
-    raw_prompt = ws.quality_gate_prompt
+    # プロンプトが暗号化されている場合は復号（自動生成の場合はそのまま）
+    raw_prompt = gate_prompt
     try:
         raw_prompt = encryption_service.decrypt(raw_prompt)
     except Exception:
@@ -491,9 +503,9 @@ def _handle_quality_gate_result(db, wf_exec, gate_execution):
 # ジャッジ (Feature 5: Debate/Consensus)
 # ===========================================================================
 
-def _launch_judge(db, wf_exec, group, structured_context, global_input):
-    """並列Group完了後にジャッジを起動"""
-    judge_prompt_raw = group.judge_prompt
+def _launch_judge(db, wf_exec, group, structured_context, global_input, overrides=None):
+    """並列Group完了後にジャッジを起動（自動オーバーライド対応）"""
+    judge_prompt_raw = get_effective(group, "judge_prompt", overrides or {}, group.id, "groups")
     if not judge_prompt_raw:
         return False
 
@@ -513,7 +525,7 @@ def _launch_judge(db, wf_exec, group, structured_context, global_input):
                 "output": step["output"],
             })
 
-    # ジャッジプロンプト復号
+    # ジャッジプロンプト復号（自動生成の場合は暗号化されていないのでそのまま使う）
     try:
         decrypted_prompt = encryption_service.decrypt(judge_prompt_raw)
     except Exception:
@@ -526,7 +538,7 @@ def _launch_judge(db, wf_exec, group, structured_context, global_input):
     judge_input["all_step_results"] = structured_context.get("all_step_results", [])
     judge_input["blackboard"] = structured_context.get("blackboard", {})
 
-    judge_model = group.judge_model or "gpt-5.4"
+    judge_model = get_effective(group, "judge_model", overrides or {}, group.id, "groups") or "gpt-5.4"
 
     max_order = max((ws.skill_order for ws in group_skills), default=0)
 
@@ -816,6 +828,25 @@ def continue_workflow_execution(
             .all()
         )
 
+        # 自動オーケストレーション: 構造からオーバーライドを計算
+        all_ws = []
+        all_skills_map = {}
+        for g in groups:
+            g_skills = (
+                db.query(WorkflowSkill)
+                .filter(WorkflowSkill.group_id == g.id)
+                .order_by(WorkflowSkill.order_in_group.asc())
+                .all()
+            )
+            all_ws.extend(g_skills)
+            for ws in g_skills:
+                if ws.skill_id and ws.skill_id not in all_skills_map:
+                    from app.models import Skill as SkillModel
+                    sk = db.query(SkillModel).filter(SkillModel.id == ws.skill_id).first()
+                    if sk:
+                        all_skills_map[ws.skill_id] = sk
+        orch_overrides = compute_orchestration_overrides(workflow, groups, all_ws, all_skills_map)
+
         # Execution 収集
         all_executions = wf_exec.executions
         completed_skill_ids = set()
@@ -824,13 +855,17 @@ def continue_workflow_execution(
         completed_groups = set()  # ジャッジ/スーパーバイザー完了済みグループ
 
         for ex in all_executions:
-            # 特殊ロール完了チェック
-            if ex.execution_role == ROLE_DEBATE_JUDGE and ex.status == "success":
+            # 特殊ロール完了チェック（成功 or エラーでも完了扱い — 無限ループ防止）
+            if ex.execution_role == ROLE_DEBATE_JUDGE and ex.status in ("success", "error"):
                 if ex.execution_group_id:
                     completed_groups.add(("judge", ex.execution_group_id))
-            if ex.execution_role == ROLE_SUPERVISOR and ex.status == "success":
+                    if ex.status == "error":
+                        logger.warning(f"WF {workflow_execution_id}: judge for group {ex.execution_group_id} failed, skipping")
+            if ex.execution_role == ROLE_SUPERVISOR and ex.status in ("success", "error"):
                 if ex.execution_group_id:
                     completed_groups.add(("supervisor", ex.execution_group_id))
+                    if ex.status == "error":
+                        logger.warning(f"WF {workflow_execution_id}: supervisor for group {ex.execution_group_id} failed, skipping")
 
             if not ex.workflow_skill_id:
                 continue
@@ -874,7 +909,7 @@ def continue_workflow_execution(
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        structured_context = _build_structured_context(db, wf_exec, global_input, all_executions)
+        structured_context = _build_structured_context(db, wf_exec, global_input, all_executions, orch_overrides)
 
         previous_output = ""
         prev_exec = (
@@ -904,8 +939,9 @@ def continue_workflow_execution(
 
             # --- 全スキル完了後のポスト処理 (Judge → Supervisor) ---
             if all_skills_done:
-                # Feature 5: ジャッジ未実行?
-                if group.judge_prompt and ("judge", group.id) not in completed_groups:
+                # Feature 5: ジャッジ未実行?（自動オーバーライド対応）
+                effective_judge_prompt = get_effective(group, "judge_prompt", orch_overrides, group.id, "groups")
+                if effective_judge_prompt and ("judge", group.id) not in completed_groups:
                     judge_in_progress = any(
                         ex.execution_role == ROLE_DEBATE_JUDGE
                         and ex.execution_group_id == group.id
@@ -913,7 +949,7 @@ def continue_workflow_execution(
                         for ex in all_executions
                     )
                     if not judge_in_progress:
-                        _launch_judge(db, wf_exec, group, structured_context, global_input)
+                        _launch_judge(db, wf_exec, group, structured_context, global_input, orch_overrides)
                         return
                     db.commit()
                     return
@@ -944,7 +980,7 @@ def continue_workflow_execution(
                 db.commit()
                 return
 
-            # --- エラーリカバリ ---
+            # --- エラーリカバリ（自動オーバーライド対応） ---
             group_has_error = bool(group_skill_ids & set(error_skill_ids.keys()))
             if group_has_error:
                 should_wait = False
@@ -952,8 +988,9 @@ def continue_workflow_execution(
                     if ws.id not in error_skill_ids or ws.id in completed_skill_ids:
                         continue
                     failed_ex = error_skill_ids[ws.id]
-                    on_error = ws.on_error or "stop"
-                    if on_error == "retry" and failed_ex.retry_count < ws.max_retries:
+                    on_error = get_effective(ws, "on_error", orch_overrides, ws.id, "workflow_skills") or "stop"
+                    max_retries = get_effective(ws, "max_retries", orch_overrides, ws.id, "workflow_skills") or 0
+                    if on_error == "retry" and failed_ex.retry_count < max_retries:
                         _retry_skill(db, wf_exec, ws, failed_ex, per_skill_input,
                                      structured_context, global_input, previous_output)
                         should_wait = True
@@ -1160,29 +1197,6 @@ def _retry_skill(db, wf_exec, ws, failed_ex, per_skill_input,
 def _handle_workflow_completion(db, wf_exec, workflow, structured_context,
                                 global_input, previous_output, per_skill_input,
                                 completed_skill_order):
-    mode = getattr(workflow, 'parent_skill_mode', 'required') or 'required'
-
-    if mode == "disabled":
-        wf_exec.status = "success"
-        wf_exec.completed_at = datetime.now(JST)
-        db.commit()
-        return
-
-    has_parent = bool(workflow.encrypted_parent_content)
-
-    if mode == "required" and not has_parent:
-        wf_exec.status = "error"
-        wf_exec.error_message = "親スキルが設定されていません"
-        wf_exec.completed_at = datetime.now(JST)
-        db.commit()
-        return
-
-    if mode == "optional" and not has_parent:
-        wf_exec.status = "success"
-        wf_exec.completed_at = datetime.now(JST)
-        db.commit()
-        return
-
     _start_parent_skill(db, wf_exec, workflow, structured_context,
                         global_input, previous_output, completed_skill_order)
 

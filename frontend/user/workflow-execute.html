@@ -59,16 +59,15 @@
                 </div>
 
                 <div class="execute-output-panel">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
-                        <h3 style="margin: 0;">実行フロー</h3>
-                    </div>
+                    <h3>実行フロー</h3>
+                    <div style="flex:1; overflow-y:auto; min-height:0;">
+                        <!-- 実行フロー表示 -->
+                        <div id="workflow-flow-view" style="display:none;"></div>
 
-                    <!-- 実行フロー表示 -->
-                    <div id="workflow-flow-view" style="display:none; flex:1; overflow-y:auto; min-height:0; flex-direction:column;"></div>
-
-                    <!-- ステップ結果 -->
-                    <div id="workflow-result-container">
-                        <div class="output-box" id="workflow-output-content">ワークフローを実行すると、各ステップの実行結果がここに表示されます</div>
+                        <!-- ステップ結果 -->
+                        <div id="workflow-result-container">
+                            <div class="output-box" id="workflow-output-content">ワークフローを実行すると、各ステップの実行結果がここに表示されます</div>
+                        </div>
                     </div>
                 </div>
             </div>

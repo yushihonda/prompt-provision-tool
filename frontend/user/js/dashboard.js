@@ -12,6 +12,7 @@ async function loadDashboardStats() {
         const stats = await apiRequest('/api/user/dashboard');
 
         document.getElementById('available-skills').textContent = stats.available_skills;
+        document.getElementById('available-workflows').textContent = stats.available_workflows || 0;
         document.getElementById('total-executions').textContent = (stats.total_executions || 0).toLocaleString();
         document.getElementById('executions-month').textContent = (stats.executions_this_month || 0).toLocaleString();
 
@@ -72,20 +73,16 @@ function renderUserWorkflows() {
         .map((item) => {
             const wf = item.workflow;
             const skillCount = (item.skills || []).length;
+            const modelDisplay = typeof formatModelDisplay === 'function'
+                ? formatModelDisplay(wf.parent_model_type || '', null, {})
+                : (wf.parent_model_type || '-');
             return `
                 <div class="card" data-workflow-id="${wf.id}">
                     <div class="card-content">
                         <h3>${wf.name}</h3>
                         <p>${wf.description || '説明なし'}</p>
                         <p><strong>ステップ数:</strong> ${skillCount}</p>
-                        <p>
-                            <strong>ステータス:</strong>
-                            <span style="color: ${wf.is_active ? '#28a745' : '#dc3545'}; font-weight: ${
-                                wf.is_active ? 'bold' : 'normal'
-                            };">
-                                ${wf.is_active ? '有効' : '無効'}
-                            </span>
-                        </p>
+                        <p><strong>モデル:</strong> ${modelDisplay}</p>
                     </div>
                     <div class="card-corner">
                         <button class="btn btn-primary card-execute-btn"

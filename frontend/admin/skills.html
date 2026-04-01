@@ -28,15 +28,29 @@
             <div class="dashboard-stats" id="stats-container">
                 <div class="stat-card">
                     <h3>総アカウント数</h3>
-                    <div class="value" id="total-accounts">-</div>
+                    <div style="display: flex; align-items: center; justify-content: center; min-height: 50px;">
+                        <div class="value" id="total-accounts">-</div>
+                    </div>
                 </div>
                 <div class="stat-card">
-                    <h3>総スキル数</h3>
-                    <div class="value" id="total-skills">-</div>
+                    <h3>総利用可能数</h3>
+                    <div style="display: flex; align-items: center; gap: 0;">
+                        <div style="flex: 1; text-align: center;">
+                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">ワークフロー</div>
+                            <div class="value" id="total-workflows">-</div>
+                        </div>
+                        <div style="width: 1px; height: 36px; background: rgba(255,255,255,0.15); flex-shrink: 0;"></div>
+                        <div style="flex: 1; text-align: center;">
+                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">スキル</div>
+                            <div class="value" id="total-skills">-</div>
+                        </div>
+                    </div>
                 </div>
                 <div class="stat-card">
                     <h3>総実行回数</h3>
-                    <div class="value" id="total-executions">-</div>
+                    <div style="display: flex; align-items: center; justify-content: center; min-height: 50px;">
+                        <div class="value" id="total-executions">-</div>
+                    </div>
                 </div>
             </div>
 
@@ -48,13 +62,14 @@
                             <th>ID</th>
                             <th>ワークフロー名</th>
                             <th>説明</th>
+                            <th>モデル</th>
                             <th>ステータス</th>
                             <th>アクション</th>
                         </tr>
                     </thead>
                     <tbody id="workflows-tbody">
                         <tr>
-                            <td colspan="5" style="text-align: center;">読み込み中...</td>
+                            <td colspan="6" style="text-align: center;">読み込み中...</td>
                         </tr>
                     </tbody>
                 </table>

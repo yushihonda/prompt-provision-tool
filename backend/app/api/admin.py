@@ -70,6 +70,7 @@ async def get_dashboard_stats(
     """ダッシュボード統計情報を取得"""
     total_accounts = db.query(Account).filter(Account.account_type == AccountType.CHILD).count()
     total_skills = db.query(Skill).filter(Skill.deleted_at.is_(None)).count()
+    total_workflows = db.query(Workflow).filter(Workflow.deleted_at.is_(None)).count()
     # 総実行回数はAccount.total_executionsの合計を使用（保存された値）
     total_executions = db.query(func.sum(Account.total_executions)).scalar() or 0
     total_executions = int(total_executions)  # Decimal型をintに変換
@@ -77,6 +78,7 @@ async def get_dashboard_stats(
     return {
         "total_accounts": total_accounts,
         "total_skills": total_skills,
+        "total_workflows": total_workflows,
         "total_executions": total_executions
     }
 
@@ -529,7 +531,7 @@ async def create_workflow_with_parent_skill(
         parent_enable_web_search=request.parent_skill.enable_web_search,
         parent_enable_code_interpreter=request.parent_skill.enable_code_interpreter,
         parent_enable_file_search=request.parent_skill.enable_file_search,
-        parent_skill_mode=getattr(request, 'parent_skill_mode', 'required') or 'required',
+        parent_skill_mode="required",
         supervisor_mode=getattr(request, 'supervisor_mode', 'disabled') or 'disabled',
     )
     db.add(db_wf)
@@ -714,7 +716,7 @@ async def create_workflow(
         parent_enable_web_search=workflow.parent_enable_web_search,
         parent_enable_code_interpreter=workflow.parent_enable_code_interpreter,
         parent_enable_file_search=workflow.parent_enable_file_search,
-        parent_skill_mode=getattr(workflow, 'parent_skill_mode', 'required') or 'required',
+        parent_skill_mode="required",
         supervisor_mode=getattr(workflow, 'supervisor_mode', 'disabled') or 'disabled',
     )
     db.add(db_wf)
@@ -861,7 +863,6 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
         parent_enable_web_search=db_wf.parent_enable_web_search,
         parent_enable_code_interpreter=db_wf.parent_enable_code_interpreter,
         parent_enable_file_search=db_wf.parent_enable_file_search,
-        parent_skill_mode=getattr(db_wf, 'parent_skill_mode', 'required') or 'required',
         supervisor_mode=getattr(db_wf, 'supervisor_mode', 'disabled') or 'disabled',
         created_by=db_wf.created_by,
         created_at=db_wf.created_at,
@@ -936,8 +937,6 @@ async def update_workflow(
         wf.parent_enable_code_interpreter = workflow_update.parent_enable_code_interpreter
     if workflow_update.parent_enable_file_search is not None:
         wf.parent_enable_file_search = workflow_update.parent_enable_file_search
-    if workflow_update.parent_skill_mode is not None:
-        wf.parent_skill_mode = workflow_update.parent_skill_mode
     if getattr(workflow_update, 'supervisor_mode', None) is not None:
         wf.supervisor_mode = workflow_update.supervisor_mode
 

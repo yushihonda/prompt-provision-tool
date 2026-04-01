@@ -220,6 +220,21 @@ async def get_execution_bundle(
     署名付き run bundle を取得する。
     サーバー側でスキルを復号・プレースホルダ展開し、署名を付与して返す。
     """
+    try:
+        return await _get_execution_bundle_inner(execution_id, authorization, x_worker_key, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Bundle endpoint unhandled error for execution {execution_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"バンドル生成中に内部エラーが発生しました: {type(e).__name__}: {e}")
+
+
+async def _get_execution_bundle_inner(
+    execution_id: int,
+    authorization: Optional[str],
+    x_worker_key: Optional[str],
+    db: Session,
+):
     auth = _authenticate_worker(db, authorization, x_worker_key)
 
     execution = db.query(Execution).filter(Execution.id == execution_id).first()
@@ -284,16 +299,37 @@ async def get_execution_bundle(
             decrypted = group.supervisor_prompt
         model_type = group.supervisor_model or model_type
     elif exec_role == "debate_judge":
-        # ジャッジ: WorkflowGroup.judge_prompt から復号
+        # ジャッジ: WorkflowGroup.judge_prompt から復号 or 自動生成
         from app.models import WorkflowGroup as WG
         group = db.query(WG).filter(WG.id == execution.execution_group_id).first() if getattr(execution, 'execution_group_id', None) else None
-        if not group or not group.judge_prompt:
-            raise HTTPException(status_code=404, detail="ジャッジプロンプトが見つかりません")
-        try:
-            decrypted = encryption_service.decrypt(group.judge_prompt)
-        except Exception:
-            decrypted = group.judge_prompt
-        model_type = group.judge_model or model_type
+        if not group:
+            raise HTTPException(status_code=404, detail="ジャッジのグループが見つかりません")
+        if group.judge_prompt:
+            try:
+                decrypted = encryption_service.decrypt(group.judge_prompt)
+            except Exception:
+                decrypted = group.judge_prompt
+            model_type = group.judge_model or model_type
+        else:
+            # 自動ジャッジ: input_data内のjudge_instructionsをプロンプトとして使用
+            judge_input = {}
+            if execution.input_data:
+                try:
+                    judge_input = json.loads(execution.input_data)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            wf_exec_j = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution.workflow_execution_id).first()
+            wf_j = db.query(Workflow).filter(Workflow.id == wf_exec_j.workflow_id).first() if wf_exec_j else None
+            decrypted = judge_input.get("judge_instructions", "")
+            if not decrypted:
+                from app.services.auto_orchestration import _build_judge_prompt
+                decrypted = _build_judge_prompt(
+                    getattr(wf_j, 'name', '') if wf_j else '',
+                    getattr(wf_j, 'description', '') if wf_j else '',
+                    group.group_name or f"Group {group.group_order}",
+                    []
+                )
+            model_type = group.judge_model or (getattr(wf_j, 'parent_model_type', None) if wf_j else None) or model_type
     elif execution.skill_id:
         # 通常スキル: skills テーブルから復号
         skill = db.query(Skill).filter(Skill.id == execution.skill_id).first()
@@ -302,15 +338,18 @@ async def get_execution_bundle(
         decrypted = encryption_service.decrypt(skill.encrypted_content)
         model_type = skill.model_type or model_type
     elif execution.workflow_execution_id:
-        # 親スキル: ワークフローから復号
-        from app.models import Workflow, WorkflowExecution as WFExec
-        wf_exec = db.query(WFExec).filter(WFExec.id == execution.workflow_execution_id).first()
+        # 親スキル: ワークフローから復号 or 自動生成
+        wf_exec = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution.workflow_execution_id).first()
         if not wf_exec:
             raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
         workflow = db.query(Workflow).filter(Workflow.id == wf_exec.workflow_id).first()
-        if not workflow or not workflow.encrypted_parent_content:
-            raise HTTPException(status_code=404, detail="親スキルが設定されていません")
-        decrypted = encryption_service.decrypt(workflow.encrypted_parent_content)
+        if not workflow:
+            raise HTTPException(status_code=404, detail="ワークフローが見つかりません")
+        if workflow.encrypted_parent_content:
+            decrypted = encryption_service.decrypt(workflow.encrypted_parent_content)
+        else:
+            from app.services.auto_orchestration import generate_leader_prompt
+            decrypted = generate_leader_prompt(workflow.name or "", workflow.description or "")
         model_type = workflow.parent_model_type or model_type
     else:
         raise HTTPException(status_code=404, detail="スキルが見つかりません")
