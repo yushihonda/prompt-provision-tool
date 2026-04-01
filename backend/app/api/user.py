@@ -50,7 +50,9 @@ async def get_user_dashboard_stats(
         "available_skills": available_skills,
         "executions_this_month": executions_this_month,
         "total_tokens_this_month": total_tokens_this_month,
-        "total_cost_this_month": total_cost_this_month
+        "total_cost_this_month": total_cost_this_month,
+        "total_executions": current_user.total_executions or 0,
+        "total_tokens": current_user.total_tokens or 0,
     }
 
 
@@ -442,6 +444,12 @@ async def get_user_workflow_detail(
         for ws in sorted(grp.skills, key=lambda s: s.order_in_group or s.skill_order or 0):
             s = ws.skill
             if s:
+                input_mapping_parsed = None
+                if ws.input_mapping:
+                    try:
+                        input_mapping_parsed = json.loads(ws.input_mapping) if isinstance(ws.input_mapping, str) else ws.input_mapping
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 grp_skills.append({
                     "skill_id": s.id,
                     "skill_name": s.name,
@@ -450,6 +458,7 @@ async def get_user_workflow_detail(
                     "skill_display_name": ws.skill_name or s.name,
                     "workflow_skill_id": ws.id,
                     "skill_order": ws.skill_order,
+                    "input_mapping": input_mapping_parsed,
                 })
         groups_data.append({
             "id": grp.id,
@@ -553,6 +562,8 @@ async def list_my_executions(
             "output_format": output_format,
             "skill_name": skill_name,
             "execution_role": getattr(execution, 'execution_role', None),
+            "execution_group_id": getattr(execution, 'execution_group_id', None),
+            "reflection_loop": getattr(execution, 'reflection_loop', 0),
             "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
         }
         items.append(execution_dict)
@@ -578,12 +589,21 @@ async def get_workflow_execution_status(
     ).first()
     if not wf_exec:
         raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
+    blackboard_keys = []
+    if wf_exec.blackboard_data:
+        try:
+            bb = json.loads(wf_exec.blackboard_data)
+            blackboard_keys = list(bb.keys())
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return {
         "id": wf_exec.id,
         "status": wf_exec.status,
         "error_message": wf_exec.error_message,
         "current_step": wf_exec.current_step,
         "total_steps": wf_exec.total_steps,
+        "blackboard_keys": blackboard_keys,
     }
 
 

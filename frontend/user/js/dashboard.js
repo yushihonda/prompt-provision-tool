@@ -12,10 +12,11 @@ async function loadDashboardStats() {
         const stats = await apiRequest('/api/user/dashboard');
 
         document.getElementById('available-skills').textContent = stats.available_skills;
-        document.getElementById('executions-month').textContent = stats.executions_this_month;
+        document.getElementById('total-executions').textContent = (stats.total_executions || 0).toLocaleString();
+        document.getElementById('executions-month').textContent = (stats.executions_this_month || 0).toLocaleString();
 
-        const tokens = stats.total_tokens_this_month || 0;
-        document.getElementById('total-tokens-month').textContent = tokens.toLocaleString();
+        document.getElementById('total-tokens').textContent = (stats.total_tokens || 0).toLocaleString();
+        document.getElementById('total-tokens-month').textContent = (stats.total_tokens_this_month || 0).toLocaleString();
 
         const cost = stats.total_cost_this_month || 0;
         document.getElementById('total-cost-month').textContent = `$${cost.toFixed(2)}`;

@@ -256,8 +256,15 @@ def _check_quality_gate_inline(ws, output_text: str) -> dict:
     if gate_type == "disabled" or not ws.quality_gate_prompt:
         return {"pass": True, "critique": ""}
 
+    # プロンプトが暗号化されている場合は復号
+    raw_prompt = ws.quality_gate_prompt
+    try:
+        raw_prompt = encryption_service.decrypt(raw_prompt)
+    except Exception:
+        pass  # 暗号化されていない場合はそのまま使う
+
     if gate_type == "regex":
-        pattern = ws.quality_gate_prompt
+        pattern = raw_prompt
         try:
             if re.search(pattern, output_text):
                 return {"pass": True, "critique": ""}
@@ -268,7 +275,7 @@ def _check_quality_gate_inline(ws, output_text: str) -> dict:
     if gate_type == "json_schema":
         try:
             parsed = json.loads(output_text)
-            schema = json.loads(ws.quality_gate_prompt)
+            schema = json.loads(raw_prompt)
             missing = [k for k in schema.get("required", []) if k not in parsed]
             if missing:
                 return {"pass": False, "critique": f"必須フィールドが不足: {', '.join(missing)}"}

@@ -203,7 +203,7 @@ class WorkflowExecution(Base):
     global_input_data = Column(Text)
     per_skill_input_data = Column(Text)  # JSON: {workflow_skill_id: {field: value}}
     continuation_lock_version = Column(Integer, nullable=False, default=0, server_default="0")  # 楽観ロック
-    blackboard_data = Column(Text, nullable=True)  # JSON: 共有メモリ (Blackboard)
+    blackboard_data = Column(Text(length=16777215), nullable=True)  # MEDIUMTEXT: 共有メモリ (Blackboard)
     dynamic_plan_data = Column(Text, nullable=True)  # JSON: 動的分解プラン
     error_message = Column(Text)
     started_at = Column(DateTime(timezone=True), server_default=func.now())

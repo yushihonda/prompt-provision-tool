@@ -153,6 +153,10 @@ def trigger_workflow_continuation(
                 _handle_quality_gate_result(db, wf_exec, execution)
         except Exception as e:
             logger.error(f"Failed to handle quality gate result: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
         return
 
     # --- スーパーバイザー完了 (Feature 3) ---
@@ -166,6 +170,10 @@ def trigger_workflow_continuation(
                 _handle_supervisor_result(db, wf_exec, execution)
         except Exception as e:
             logger.error(f"Failed to handle supervisor result: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
         return
 
     # --- ジャッジ完了 (Feature 5) → ジャッジ出力をBlackboardに保存して通常継続 ---
@@ -187,6 +195,10 @@ def trigger_workflow_continuation(
                 db.commit()
         except Exception as e:
             logger.error(f"Failed to handle judge result: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
         # ジャッジ後は通常のWF継続
         try:
             from app.tasks.execution_tasks import continue_workflow_execution
@@ -230,6 +242,10 @@ def trigger_workflow_continuation(
             db.commit()
     except Exception as e:
         logger.warning(f"Blackboard auto-write failed: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
     # 品質ゲートチェック (Feature 1)
     if execution.status == "success" and execution.workflow_skill_id:
