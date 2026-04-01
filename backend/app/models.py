@@ -210,6 +210,7 @@ class WorkflowExecution(Base):
     current_stage = Column(String(30), nullable=True)
     final_verdict = Column(String(10), nullable=True)
     handoff_summary = Column(Text, nullable=True)  # JSON: UI/監査向け派生サマリー
+    synthesis_log = Column(Text, nullable=True)  # JSON配列: coordinator synthesis events の時系列記録
     error_message = Column(Text)
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)

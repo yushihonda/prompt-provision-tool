@@ -21,6 +21,163 @@ from typing import Dict, List
 router = APIRouter(prefix="/api/user", tags=["ユーザー"])
 
 
+def _build_coordinator_view(db, wf_exec):
+    """
+    ワークフロー実行の現在状態から coordinator view と synthesis events を動的生成。
+    DB追加なし — 既存 Execution レコードから全て計算。
+    """
+    from app.services.agent_profiles import normalize_agent_profile
+
+    all_execs = (
+        db.query(Execution)
+        .filter(Execution.workflow_execution_id == wf_exec.id)
+        .order_by(Execution.id.asc())
+        .all()
+    )
+
+    # 分類
+    waiting_on = []
+    completed_steps = []
+    synthesis_events = []
+    last_completed_profile = None
+    last_completed_name = None
+
+    for ex in all_execs:
+        profile = normalize_agent_profile(getattr(ex, "agent_profile", None))
+        role = getattr(ex, "execution_role", None)
+        step_name = getattr(ex, "skill_name", None) or role or f"Step {ex.skill_order}"
+
+        if ex.status in ("pending", "pending_local", "processing"):
+            waiting_on.append({
+                "execution_id": ex.id,
+                "step_name": step_name,
+                "profile": profile,
+                "role": role,
+            })
+        elif ex.status == "success":
+            completed_steps.append(ex)
+            last_completed_profile = profile
+            last_completed_name = step_name
+
+            # synthesis event 生成
+            event = {
+                "event_type": "step_complete",
+                "execution_id": ex.id,
+                "stage": profile,
+                "step_name": step_name,
+            }
+            if role == "debate_judge":
+                event["event_type"] = "judge_complete"
+                event["summary"] = "並列グループの結果を合議・統合完了"
+            elif role == "supervisor":
+                event["event_type"] = "supervisor_decision"
+                event["summary"] = "スーパーバイザーが進行判断を完了"
+            elif role == "quality_gate":
+                event["event_type"] = "quality_gate_pass"
+                event["summary"] = "品質ゲートを通過"
+            elif not ex.workflow_skill_id:
+                event["event_type"] = "leader_complete"
+                event["summary"] = "全結果を統合して最終出力を生成"
+            else:
+                output_len = len(ex.output_data) if ex.output_data else 0
+                event["summary"] = f"{step_name}が完了（{output_len}文字）"
+
+            if getattr(ex, "reflection_loop", 0) > 0:
+                event["summary"] += f"（再実行{ex.reflection_loop}回目）"
+
+            # continuation メタデータがあれば付与
+            if ex.input_data:
+                try:
+                    inp = json.loads(ex.input_data)
+                    cont = inp.get("_ppt_continuation")
+                    if cont:
+                        event["continuation_of"] = cont.get("continuation_of_execution_id")
+                        event["continuation_reason"] = cont.get("continuation_reason")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            synthesis_events.append(event)
+
+        elif ex.status == "error":
+            event = {
+                "event_type": "step_error",
+                "execution_id": ex.id,
+                "stage": profile,
+                "step_name": step_name,
+                "summary": ex.error_message or "エラーが発生",
+            }
+            if role:
+                event["event_type"] = f"{role}_error"
+            synthesis_events.append(event)
+
+    # 次のアクション推定
+    if wf_exec.status == "success":
+        next_action = "completed"
+        latest_summary = "ワークフロー完了"
+    elif wf_exec.status == "error":
+        next_action = "failed"
+        latest_summary = wf_exec.error_message or "エラーで停止"
+    elif waiting_on:
+        waiting_names = [w["step_name"] for w in waiting_on]
+        if any(w["role"] == "debate_judge" for w in waiting_on):
+            next_action = "waiting_for_judge"
+            latest_summary = "並列結果のジャッジ合議を実行中"
+        elif any(w["role"] == "quality_gate" for w in waiting_on):
+            next_action = "waiting_for_quality_gate"
+            latest_summary = "品質ゲート検証中"
+        elif any(w["role"] == "supervisor" for w in waiting_on):
+            next_action = "waiting_for_supervisor"
+            latest_summary = "スーパーバイザー判定中"
+        elif any(not w.get("role") and not w.get("execution_id") for w in waiting_on):
+            next_action = "waiting_for_leader"
+            latest_summary = "リーダーが最終統合を実行中"
+        else:
+            next_action = "executing_steps"
+            latest_summary = f"{', '.join(waiting_names)} を実行中"
+    else:
+        next_action = "awaiting_continuation"
+        if last_completed_name:
+            latest_summary = f"{last_completed_name}が完了、次のステップへ進行中"
+        else:
+            latest_summary = "次のステップを準備中"
+
+    # handoff_summary から「なぜ」の情報を抽出
+    decision_why = None
+    handoff_key_points = []
+    handoff_next_hint = None
+    if getattr(wf_exec, "handoff_summary", None):
+        try:
+            hs = json.loads(wf_exec.handoff_summary) if isinstance(wf_exec.handoff_summary, str) else wf_exec.handoff_summary
+            if isinstance(hs, dict):
+                hs_summary = hs.get("summary", "")
+                handoff_key_points = hs.get("key_points", []) or []
+                handoff_next_hint = hs.get("next_action_hint")
+                if hs_summary and hs_summary != "empty dict":
+                    decision_why = hs_summary
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # latest_summary に「なぜ」を付加
+    if decision_why and latest_summary and next_action not in ("completed", "failed"):
+        latest_summary = f"{latest_summary}（{decision_why[:100]}）"
+
+    coordinator_view = {
+        "current_stage": getattr(wf_exec, "current_stage", None),
+        "waiting_on": [f"execution:{w['execution_id']}" for w in waiting_on],
+        "waiting_details": waiting_on,
+        "completed_count": len(completed_steps),
+        "total_executions": len(all_execs),
+        "last_decision": f"{last_completed_name} ({last_completed_profile})" if last_completed_name else None,
+        "why": decision_why,
+        "key_points": handoff_key_points[:5],
+        "next_action_hint": handoff_next_hint,
+        "next_expected_action": next_action,
+        "latest_summary": latest_summary,
+    }
+
+    return coordinator_view, synthesis_events
+
+
 # ==================== ダッシュボード ====================
 @router.get("/dashboard", response_model=UserDashboardStats)
 async def get_user_dashboard_stats(
@@ -599,7 +756,7 @@ async def get_workflow_execution_status(
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_user)
 ):
-    """ワークフロー実行のステータスを取得"""
+    """ワークフロー実行のステータスを取得（coordinator view 付き）"""
     wf_exec = db.query(WorkflowExecution).filter(
         WorkflowExecution.id == wf_execution_id,
         WorkflowExecution.account_id == current_user.id,
@@ -621,6 +778,18 @@ async def get_workflow_execution_status(
         except (json.JSONDecodeError, TypeError):
             handoff_summary = None
 
+    # coordinator view は動的計算、synthesis_events はDB優先
+    coordinator_view, computed_events = _build_coordinator_view(db, wf_exec)
+    # DB に保存済みの synthesis_log があればそれを使う（タイムスタンプ付き）
+    synthesis_events = computed_events
+    if getattr(wf_exec, "synthesis_log", None):
+        try:
+            db_events = json.loads(wf_exec.synthesis_log)
+            if isinstance(db_events, list) and len(db_events) > 0:
+                synthesis_events = db_events
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return {
         "id": wf_exec.id,
         "status": wf_exec.status,
@@ -631,6 +800,8 @@ async def get_workflow_execution_status(
         "final_verdict": getattr(wf_exec, "final_verdict", None),
         "handoff_summary": handoff_summary,
         "blackboard_keys": blackboard_keys,
+        "coordinator_view": coordinator_view,
+        "synthesis_events": synthesis_events,
     }
 
 

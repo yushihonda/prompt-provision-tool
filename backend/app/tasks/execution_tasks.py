@@ -477,6 +477,14 @@ def _handle_quality_gate_result(db, wf_exec, gate_execution):
     skill_input["previous_attempt_output"] = original_exec.output_data if original_exec else ""
     skill_input["quality_critique"] = verdict.get("critique", "")
     skill_input["reflection_loop"] = current_loop + 1
+    # follow-up continuation メタデータ
+    skill_input["_ppt_continuation"] = {
+        "continuation_of_execution_id": original_exec.id if original_exec else None,
+        "continuation_reason": "reflection_retry",
+        "delta_instruction": f"品質ゲートが不合格でした: {verdict.get('critique', '')}。この指摘を踏まえて改善してください。",
+        "previous_execution_summary": verdict.get("critique", "品質基準を満たさず"),
+        "reflection_loop": current_loop + 1,
+    }
 
     new_exec = Execution(
         account_id=wf_exec.account_id,
@@ -1164,6 +1172,14 @@ def _retry_skill(db, wf_exec, ws, failed_ex, per_skill_input,
     agent_profile = _augment_skill_input_with_profile(
         skill_input, wf_exec, workflow, ws, skill, structured_context
     )
+    # follow-up continuation メタデータ
+    skill_input["_ppt_continuation"] = {
+        "continuation_of_execution_id": failed_ex.id,
+        "continuation_reason": "error_retry",
+        "delta_instruction": f"前回の実行 (ID:{failed_ex.id}) がエラーで失敗しました: {failed_ex.error_message or 'unknown'}。同じタスクを再試行してください。",
+        "previous_execution_summary": failed_ex.error_message or "エラーで失敗",
+        "retry_attempt": failed_ex.retry_count + 1,
+    }
     execution = Execution(
         account_id=wf_exec.account_id,
         skill_id=skill.id,

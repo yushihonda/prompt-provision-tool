@@ -121,10 +121,11 @@ function renderSkillRow(execution) {
 
 function renderWorkflowRow(group) {
     const execs = group.executions;
-    const totalTime = execs.reduce((s, e) => s + (e.execution_time || 0), 0);
-    const totalTokens = execs.reduce((s, e) => s + (e.tokens_used || 0), 0);
+    const normalExecs = execs.filter(e => !e.execution_role);
+    const totalTime = normalExecs.reduce((s, e) => s + (e.execution_time || 0), 0);
+    const totalTokens = normalExecs.reduce((s, e) => s + (e.tokens_used || 0), 0);
     const overallStatus = getOverallStatus(execs);
-    const stepExecs = execs.filter(e => e.skill_order && e.workflow_skill_id);
+    const stepExecs = normalExecs.filter(e => e.skill_order && e.workflow_skill_id);
     const weId = group.workflowExecutionId;
 
     // 各スキルの小さなバー
@@ -217,10 +218,11 @@ async function showWorkflowDetail(weId) {
     const workflowName = execs[0]?.workflow_name || 'ワークフロー';
     const accountId = execs[0]?.account_id || '-';
 
-    const leaderExec = execs.find(e => !e.workflow_skill_id || e.workflow_skill_id === null);
-    const stepExecs = execs.filter(e => e.skill_order && e.workflow_skill_id);
-    const totalTime = execs.reduce((s, e) => s + (e.execution_time || 0), 0);
-    const totalTokens = execs.reduce((s, e) => s + (e.tokens_used || 0), 0);
+    const normalExecs = execs.filter(e => !e.execution_role);
+    const leaderExec = normalExecs.find(e => !e.workflow_skill_id || e.workflow_skill_id === null);
+    const stepExecs = normalExecs.filter(e => e.skill_order && e.workflow_skill_id);
+    const totalTime = normalExecs.reduce((s, e) => s + (e.execution_time || 0), 0);
+    const totalTokens = normalExecs.reduce((s, e) => s + (e.tokens_used || 0), 0);
 
     // グループ情報を取得
     let groups = null;
@@ -243,6 +245,8 @@ async function showWorkflowDetail(weId) {
         tokens: exec.tokens_used,
         workflowSkillId: exec.workflow_skill_id,
         skillId: exec.skill_id,
+        inputData: exec.input_data || null,
+        agentProfile: exec.agent_profile || null,
     }));
     const finalOutput = leaderExec?.output_data || '';
     const resultHtml = execDetailModal.buildWorkflowFlowHTML({

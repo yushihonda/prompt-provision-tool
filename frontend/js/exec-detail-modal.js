@@ -177,7 +177,7 @@
             if (s.skillId) stepBySkillId[s.skillId] = s;
         });
 
-        // スキルノードの出力HTML（details トグル）
+        // スキルノードの出力+入力HTML（details トグル）
         function skillBody(step) {
             if (!step) return '';
             const sStatus = step.status || 'pending';
@@ -187,28 +187,77 @@
             } else if (sStatus === 'error' && step.errorMessage) {
                 bodyHtml = `<div style="padding:6px 8px; background:rgba(220,53,69,0.15); border-radius:4px; font-size:11px; color:#dc3545;">${esc(step.errorMessage)}</div>`;
             }
-            return `<details style="margin-top:6px;"><summary style="font-size:10px; color:rgba(255,255,255,0.5); cursor:pointer; user-select:none;">出力を表示</summary><div style="margin-top:4px;">${step.model ? `<div style="font-size:10px; color:#888; margin-bottom:4px;">${step.time ? step.time + 'ms' : '-'} | ${step.tokens || '-'} tokens</div>` : ''}${bodyHtml || '<div style="color:rgba(255,255,255,0.4); font-size:11px;">出力なし</div>'}</div></details>`;
+            // 入力表示（_ppt_ メタを除外）
+            let inputHtml = '';
+            if (step.inputData) {
+                try {
+                    const inp = typeof step.inputData === 'string' ? JSON.parse(step.inputData) : step.inputData;
+                    const filtered = {};
+                    for (const [k, v] of Object.entries(inp)) {
+                        if (!k.startsWith('_ppt_')) filtered[k] = v;
+                    }
+                    if (Object.keys(filtered).length > 0) {
+                        inputHtml = `<details style="margin-top:4px;"><summary style="font-size:10px; color:rgba(255,255,255,0.4); cursor:pointer; user-select:none;">入力を表示</summary><div style="margin-top:4px; padding:6px; background:rgba(0,0,0,0.2); border-radius:4px; max-height:100px; overflow-y:auto;"><pre style="color:rgba(255,255,255,0.6); white-space:pre-wrap; word-wrap:break-word; font-size:10px; line-height:1.4; margin:0;">${esc(JSON.stringify(filtered, null, 2))}</pre></div></details>`;
+                    }
+                } catch {}
+            }
+            // 入力 → 出力 の順で表示
+            return `${inputHtml}<details style="margin-top:6px;"><summary style="font-size:10px; color:rgba(255,255,255,0.5); cursor:pointer; user-select:none;">出力を表示</summary><div style="margin-top:4px;">${step.model ? `<div style="font-size:10px; color:#888; margin-bottom:4px;">${step.time ? step.time + 'ms' : '-'} | ${step.tokens || '-'} tokens</div>` : ''}${bodyHtml || '<div style="color:rgba(255,255,255,0.4); font-size:11px;">出力なし</div>'}</div></details>`;
         }
 
+        const cv = stageMeta?.coordinatorView;
+        const events = stageMeta?.synthesisEvents || [];
         const stage = stageMeta?.currentStage || '-';
         const verdict = stageMeta?.finalVerdict || '-';
         const handoffSummary = stageMeta?.handoffSummary?.summary || '';
+        const keyPoints = stageMeta?.handoffSummary?.key_points || [];
         const handoffRefs = Array.isArray(stageMeta?.handoffSummary?.blackboard_refs) ? stageMeta.handoffSummary.blackboard_refs : [];
         const failedStep = allStepResults.find(step => step.status === 'error');
         const failedStage = failedStep?.agentProfile || null;
+        const completedCount = cv?.completed_count || allStepResults.filter(s => s.status === 'success').length;
+        const totalExecs = cv?.total_executions || allStepResults.length;
+        const latestSummary = cv?.latest_summary || '';
 
-        let html = `
-            <div style="padding:10px 14px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12); border-radius:8px; margin-bottom:10px;">
-                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:${handoffSummary || handoffRefs.length ? '8px' : '0'};">
-                    <span style="font-size:11px; color:rgba(255,255,255,0.55);">Current Stage</span>
-                    <span style="font-size:12px; font-weight:bold; color:#fff;">${esc(formatProfile(stage))}</span>
-                    <span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Final Verdict</span>
-                    <span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : 'rgba(255,255,255,0.7)'};">${esc(verdict)}</span>
-                    ${failedStage ? `<span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Failure Stage</span><span style="font-size:12px; font-weight:bold; color:#ff8a80;">${esc(formatProfile(failedStage))}</span>` : ''}
-                </div>
-                ${handoffSummary ? `<div style="font-size:11px; color:rgba(255,255,255,0.75); margin-bottom:${handoffRefs.length ? '6px' : '0'};">${esc(handoffSummary)}</div>` : ''}
-                ${handoffRefs.length ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${handoffRefs.map(ref => `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.15); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(ref)}</span>`).join('')}</div>` : ''}
-            </div>`;
+        let html = `<div style="padding:10px 14px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12); border-radius:8px; margin-bottom:10px;">`;
+        // 1行目: Stage + Verdict + 進捗
+        html += `<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">`;
+        html += `<span style="font-size:11px; color:rgba(255,255,255,0.55);">Stage</span>`;
+        html += `<span style="font-size:12px; font-weight:bold; color:#fff;">${esc(formatProfile(stage))}</span>`;
+        if (verdict !== '-') {
+            html += `<span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Verdict</span>`;
+            html += `<span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : 'rgba(255,255,255,0.7)'};">${esc(verdict)}</span>`;
+        }
+        html += `<span style="font-size:10px; color:rgba(255,255,255,0.4); margin-left:auto;">${completedCount}/${totalExecs} steps</span>`;
+        if (failedStage) {
+            html += `<span style="font-size:12px; font-weight:bold; color:#ff8a80;">${esc(formatProfile(failedStage))} failed</span>`;
+        }
+        html += `</div>`;
+        // coordinator summary
+        if (latestSummary) {
+            html += `<div style="font-size:11px; color:rgba(255,255,255,0.8); margin-bottom:6px;">${esc(latestSummary)}</div>`;
+        }
+        // synthesis events タイムライン
+        if (events.length > 0) {
+            html += `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px;">`;
+            const recentEvents = events.slice(-8);
+            for (const ev of recentEvents) {
+                const evIcon = { 'step_complete': '✓', 'judge_complete': '⚖', 'supervisor_decision': '👁', 'quality_gate_pass': '🔍', 'leader_complete': '★', 'step_error': '✗' }[ev.event_type] || '•';
+                const evColor = (ev.event_type || '').includes('error') ? '#dc3545' : '#28a745';
+                html += `<span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.06); border-radius:10px; color:rgba(255,255,255,0.65); display:inline-flex; align-items:center; gap:3px;"><span style="color:${evColor};">${evIcon}</span>${esc(ev.summary || ev.step_name || '')}</span>`;
+            }
+            html += `</div>`;
+        }
+        // key_points
+        if (keyPoints.length > 0) {
+            html += `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:4px;">`;
+            keyPoints.forEach(kp => { html += `<span style="font-size:10px; padding:2px 8px; background:rgba(76,175,80,0.12); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(kp)}</span>`; });
+            html += `</div>`;
+        }
+        // blackboard refs
+        if (handoffRefs.length) {
+            html += `<div style="display:flex; flex-wrap:wrap; gap:4px;">${handoffRefs.map(ref => `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.15); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(ref)}</span>`).join('')}</div>`;
+        }
+        html += `</div>`;
 
         // --- 親スキル: タスク振り分け ---
         html += `<div style="display:flex; align-items:center; gap:10px; padding:12px 16px; background:rgba(156,39,176,0.12); border:1px solid rgba(156,39,176,0.3); border-radius:8px; margin-bottom:4px;">

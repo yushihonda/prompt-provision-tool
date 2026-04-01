@@ -47,6 +47,10 @@ AGENT_PROFILE_PROMPTS = {
 - 文章主体でもよいが、可能なら見出し・箇条書き・JSON 互換の構造を保つこと
 - 重要な結論、根拠、次に渡すべきポイントを明示すること
 - 検証専用 step でない限り、VERDICT 行は必須ではない
+- 可能であれば、出力末尾に以下の形式で要約を付けること（任意・なくても可）:
+```json
+{"summary": "短い要約", "key_points": ["要点1", "要点2"], "next_action_hint": "次ステップへの提案"}
+```
 
 # ワークフロー文脈
 Workflow Name: {{WORKFLOW_NAME}}
@@ -119,6 +123,11 @@ Workflow Goal: {{WORKFLOW_GOAL}}
 # Resolved Input Data
 {{RESOLVED_INPUT_DATA}}
 
+可能であれば、出力末尾に以下の形式で要約を付けること（任意・なくても可）:
+```json
+{"summary": "短い要約", "key_points": ["要点1", "要点2"], "next_action_hint": "次ステップへの提案"}
+```
+
 あなたは探索専門です。実装や変更ではなく、調査結果と後続 step に有用な整理結果を返してください。
 """,
     "plan": """あなたは Plan Agent です。
@@ -177,6 +186,11 @@ Workflow Goal: {{WORKFLOW_GOAL}}
 # Resolved Input Data
 {{RESOLVED_INPUT_DATA}}
 
+可能であれば、出力末尾に以下の形式で要約を付けること（任意・なくても可）:
+```json
+{"summary": "短い要約", "key_points": ["要点1", "要点2"], "next_action_hint": "次ステップへの提案"}
+```
+
 あなたは設計専門です。実装は行わず、後続の Implement が迷わない具体的な計画を返してください。
 """,
     "implement": """あなたは Implement Agent です。
@@ -229,6 +243,11 @@ Workflow Goal: {{WORKFLOW_GOAL}}
 
 # Resolved Input Data
 {{RESOLVED_INPUT_DATA}}
+
+可能であれば、出力末尾に以下の形式で要約を付けること（任意・なくても可）:
+```json
+{"summary": "短い要約", "key_points": ["要点1", "要点2"], "next_action_hint": "次ステップへの提案"}
+```
 
 与えられた方針を実行し、この step に必要な成果物を完成させてください。
 """,

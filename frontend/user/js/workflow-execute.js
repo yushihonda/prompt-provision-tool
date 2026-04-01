@@ -7,7 +7,7 @@ let stepExecutions = new Map(); // skill_order -> { executionId, status, output,
 let allExecutions = []; // 全ての実行履歴
 let displayedHistoryCount = 3; // 表示する履歴の件数
 let streamingWorkers = new Map(); // executionId -> worker
-let _wfStageMeta = { currentStage: null, finalVerdict: null, handoffSummary: null };
+let _wfStageMeta = { currentStage: null, finalVerdict: null, handoffSummary: null, coordinatorView: null, synthesisEvents: [] };
 
 async function loadWorkflowDetail() {
     workflowId = getQueryParam('id');
@@ -183,6 +183,8 @@ async function restoreActiveWorkflowExecution() {
                     currentStage: wfStatusRestore?.current_stage || null,
                     finalVerdict: wfStatusRestore?.final_verdict || null,
                     handoffSummary: wfStatusRestore?.handoff_summary || null,
+                    coordinatorView: wfStatusRestore?.coordinator_view || null,
+                    synthesisEvents: wfStatusRestore?.synthesis_events || [],
                 };
             } catch (e) {}
 
@@ -564,25 +566,88 @@ function formatStageLabel(stage) {
 }
 
 function renderWorkflowStageSummary(esc) {
+    const cv = _wfStageMeta.coordinatorView;
+    const events = _wfStageMeta.synthesisEvents || [];
     const stage = formatStageLabel(_wfStageMeta.currentStage);
     const verdict = _wfStageMeta.finalVerdict || '-';
     const refs = Array.isArray(_wfStageMeta.handoffSummary?.blackboard_refs) ? _wfStageMeta.handoffSummary.blackboard_refs : [];
-    const summary = _wfStageMeta.handoffSummary?.summary || '';
     const failedStep = Array.from(stepExecutions.values()).find(step => step.status === 'error');
     const failedStage = failedStep?.agentProfile ? formatStageLabel(failedStep.agentProfile) : null;
-    return `
-        <div style="padding:10px 14px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12); border-radius:8px; margin-bottom:10px;">
-            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:${summary || refs.length || failedStage ? '8px' : '0'};">
-                <span style="font-size:11px; color:rgba(255,255,255,0.55);">Current Stage</span>
-                <span style="font-size:12px; font-weight:bold; color:#fff;">${esc(stage)}</span>
-                <span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Final Verdict</span>
-                <span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : 'rgba(255,255,255,0.7)'};">${esc(verdict)}</span>
-                ${failedStage ? `<span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Failure Stage</span><span style="font-size:12px; font-weight:bold; color:#ff8a80;">${esc(failedStage)}</span>` : ''}
-            </div>
-            ${summary ? `<div style="font-size:11px; color:rgba(255,255,255,0.75); margin-bottom:${refs.length ? '6px' : '0'};">${esc(summary)}</div>` : ''}
-            ${refs.length ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${refs.map(ref => `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.15); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(ref)}</span>`).join('')}</div>` : ''}
-        </div>
-    `;
+
+    // coordinator view: 現在のステータスバー
+    const latestSummary = cv?.latest_summary || '';
+    const nextAction = cv?.next_expected_action || '';
+    const completedCount = cv?.completed_count || 0;
+    const totalExecs = cv?.total_executions || 0;
+
+    // ステータスアイコン
+    const actionIcon = {
+        'completed': '✓', 'failed': '✗', 'executing_steps': '⟳',
+        'waiting_for_judge': '⚖', 'waiting_for_quality_gate': '🔍',
+        'waiting_for_supervisor': '👁', 'waiting_for_leader': '⟳',
+        'awaiting_continuation': '→',
+    }[nextAction] || '→';
+    const actionColor = nextAction === 'completed' ? '#28a745' : nextAction === 'failed' ? '#dc3545' : '#64b5f6';
+
+    let html = `<div style="padding:10px 14px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12); border-radius:8px; margin-bottom:10px;">`;
+
+    // 1行目: Stage + Verdict + 進捗
+    html += `<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:${latestSummary || events.length ? '8px' : '0'};">`;
+    html += `<span style="font-size:11px; color:rgba(255,255,255,0.55);">Stage</span>`;
+    html += `<span style="font-size:12px; font-weight:bold; color:#fff;">${esc(stage)}</span>`;
+    if (verdict !== '-') {
+        html += `<span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Verdict</span>`;
+        html += `<span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : 'rgba(255,255,255,0.7)'};">${esc(verdict)}</span>`;
+    }
+    if (totalExecs > 0) {
+        html += `<span style="font-size:10px; color:rgba(255,255,255,0.4); margin-left:auto;">${completedCount}/${totalExecs} steps</span>`;
+    }
+    if (failedStage) {
+        html += `<span style="font-size:12px; font-weight:bold; color:#ff8a80; margin-left:8px;">${esc(failedStage)} failed</span>`;
+    }
+    html += `</div>`;
+
+    // 2行目: coordinator latest_summary
+    if (latestSummary) {
+        html += `<div style="display:flex; align-items:center; gap:6px; margin-bottom:${events.length > 0 ? '8px' : '0'};">`;
+        html += `<span style="color:${actionColor}; font-size:12px;">${actionIcon}</span>`;
+        html += `<span style="font-size:11px; color:rgba(255,255,255,0.8);">${esc(latestSummary)}</span>`;
+        html += `</div>`;
+    }
+
+    // 3行目: synthesis events タイムライン（最新5件）
+    if (events.length > 0) {
+        const recentEvents = events.slice(-5);
+        html += `<div style="display:flex; flex-wrap:wrap; gap:4px;">`;
+        for (const ev of recentEvents) {
+            const evIcon = {
+                'step_complete': '✓', 'judge_complete': '⚖', 'supervisor_decision': '👁',
+                'quality_gate_pass': '🔍', 'leader_complete': '★',
+                'step_error': '✗', 'debate_judge_error': '⚖✗',
+            }[ev.event_type] || '•';
+            const evColor = ev.event_type.includes('error') ? '#dc3545' : '#28a745';
+            html += `<span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.06); border-radius:10px; color:rgba(255,255,255,0.65); display:inline-flex; align-items:center; gap:3px;">`;
+            html += `<span style="color:${evColor};">${evIcon}</span>${esc(ev.summary || ev.step_name || '')}`;
+            html += `</span>`;
+        }
+        html += `</div>`;
+    }
+
+    // key_points
+    const cvKeyPoints = cv?.key_points || [];
+    if (cvKeyPoints.length > 0) {
+        html += `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;">`;
+        cvKeyPoints.forEach(kp => { html += `<span style="font-size:10px; padding:2px 8px; background:rgba(76,175,80,0.12); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(kp)}</span>`; });
+        html += `</div>`;
+    }
+
+    // Blackboard refs
+    if (refs.length) {
+        html += `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">${refs.map(ref => `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.15); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(ref)}</span>`).join('')}</div>`;
+    }
+
+    html += `</div>`;
+    return html;
 }
 
 function renderFlowView(wfDetail, allStepStatuses) {
@@ -1404,6 +1469,8 @@ async function checkAndStartNextStep(wfExecId, completedStepOrder) {
             currentStage: wfStatus?.current_stage || null,
             finalVerdict: wfStatus?.final_verdict || null,
             handoffSummary: wfStatus?.handoff_summary || null,
+            coordinatorView: wfStatus?.coordinator_view || null,
+            synthesisEvents: wfStatus?.synthesis_events || [],
         };
 
         // 最新の通常スキルのステータスをフロービューに反映
@@ -1621,11 +1688,12 @@ function renderHistory() {
             if (!e.executed_at) return min;
             return !min || e.executed_at < min ? e.executed_at : min;
         }, null);
-        const totalTime = execs.reduce((sum, e) => sum + (e.execution_time || 0), 0);
-        const totalTokens = execs.reduce((sum, e) => sum + (e.tokens_used || 0), 0);
+        const normalExecsHist = execs.filter(e => !e.execution_role);
+        const totalTime = normalExecsHist.reduce((sum, e) => sum + (e.execution_time || 0), 0);
+        const totalTokens = normalExecsHist.reduce((sum, e) => sum + (e.tokens_used || 0), 0);
         const overallStatus = _wfOverallStatus(execs);
         const statusColor = _wfStatusColor(overallStatus);
-        const stepExecs = execs.filter(e => e.skill_order && e.workflow_skill_id);
+        const stepExecs = normalExecsHist.filter(e => e.skill_order && e.workflow_skill_id);
 
         // 各スキルの小さなバー（history.html と同じ形式）
         const skillBars = stepExecs.map(e => {
@@ -1714,10 +1782,11 @@ async function showWorkflowHistoryDetail(weId) {
         const workflowName = execs[0]?.workflow_name || workflowDetail?.workflow?.name || 'ワークフロー';
         const wfStatus = await apiRequest(`/api/user/workflow-executions/${weId}/status`);
 
-        const leaderExec = execs.find(e => !e.workflow_skill_id || e.workflow_skill_id === null);
-        const stepExecs = execs.filter(e => e.skill_order && e.workflow_skill_id);
-        const totalTime = execs.reduce((sum, e) => sum + (e.execution_time || 0), 0);
-        const totalTokens = execs.reduce((sum, e) => sum + (e.tokens_used || 0), 0);
+        const normalExecs = execs.filter(e => !e.execution_role);
+        const leaderExec = normalExecs.find(e => !e.workflow_skill_id || e.workflow_skill_id === null);
+        const stepExecs = normalExecs.filter(e => e.skill_order && e.workflow_skill_id);
+        const totalTime = normalExecs.reduce((sum, e) => sum + (e.execution_time || 0), 0);
+        const totalTokens = normalExecs.reduce((sum, e) => sum + (e.tokens_used || 0), 0);
 
         // グループ情報（このページでは workflowDetail が既にある）
         const groups = workflowDetail?.workflow?.groups || null;
@@ -1734,6 +1803,7 @@ async function showWorkflowHistoryDetail(weId) {
             workflowSkillId: exec.workflow_skill_id,
             skillId: exec.skill_id,
             agentProfile: exec.agent_profile || null,
+            inputData: exec.input_data || null,
         }));
         const finalOutput = leaderExec?.output_data || '';
         const resultHtml = execDetailModal.buildWorkflowFlowHTML({
@@ -1742,6 +1812,8 @@ async function showWorkflowHistoryDetail(weId) {
                 currentStage: wfStatus?.current_stage || null,
                 finalVerdict: wfStatus?.final_verdict || null,
                 handoffSummary: wfStatus?.handoff_summary || null,
+                coordinatorView: wfStatus?.coordinator_view || null,
+                synthesisEvents: wfStatus?.synthesis_events || [],
             },
         });
 

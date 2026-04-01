@@ -106,11 +106,12 @@ function renderSkillRow(execution) {
 
 function renderWorkflowRow(group) {
     const execs = group.executions;
-    const totalTime = execs.reduce((s, e) => s + (e.execution_time || 0), 0);
-    const totalTokens = execs.reduce((s, e) => s + (e.tokens_used || 0), 0);
+    const normalExecs = execs.filter(e => !e.execution_role);
+    const totalTime = normalExecs.reduce((s, e) => s + (e.execution_time || 0), 0);
+    const totalTokens = normalExecs.reduce((s, e) => s + (e.tokens_used || 0), 0);
     const overallStatus = getOverallStatus(execs);
     const statusColor = getStatusColor(overallStatus);
-    const stepExecs = execs.filter(e => e.skill_order && e.workflow_skill_id);
+    const stepExecs = normalExecs.filter(e => e.skill_order && e.workflow_skill_id);
     const weId = group.workflowExecutionId;
 
     // 各スキルの小さなバー
@@ -218,10 +219,11 @@ async function showWorkflowDetail(weId) {
 
         const esc = execDetailModal.escapeHtml;
         const workflowName = execs[0]?.workflow_name || 'ワークフロー';
-        const leaderExec = execs.find(e => !e.workflow_skill_id || e.workflow_skill_id === null);
-        const stepExecs = execs.filter(e => e.skill_order && e.workflow_skill_id);
-        const totalTime = execs.reduce((s, e) => s + (e.execution_time || 0), 0);
-        const totalTokens = execs.reduce((s, e) => s + (e.tokens_used || 0), 0);
+        const normalExecs = execs.filter(e => !e.execution_role);
+        const leaderExec = normalExecs.find(e => !e.workflow_skill_id || e.workflow_skill_id === null);
+        const stepExecs = normalExecs.filter(e => e.skill_order && e.workflow_skill_id);
+        const totalTime = normalExecs.reduce((s, e) => s + (e.execution_time || 0), 0);
+        const totalTokens = normalExecs.reduce((s, e) => s + (e.tokens_used || 0), 0);
 
         // グループ情報を取得
         let groups = null;
@@ -244,10 +246,24 @@ async function showWorkflowDetail(weId) {
             tokens: exec.tokens_used,
             workflowSkillId: exec.workflow_skill_id,
             skillId: exec.skill_id,
+            inputData: exec.input_data || null,
+            agentProfile: exec.agent_profile || null,
         }));
         const finalOutput = leaderExec?.output_data || '';
+        // coordinator view / synthesis events を取得
+        let wfStatus = null;
+        try {
+            wfStatus = await apiRequest(`/api/user/workflow-executions/${weId}/status`);
+        } catch (e) { /* ignore */ }
         const resultHtml = execDetailModal.buildWorkflowFlowHTML({
             finalOutput, allStepResults, workflowName, groups,
+            stageMeta: {
+                currentStage: wfStatus?.current_stage || null,
+                finalVerdict: wfStatus?.final_verdict || null,
+                handoffSummary: wfStatus?.handoff_summary || null,
+                coordinatorView: wfStatus?.coordinator_view || null,
+                synthesisEvents: wfStatus?.synthesis_events || [],
+            },
         });
 
         const detailHTML = `

@@ -55,6 +55,23 @@ def _compute_overrides_for_step(db, execution) -> dict:
         return {}
 
 
+def append_synthesis_event(wf_exec, event: dict) -> None:
+    """synthesis_log に1件のイベントを追記する。"""
+    from datetime import datetime, timezone
+    events = []
+    if wf_exec.synthesis_log:
+        try:
+            events = json.loads(wf_exec.synthesis_log)
+        except (json.JSONDecodeError, TypeError):
+            events = []
+    event["timestamp"] = datetime.now(timezone.utc).isoformat()
+    events.append(event)
+    # 最大100件に制限
+    if len(events) > 100:
+        events = events[-100:]
+    wf_exec.synthesis_log = json.dumps(events, ensure_ascii=False)
+
+
 def _safe_json_loads(value, default=None):
     if value is None:
         return {} if default is None else default
@@ -66,9 +83,37 @@ def _safe_json_loads(value, default=None):
         return {} if default is None else default
 
 
+def _extract_structured_envelope(output: Optional[str]) -> Optional[dict]:
+    """出力からstructured result envelopeを抽出（任意対応）。
+    出力末尾の ```json ブロックまたはトップレベルJSONからsummary/key_pointsを探す。
+    見つからなければNoneを返す。"""
+    if not output:
+        return None
+    # まずトップレベルJSON
+    parsed = _safe_json_loads(output, None)
+    if isinstance(parsed, dict) and "summary" in parsed:
+        return parsed
+    # 末尾の```json...```ブロックを探す
+    import re
+    match = re.search(r'```json\s*\n(\{.*?\})\s*\n```', output, re.DOTALL)
+    if match:
+        try:
+            candidate = json.loads(match.group(1))
+            if isinstance(candidate, dict) and "summary" in candidate:
+                return candidate
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
 def _summarize_output(output: Optional[str]) -> str:
     if not output:
         return ""
+    # structured envelope があればそれを優先
+    envelope = _extract_structured_envelope(output)
+    if envelope and envelope.get("summary"):
+        return str(envelope["summary"])[:300]
+    # フォールバック
     parsed = _safe_json_loads(output, None)
     if isinstance(parsed, dict):
         keys = list(parsed.keys())
@@ -103,11 +148,11 @@ def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
 
     blackboard = _safe_json_loads(getattr(wf_exec, "blackboard_data", None), {})
     summary_source = execution.output_data if execution.status == "success" else (execution.error_message or execution.output_data)
-    wf_exec.handoff_summary = json.dumps({
+    envelope = _extract_structured_envelope(execution.output_data) if execution.status == "success" else None
+    handoff_data = {
         "schema_version": 1,
         "from_profile": profile,
         # to_profile は次 step の launch 時に _set_handoff_target_profile() が補完する。
-        # 次 step が存在しない終端 step では null のまま保持する。
         "to_profile": None,
         "source_execution_id": execution.id,
         "summary": _summarize_output(summary_source),
@@ -116,7 +161,47 @@ def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
             "blackboard_keys": len(handoff_refs),
         },
         "display_verdict": getattr(wf_exec, "final_verdict", None),
-    }, ensure_ascii=False)
+    }
+    # structured envelope があれば key_points と next_action_hint を含める
+    if envelope:
+        if envelope.get("key_points"):
+            handoff_data["key_points"] = envelope["key_points"][:10]
+        if envelope.get("next_action_hint"):
+            handoff_data["next_action_hint"] = str(envelope["next_action_hint"])[:200]
+    wf_exec.handoff_summary = json.dumps(handoff_data, ensure_ascii=False)
+
+    # synthesis event をDBに記録
+    role = getattr(execution, "execution_role", None)
+    step_name = getattr(execution, "skill_name", None) or role or f"Step {execution.skill_order}"
+    output_len = len(execution.output_data) if execution.output_data else 0
+    event = {
+        "execution_id": execution.id,
+        "stage": profile,
+        "step_name": step_name,
+    }
+    if execution.status == "success":
+        if role == "debate_judge":
+            event["event_type"] = "judge_complete"
+            event["summary"] = "並列グループの結果を合議・統合完了"
+        elif role == "supervisor":
+            event["event_type"] = "supervisor_decision"
+            event["summary"] = "スーパーバイザーが進行判断を完了"
+        elif role == "quality_gate":
+            event["event_type"] = "quality_gate_pass"
+            event["summary"] = "品質ゲートを通過"
+        elif not execution.workflow_skill_id:
+            event["event_type"] = "leader_complete"
+            event["summary"] = "全結果を統合して最終出力を生成"
+        else:
+            event["event_type"] = "step_complete"
+            event["summary"] = f"{step_name}が完了（{output_len}文字）"
+        if getattr(execution, "reflection_loop", 0) > 0:
+            event["summary"] += f"（再実行{execution.reflection_loop}回目）"
+    else:
+        event["event_type"] = f"{role}_error" if role else "step_error"
+        event["summary"] = execution.error_message or "エラーが発生"
+    append_synthesis_event(wf_exec, event)
+
     db.commit()
 
 

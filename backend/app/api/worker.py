@@ -323,11 +323,16 @@ async def _get_execution_bundle_inner(
             decrypted = judge_input.get("judge_instructions", "")
             if not decrypted:
                 from app.services.auto_orchestration import _build_judge_prompt
+                from app.models import WorkflowSkill as WS_j
+                group_skill_names = [
+                    ws_j.skill_name or f"Step {ws_j.skill_order}"
+                    for ws_j in db.query(WS_j).filter(WS_j.group_id == group.id).order_by(WS_j.order_in_group.asc()).all()
+                ]
                 decrypted = _build_judge_prompt(
                     getattr(wf_j, 'name', '') if wf_j else '',
                     getattr(wf_j, 'description', '') if wf_j else '',
                     group.group_name or f"Group {group.group_order}",
-                    []
+                    group_skill_names
                 )
             model_type = group.judge_model or (getattr(wf_j, 'parent_model_type', None) if wf_j else None) or model_type
     elif execution.skill_id:

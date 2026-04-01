@@ -94,6 +94,7 @@ class PersistWorkflowMetadataTests(unittest.TestCase):
             final_verdict=None,
             blackboard_data='{"plan.summary":"x"}',
             handoff_summary=None,
+            synthesis_log=None,
         )
         execution = SimpleNamespace(
             id=10,
@@ -103,6 +104,11 @@ class PersistWorkflowMetadataTests(unittest.TestCase):
             output_data="verification output without canonical verdict",
             error_message=None,
             input_data='{"_ppt_handoff_refs":["plan.summary"]}',
+            execution_role=None,
+            skill_name=None,
+            skill_order=1,
+            workflow_skill_id=10,
+            reflection_loop=0,
         )
         db = self._FakeSession(wf_exec)
 
@@ -121,6 +127,7 @@ class PersistWorkflowMetadataTests(unittest.TestCase):
             final_verdict=None,
             blackboard_data='{}',
             handoff_summary=None,
+            synthesis_log=None,
         )
         execution = SimpleNamespace(
             id=20,
@@ -130,6 +137,11 @@ class PersistWorkflowMetadataTests(unittest.TestCase):
             output_data="計画を策定しました。",
             error_message=None,
             input_data='{"_ppt_handoff_refs":["explore.output"]}',
+            execution_role=None,
+            skill_name="戦略設計",
+            skill_order=2,
+            workflow_skill_id=20,
+            reflection_loop=0,
         )
         db = self._FakeSession(wf_exec)
         _persist_workflow_metadata(db, execution)
@@ -152,6 +164,7 @@ class PersistWorkflowMetadataTests(unittest.TestCase):
             final_verdict=None,
             blackboard_data='{}',
             handoff_summary=None,
+            synthesis_log=None,
         )
         execution = SimpleNamespace(
             id=30,
@@ -161,6 +174,11 @@ class PersistWorkflowMetadataTests(unittest.TestCase):
             output_data="実装完了。",
             error_message=None,
             input_data='{}',
+            execution_role=None,
+            skill_name="コンテンツ生成",
+            skill_order=3,
+            workflow_skill_id=30,
+            reflection_loop=0,
         )
         db = self._FakeSession(wf_exec)
         _persist_workflow_metadata(db, execution)
