@@ -412,6 +412,7 @@ async def get_user_workflow_detail(
                 skill_name=ws.skill_name,
                 skill_id=s.id,
                 skill_display_name=s.name,
+                agent_profile=getattr(ws, "agent_profile", None),
             )
         )
 
@@ -459,6 +460,7 @@ async def get_user_workflow_detail(
                     "workflow_skill_id": ws.id,
                     "skill_order": ws.skill_order,
                     "input_mapping": input_mapping_parsed,
+                    "agent_profile": getattr(ws, "agent_profile", None),
                 })
         groups_data.append({
             "id": grp.id,
@@ -479,7 +481,14 @@ async def get_user_workflow_detail(
         groups=groups_data,
     )
 
-    return UserWorkflowDetail(workflow=wf_item, skills=skills, input_schema=workflow_input_schema)
+    return UserWorkflowDetail(
+        workflow=wf_item,
+        skills=skills,
+        input_schema=workflow_input_schema,
+        current_stage=None,
+        final_verdict=None,
+        handoff_summary=None,
+    )
 
 
 @router.get("/executions")
@@ -563,6 +572,7 @@ async def list_my_executions(
             "skill_name": skill_name,
             "execution_role": getattr(execution, 'execution_role', None),
             "execution_group_id": getattr(execution, 'execution_group_id', None),
+            "agent_profile": getattr(execution, 'agent_profile', None),
             "reflection_loop": getattr(execution, 'reflection_loop', 0),
             "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
         }
@@ -597,12 +607,22 @@ async def get_workflow_execution_status(
         except (json.JSONDecodeError, TypeError):
             pass
 
+    handoff_summary = None
+    if getattr(wf_exec, "handoff_summary", None):
+        try:
+            handoff_summary = json.loads(wf_exec.handoff_summary) if isinstance(wf_exec.handoff_summary, str) else wf_exec.handoff_summary
+        except (json.JSONDecodeError, TypeError):
+            handoff_summary = None
+
     return {
         "id": wf_exec.id,
         "status": wf_exec.status,
         "error_message": wf_exec.error_message,
         "current_step": wf_exec.current_step,
         "total_steps": wf_exec.total_steps,
+        "current_stage": getattr(wf_exec, "current_stage", None),
+        "final_verdict": getattr(wf_exec, "final_verdict", None),
+        "handoff_summary": handoff_summary,
         "blackboard_keys": blackboard_keys,
     }
 
@@ -685,6 +705,7 @@ async def get_execution_detail(
         error_message=execution.error_message,
         output_format=output_format,
         execution_role=getattr(execution, 'execution_role', None),
+        agent_profile=getattr(execution, 'agent_profile', None),
         executed_at=execution.executed_at,
         enable_deep_think=bool(enable_deep_think) if enable_deep_think is not None else None,
     )

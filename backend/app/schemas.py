@@ -1,7 +1,11 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from app.models import AccountType
+
+
+AgentProfile = Literal["default", "explore", "plan", "implement", "verification"]
+FinalVerdict = Literal["PASS", "FAIL", "PARTIAL"]
 
 
 # ==================== 認証 ====================
@@ -72,6 +76,7 @@ class SkillBase(BaseModel):
     enable_web_search: bool = False
     enable_code_interpreter: bool = False
     enable_file_search: bool = False
+    default_agent_profile: Optional[AgentProfile] = None
 
 
 class SkillCreate(SkillBase):
@@ -91,6 +96,7 @@ class SkillUpdate(BaseModel):
     enable_web_search: Optional[bool] = None
     enable_code_interpreter: Optional[bool] = None
     enable_file_search: Optional[bool] = None
+    default_agent_profile: Optional[AgentProfile] = None
 
 
 class SkillResponse(SkillBase):
@@ -185,6 +191,7 @@ class ExecutionResponse(BaseModel):
     error_message: Optional[str] = None
     output_format: Optional[str] = "txt"  # 出力形式（csv, pdf, docx, md, txt）
     execution_role: Optional[str] = None  # null | "quality_gate" | "supervisor" | "debate_judge"
+    agent_profile: Optional[AgentProfile] = None
     executed_at: datetime
     # Deep Think有効フラグ（履歴詳細表示用）
     enable_deep_think: Optional[bool] = None
@@ -335,6 +342,7 @@ class WorkflowGroupSkillItem(BaseModel):
     max_reflection_loops: int = 0
     # ハンドオフ
     handoff_rules: Optional[List[Dict[str, Any]]] = None
+    agent_profile: Optional[AgentProfile] = None
 
 
 class WorkflowGroupItem(BaseModel):
@@ -440,6 +448,7 @@ class WorkflowSkillItem(BaseModel):
     skill_name: Optional[str] = None
     skill_id: int = 0
     skill_display_name: Optional[str] = None
+    agent_profile: Optional[AgentProfile] = None
 
 
 class WorkflowSkillUpdateItem(BaseModel):
@@ -447,6 +456,7 @@ class WorkflowSkillUpdateItem(BaseModel):
     skill_order: int = 0
     skill_name: Optional[str] = None
     config_json: Optional[dict] = None
+    agent_profile: Optional[AgentProfile] = None
 
 
 class WorkflowSkillsUpdateRequest(BaseModel):
@@ -494,6 +504,7 @@ class UserWorkflowDetailSkill(BaseModel):
     skill_name: Optional[str] = None
     skill_id: int
     skill_display_name: str
+    agent_profile: Optional[AgentProfile] = None
 
 
 class UserWorkflowDetail(BaseModel):
@@ -502,6 +513,9 @@ class UserWorkflowDetail(BaseModel):
     workflow: WorkflowListItem
     skills: List[UserWorkflowDetailSkill]
     input_schema: Optional[Dict[str, Any]] = None
+    current_stage: Optional[AgentProfile] = None
+    final_verdict: Optional[FinalVerdict] = None
+    handoff_summary: Optional[Dict[str, Any]] = None
 
 
 class ExecuteWorkflowRequest(BaseModel):

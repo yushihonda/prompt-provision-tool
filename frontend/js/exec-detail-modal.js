@@ -154,11 +154,18 @@
      * @param {Array}   [opts.groups]          ワークフローのグループ構造（あれば並列表示対応）
      */
     function buildWorkflowFlowHTML(opts) {
-        const { finalOutput, allStepResults, workflowName, groups } = opts;
+        const { finalOutput, allStepResults, workflowName, groups, stageMeta } = opts;
         const esc = escapeHtml;
         const sc = (s) => s === 'success' ? '#28a745' : s === 'processing' ? '#7c3aed' : s === 'error' ? '#dc3545' : 'rgba(255,255,255,0.2)';
         const si = (s) => s === 'success' ? '&#10003;' : s === 'processing' ? '&#9679;' : s === 'error' ? '&#10007;' : '&#9711;';
         const wfName = workflowName || 'ワークフロー';
+        const formatProfile = (profile) => ({
+            default: 'Default',
+            explore: 'Explore',
+            plan: 'Plan',
+            implement: 'Implement',
+            verification: 'Verification',
+        }[profile] || profile || '-');
 
         // stepOrder → stepResult のマップ
         const stepByOrder = {};
@@ -183,7 +190,25 @@
             return `<details style="margin-top:6px;"><summary style="font-size:10px; color:rgba(255,255,255,0.5); cursor:pointer; user-select:none;">出力を表示</summary><div style="margin-top:4px;">${step.model ? `<div style="font-size:10px; color:#888; margin-bottom:4px;">${step.time ? step.time + 'ms' : '-'} | ${step.tokens || '-'} tokens</div>` : ''}${bodyHtml || '<div style="color:rgba(255,255,255,0.4); font-size:11px;">出力なし</div>'}</div></details>`;
         }
 
-        let html = '';
+        const stage = stageMeta?.currentStage || '-';
+        const verdict = stageMeta?.finalVerdict || '-';
+        const handoffSummary = stageMeta?.handoffSummary?.summary || '';
+        const handoffRefs = Array.isArray(stageMeta?.handoffSummary?.blackboard_refs) ? stageMeta.handoffSummary.blackboard_refs : [];
+        const failedStep = allStepResults.find(step => step.status === 'error');
+        const failedStage = failedStep?.agentProfile || null;
+
+        let html = `
+            <div style="padding:10px 14px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12); border-radius:8px; margin-bottom:10px;">
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:${handoffSummary || handoffRefs.length ? '8px' : '0'};">
+                    <span style="font-size:11px; color:rgba(255,255,255,0.55);">Current Stage</span>
+                    <span style="font-size:12px; font-weight:bold; color:#fff;">${esc(formatProfile(stage))}</span>
+                    <span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Final Verdict</span>
+                    <span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : 'rgba(255,255,255,0.7)'};">${esc(verdict)}</span>
+                    ${failedStage ? `<span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Failure Stage</span><span style="font-size:12px; font-weight:bold; color:#ff8a80;">${esc(formatProfile(failedStage))}</span>` : ''}
+                </div>
+                ${handoffSummary ? `<div style="font-size:11px; color:rgba(255,255,255,0.75); margin-bottom:${handoffRefs.length ? '6px' : '0'};">${esc(handoffSummary)}</div>` : ''}
+                ${handoffRefs.length ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${handoffRefs.map(ref => `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.15); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(ref)}</span>`).join('')}</div>` : ''}
+            </div>`;
 
         // --- 親スキル: タスク振り分け ---
         html += `<div style="display:flex; align-items:center; gap:10px; padding:12px 16px; background:rgba(156,39,176,0.12); border:1px solid rgba(156,39,176,0.3); border-radius:8px; margin-bottom:4px;">
@@ -218,6 +243,7 @@
                                 <span style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(sk.skill_name || sk.skill_display_name || '?')}</span>
                             </div>
                             <div style="font-size:10px; color:rgba(255,255,255,0.4);">${esc(sk.model_type || '')}</div>
+                            <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.08); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(formatProfile(sk.agent_profile || step?.agentProfile || 'default'))}</span></div>
                             ${skillBody(step)}
                         </div>`;
                     });
@@ -233,6 +259,7 @@
                                 <div style="flex:1; min-width:0;">
                                     <div style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9);">${esc(sk.skill_name || sk.skill_display_name || '?')}</div>
                                     <div style="font-size:10px; color:rgba(255,255,255,0.4);">${esc(sk.model_type || '')}</div>
+                                    <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.08); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(formatProfile(sk.agent_profile || step?.agentProfile || 'default'))}</span></div>
                                 </div>
                             </div>
                             ${skillBody(step)}

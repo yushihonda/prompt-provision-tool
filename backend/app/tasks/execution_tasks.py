@@ -30,6 +30,14 @@ from app.models import (
 )
 from app.database import SessionLocal
 from app.encryption import encryption_service
+from app.services.agent_profiles import (
+    DEFAULT_READONLY_CONSTRAINTS,
+    DEFAULT_VERIFICATION_CONTRACT,
+    build_blackboard_summary,
+    normalize_agent_profile,
+    READONLY_PROFILES,
+    VERDICT_REQUIRED_PROFILES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +47,73 @@ JST = timezone(timedelta(hours=9))
 ROLE_QUALITY_GATE = "quality_gate"
 ROLE_SUPERVISOR = "supervisor"
 ROLE_DEBATE_JUDGE = "debate_judge"
+
+
+def _parse_json_text(value, default=None):
+    if value is None:
+        return {} if default is None else default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {} if default is None else default
+
+
+def _resolve_agent_profile(ws, skill) -> str:
+    return normalize_agent_profile(getattr(ws, "agent_profile", None) or getattr(skill, "default_agent_profile", None))
+
+
+def _collect_handoff_refs(ws) -> list[str]:
+    refs = []
+    output_key = getattr(ws, "output_key", None)
+    if output_key:
+        refs.append(str(output_key))
+    return refs
+
+
+def _build_step_metadata(ws, skill, agent_profile: str) -> dict:
+    return {
+        "workflow_skill_id": getattr(ws, "id", None),
+        "skill_order": getattr(ws, "skill_order", None),
+        "skill_name": getattr(ws, "skill_name", None) or getattr(skill, "name", None),
+        "skill_id": getattr(skill, "id", None),
+        "model_type": getattr(skill, "model_type", None),
+        "agent_profile": agent_profile,
+        "readonly": agent_profile in READONLY_PROFILES,
+        "verdict_required": agent_profile in VERDICT_REQUIRED_PROFILES,
+        "output_key": getattr(ws, "output_key", None),
+        "handoff_refs": _collect_handoff_refs(ws),
+    }
+
+
+def _augment_skill_input_with_profile(skill_input, wf_exec, workflow, ws, skill, structured_context):
+    agent_profile = _resolve_agent_profile(ws, skill)
+    blackboard = structured_context.get("blackboard", {}) if isinstance(structured_context, dict) else {}
+    skill_input["_ppt_agent_profile"] = agent_profile
+    skill_input["_ppt_workflow_name"] = getattr(workflow, "name", "") or ""
+    skill_input["_ppt_workflow_goal"] = getattr(workflow, "description", "") or ""
+    skill_input["_ppt_handoff_context"] = _parse_json_text(getattr(wf_exec, "handoff_summary", None), {})
+    skill_input["_ppt_blackboard_summary"] = {
+        "keys": list(blackboard.keys()) if isinstance(blackboard, dict) else [],
+        "count": len(blackboard) if isinstance(blackboard, dict) else 0,
+    }
+    step_metadata = _build_step_metadata(ws, skill, agent_profile)
+    skill_input["_ppt_step_metadata"] = step_metadata
+    skill_input["_ppt_handoff_refs"] = step_metadata.get("handoff_refs", [])
+    if agent_profile in READONLY_PROFILES:
+        skill_input["_ppt_readonly_constraints"] = DEFAULT_READONLY_CONSTRAINTS
+    if agent_profile in VERDICT_REQUIRED_PROFILES:
+        skill_input["_ppt_verification_contract"] = DEFAULT_VERIFICATION_CONTRACT
+    return agent_profile
+
+
+def _set_handoff_target_profile(wf_exec, agent_profile: str):
+    payload = _parse_json_text(getattr(wf_exec, "handoff_summary", None), {})
+    if not isinstance(payload, dict) or not payload:
+        return
+    payload["to_profile"] = normalize_agent_profile(agent_profile)
+    wf_exec.handoff_summary = json.dumps(payload, ensure_ascii=False)
 
 
 # ===========================================================================
@@ -981,6 +1056,8 @@ def continue_workflow_execution(
 
 def _launch_skills(db, wf_exec, skills, structured_context,
                    global_input, previous_output, per_skill_input):
+    workflow = db.query(Workflow).filter(Workflow.id == wf_exec.workflow_id).first()
+    launched_profiles = []
     try:
         for ws in skills:
             skill = db.query(Skill).filter(Skill.id == ws.skill_id).first()
@@ -994,6 +1071,10 @@ def _launch_skills(db, wf_exec, skills, structured_context,
                 ws, structured_context, global_input, previous_output,
                 per_skill_input, structured_context.get("all_step_results", []),
             )
+            agent_profile = _augment_skill_input_with_profile(
+                skill_input, wf_exec, workflow, ws, skill, structured_context
+            )
+            launched_profiles.append(agent_profile)
 
             first_exec = wf_exec.executions[0] if wf_exec.executions else None
             execution = Execution(
@@ -1006,13 +1087,23 @@ def _launch_skills(db, wf_exec, skills, structured_context,
                 status="pending_local",
                 dispatch_mode="local",
                 model_used=skill.model_type,
+                agent_profile=agent_profile,
                 enable_deep_think=bool(deep_think),
                 output_format=first_exec.output_format if first_exec else "txt",
                 executed_at=datetime.now(JST),
             )
             db.add(execution)
 
+        distinct_profiles = {profile for profile in launched_profiles if profile}
+        if len(distinct_profiles) > 1:
+            raise RuntimeError("Parallel launch with mixed agent_profile is not supported in MVP")
+
         wf_exec.status = "processing"
+        if skills:
+            wf_exec.current_step = min((s.skill_order or 0) for s in skills)
+        if launched_profiles:
+            wf_exec.current_stage = launched_profiles[0]
+            _set_handoff_target_profile(wf_exec, launched_profiles[0])
         db.flush()
         db.commit()
         logger.info(f"WF {wf_exec.id}: launched {len(skills)} skills")
@@ -1025,12 +1116,16 @@ def _launch_skills(db, wf_exec, skills, structured_context,
 
 def _retry_skill(db, wf_exec, ws, failed_ex, per_skill_input,
                  structured_context, global_input, previous_output):
+    workflow = db.query(Workflow).filter(Workflow.id == wf_exec.workflow_id).first()
     skill = db.query(Skill).filter(Skill.id == ws.skill_id).first()
     if not skill:
         return
     skill_input = _build_skill_input(
         ws, structured_context, global_input, previous_output,
         per_skill_input, structured_context.get("all_step_results", []),
+    )
+    agent_profile = _augment_skill_input_with_profile(
+        skill_input, wf_exec, workflow, ws, skill, structured_context
     )
     execution = Execution(
         account_id=wf_exec.account_id,
@@ -1042,12 +1137,16 @@ def _retry_skill(db, wf_exec, ws, failed_ex, per_skill_input,
         status="pending_local",
         dispatch_mode="local",
         model_used=skill.model_type,
+        agent_profile=agent_profile,
         enable_deep_think=bool(getattr(skill, "enable_deep_think", True)),
         output_format=failed_ex.output_format or "txt",
         retry_count=failed_ex.retry_count + 1,
         executed_at=datetime.now(JST),
     )
     db.add(execution)
+    wf_exec.current_step = ws.skill_order
+    wf_exec.current_stage = agent_profile
+    _set_handoff_target_profile(wf_exec, agent_profile)
     db.flush()
     db.commit()
     logger.info(f"WF {wf_exec.id}: retry ws={ws.id} (attempt {execution.retry_count}/{ws.max_retries})")
@@ -1101,6 +1200,23 @@ def _start_parent_skill(db, wf_exec, workflow, structured_context,
     merged_input["global_input_data"] = global_input
     merged_input["steps"] = structured_context.get("steps", {})
     merged_input["blackboard"] = structured_context.get("blackboard", {})
+    merged_input["_ppt_agent_profile"] = "default"
+    merged_input["_ppt_workflow_name"] = workflow.name or ""
+    merged_input["_ppt_workflow_goal"] = workflow.description or ""
+    merged_input["_ppt_handoff_context"] = _parse_json_text(getattr(wf_exec, "handoff_summary", None), {})
+    merged_input["_ppt_blackboard_summary"] = {
+        "keys": list((structured_context.get("blackboard") or {}).keys()),
+        "count": len(structured_context.get("blackboard") or {}),
+    }
+    merged_input["_ppt_step_metadata"] = {
+        "skill_order": skill_order,
+        "skill_name": "親スキル",
+        "agent_profile": "default",
+        "readonly": False,
+        "verdict_required": False,
+        "handoff_refs": [],
+    }
+    merged_input["_ppt_handoff_refs"] = []
 
     first_exec = wf_exec.executions[0] if wf_exec.executions else None
     try:
@@ -1114,6 +1230,7 @@ def _start_parent_skill(db, wf_exec, workflow, structured_context,
             status="pending_local",
             dispatch_mode="local",
             model_used=parent_model,
+            agent_profile="default",
             enable_deep_think=bool(workflow.parent_enable_deep_think),
             output_format=first_exec.output_format if first_exec else "txt",
             executed_at=datetime.now(JST),
@@ -1121,7 +1238,9 @@ def _start_parent_skill(db, wf_exec, workflow, structured_context,
         db.add(execution)
         wf_exec.status = "processing"
         wf_exec.current_step = skill_order
+        wf_exec.current_stage = "default"
         wf_exec.total_steps = max(wf_exec.total_steps or 0, skill_order)
+        _set_handoff_target_profile(wf_exec, "default")
         db.flush()
         db.commit()
     except Exception as e:

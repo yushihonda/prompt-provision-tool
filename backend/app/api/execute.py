@@ -29,6 +29,7 @@ except ImportError as e:
     publish_cancel = None
 from app.utils.file_export import export_content
 from app.utils.skill_utils import replace_placeholders
+from app.tasks.execution_tasks import _build_skill_input, _augment_skill_input_with_profile, _resolve_agent_profile
 from datetime import datetime, timezone, timedelta
 import json
 import time
@@ -334,6 +335,9 @@ async def execute_workflow(
             {str(k): v for k, v in (request.per_skill_input or {}).items()},
             ensure_ascii=False,
         ) if request.per_skill_input else None,
+        current_stage=None,
+        final_verdict=None,
+        handoff_summary=None,
     )
     db.add(wf_execution)
     db.commit()
@@ -344,18 +348,6 @@ async def execute_workflow(
 
     # 並列モードの場合は全ステップを一括作成
     skills_to_launch = [executable_skills[0]] if workflow_execution_mode == "serial" else executable_skills
-
-    first_skill = executable_skills[0]
-    skill = first_skill.skill
-
-    # per_skill_input のキーは workflow_skill_id を想定
-    per_skill_overrides = {}
-    if request.per_skill_input and first_skill.id in request.per_skill_input:
-        per_skill_overrides = request.per_skill_input[first_skill.id]
-
-    # グローバル入力とSkill個別入力をマージ（個別が優先）
-    merged_input = dict(request.global_input_data or {})
-    merged_input.update(per_skill_overrides or {})
 
     # 実行時のDeep Think判定（既存ロジックに合わせる）
     final_enable_deep_think = getattr(skill, "enable_deep_think", True)
@@ -391,17 +383,40 @@ async def execute_workflow(
         # フォールバック: グループなし → 最初のスキルのみ
         skills_to_launch = [executable_skills[0]]
 
+    launch_profiles = {
+        _resolve_agent_profile(ws, ws.skill)
+        for ws in skills_to_launch
+        if getattr(ws, "skill", None) is not None
+    }
+    if len(launch_profiles) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="parallel group では mixed agent_profile を許可していません。MVP では同一 profile に揃えてください",
+        )
+
     # Execution レコード作成
     created_executions = []
+    structured_context = {"global": request.global_input_data or {}, "steps": {}, "all_step_results": [], "blackboard": {}}
+    per_skill_input = {str(k): v for k, v in (request.per_skill_input or {}).items()}
+    launched_profiles = []
     for ws in skills_to_launch:
         ws_skill = ws.skill
         skill_deep_think = getattr(ws_skill, "enable_deep_think", True)
         if skill_deep_think is None:
             skill_deep_think = True
 
-        skill_input = dict(request.global_input_data or {})
-        if request.per_skill_input and ws.id in request.per_skill_input:
-            skill_input.update(request.per_skill_input[ws.id])
+        skill_input = _build_skill_input(
+            ws,
+            structured_context,
+            request.global_input_data or {},
+            "",
+            per_skill_input,
+            structured_context.get("all_step_results", []),
+        )
+        agent_profile = _augment_skill_input_with_profile(
+            skill_input, wf_execution, wf, ws, ws_skill, structured_context
+        )
+        launched_profiles.append(agent_profile)
 
         execution = Execution(
             account_id=current_user.id,
@@ -412,6 +427,7 @@ async def execute_workflow(
             input_data=json.dumps(skill_input, ensure_ascii=False),
             status="pending_local",
             model_used=ws_skill.model_type,
+            agent_profile=agent_profile,
             enable_deep_think=bool(skill_deep_think),
             output_format=output_format_value,
             dispatch_mode="local",
@@ -423,6 +439,8 @@ async def execute_workflow(
         created_executions.append(execution)
 
     wf_execution.status = "processing"
+    if launched_profiles:
+        wf_execution.current_stage = launched_profiles[0]
     db.commit()
     for ex in created_executions:
         db.refresh(ex)

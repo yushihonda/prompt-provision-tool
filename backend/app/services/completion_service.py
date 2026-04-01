@@ -14,8 +14,71 @@ from sqlalchemy.orm import Session
 from app.models import Account, DailyExecutionCount, Execution, WorkflowExecution, WorkflowGroup
 from app.utils.pricing import calculate_token_cost
 from app.config import settings
+from app.services.agent_profiles import detect_readonly_violation, extract_verdict, normalize_agent_profile
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_json_loads(value, default=None):
+    if value is None:
+        return {} if default is None else default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {} if default is None else default
+
+
+def _summarize_output(output: Optional[str]) -> str:
+    if not output:
+        return ""
+    parsed = _safe_json_loads(output, None)
+    if isinstance(parsed, dict):
+        keys = list(parsed.keys())
+        return f"dict keys: {', '.join(keys[:5])}" if keys else "empty dict"
+    if isinstance(parsed, list):
+        return f"list items: {len(parsed)}"
+    compact = str(output).strip().replace("\n", " ")
+    return compact[:200]
+
+
+def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
+    if not execution.workflow_execution_id:
+        return
+    wf_exec = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution.workflow_execution_id).first()
+    if not wf_exec:
+        return
+
+    profile = normalize_agent_profile(getattr(execution, "agent_profile", None))
+    wf_exec.current_stage = profile
+    if profile == "verification":
+        if execution.status == "success":
+            verdict = extract_verdict(execution.output_data)
+            wf_exec.final_verdict = verdict or "FAIL"
+        else:
+            wf_exec.final_verdict = "FAIL"
+
+    handoff_refs = []
+    parsed_input = _safe_json_loads(getattr(execution, "input_data", None), {})
+    raw_refs = parsed_input.get("_ppt_handoff_refs") if isinstance(parsed_input, dict) else None
+    if isinstance(raw_refs, list):
+        handoff_refs = [str(ref) for ref in raw_refs if ref]
+
+    blackboard = _safe_json_loads(getattr(wf_exec, "blackboard_data", None), {})
+    summary_source = execution.output_data if execution.status == "success" else (execution.error_message or execution.output_data)
+    wf_exec.handoff_summary = json.dumps({
+        "from_profile": profile,
+        "to_profile": None,
+        "source_execution_id": execution.id,
+        "summary": _summarize_output(summary_source),
+        "blackboard_refs": handoff_refs,
+        "important_counts": {
+            "blackboard_keys": len(handoff_refs),
+        },
+        "display_verdict": getattr(wf_exec, "final_verdict", None),
+    }, ensure_ascii=False)
+    db.commit()
 
 
 def finalize_execution(
@@ -56,6 +119,14 @@ def finalize_execution(
             )
         except Exception as e:
             logger.warning(f"Sanitize output failed for execution {execution.id}: {e}")
+
+    profile = normalize_agent_profile(getattr(execution, "agent_profile", None))
+    if status_result == "success" and profile in {"explore", "plan"}:
+        violation = detect_readonly_violation(output)
+        if violation:
+            status_result = "error"
+            error_message = violation
+            logger.warning(f"Readonly enforcement rejected execution {execution.id}: {violation}")
 
     execution.output_data = output
     execution.model_used = model_used
@@ -284,6 +355,15 @@ def trigger_workflow_continuation(
                             )
         except Exception as e:
             logger.warning(f"Quality gate check failed: {e}")
+
+    try:
+        _persist_workflow_metadata(db, execution)
+    except Exception as e:
+        logger.warning(f"Workflow metadata persistence failed: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
     # 通常のWF継続
     try:

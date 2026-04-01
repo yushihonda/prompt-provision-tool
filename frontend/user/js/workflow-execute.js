@@ -7,6 +7,7 @@ let stepExecutions = new Map(); // skill_order -> { executionId, status, output,
 let allExecutions = []; // 全ての実行履歴
 let displayedHistoryCount = 3; // 表示する履歴の件数
 let streamingWorkers = new Map(); // executionId -> worker
+let _wfStageMeta = { currentStage: null, finalVerdict: null, handoffSummary: null };
 
 async function loadWorkflowDetail() {
     workflowId = getQueryParam('id');
@@ -93,7 +94,8 @@ async function restoreActiveWorkflowExecution() {
                 output: exec.output_data || '',
                 stepName: skillInfo?.skill_name || `Step ${stepOrder}`,
                 skillName: skillInfo?.skill_name || `Step ${stepOrder}`,
-                errorMessage: exec.error_message || null
+                errorMessage: exec.error_message || null,
+                agentProfile: exec.agent_profile || null
             });
 
             // フロービューのステータス更新
@@ -173,6 +175,11 @@ async function restoreActiveWorkflowExecution() {
             try {
                 const wfStatusRestore = await apiRequest(`/api/user/workflow-executions/${weId}/status`);
                 if (wfStatusRestore?.blackboard_keys) _blackboardKeys = wfStatusRestore.blackboard_keys;
+                _wfStageMeta = {
+                    currentStage: wfStatusRestore?.current_stage || null,
+                    finalVerdict: wfStatusRestore?.final_verdict || null,
+                    handoffSummary: wfStatusRestore?.handoff_summary || null,
+                };
             } catch (e) {}
 
             // ワークフロー結果を表示（統合結果 + 各ステップ）
@@ -519,6 +526,34 @@ function renderStepExecutions() {
 // 実行フロービュー（リーダー付き縦フロー表示）
 // ---------------------------------------------------------------------------
 
+function formatStageLabel(stage) {
+    if (!stage) return '-';
+    const map = { default: 'Default', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
+    return map[stage] || stage;
+}
+
+function renderWorkflowStageSummary(esc) {
+    const stage = formatStageLabel(_wfStageMeta.currentStage);
+    const verdict = _wfStageMeta.finalVerdict || '-';
+    const refs = Array.isArray(_wfStageMeta.handoffSummary?.blackboard_refs) ? _wfStageMeta.handoffSummary.blackboard_refs : [];
+    const summary = _wfStageMeta.handoffSummary?.summary || '';
+    const failedStep = Array.from(stepExecutions.values()).find(step => step.status === 'error');
+    const failedStage = failedStep?.agentProfile ? formatStageLabel(failedStep.agentProfile) : null;
+    return `
+        <div style="padding:10px 14px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12); border-radius:8px; margin-bottom:10px;">
+            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:${summary || refs.length || failedStage ? '8px' : '0'};">
+                <span style="font-size:11px; color:rgba(255,255,255,0.55);">Current Stage</span>
+                <span style="font-size:12px; font-weight:bold; color:#fff;">${esc(stage)}</span>
+                <span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Final Verdict</span>
+                <span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : 'rgba(255,255,255,0.7)'};">${esc(verdict)}</span>
+                ${failedStage ? `<span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Failure Stage</span><span style="font-size:12px; font-weight:bold; color:#ff8a80;">${esc(failedStage)}</span>` : ''}
+            </div>
+            ${summary ? `<div style="font-size:11px; color:rgba(255,255,255,0.75); margin-bottom:${refs.length ? '6px' : '0'};">${esc(summary)}</div>` : ''}
+            ${refs.length ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${refs.map(ref => `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.15); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(ref)}</span>`).join('')}</div>` : ''}
+        </div>
+    `;
+}
+
 function renderFlowView(wfDetail, allStepStatuses) {
     const flowEl = document.getElementById('workflow-flow-view');
     if (!flowEl) return;
@@ -611,7 +646,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
     // リーダー（結果統合）の出力
     const leaderOutput = _flowLeaderOutput || '';
 
-    let html = '';
+    let html = renderWorkflowStageSummary(esc);
 
     // --- リーダー開始 ---
     html += `
@@ -659,6 +694,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
                             <span style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sName}</span>
                         </div>
                         <div style="font-size:10px; color:rgba(255,255,255,0.4);">${sModel}</div>
+                        <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.08); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(formatStageLabel(sk.agent_profile || 'default'))}</span></div>
                         ${skillOutputHtml(sk.workflow_skill_id)}
                     </div>
                 `;
@@ -677,6 +713,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
                             <div style="flex:1; min-width:0;">
                                 <div style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9);">${sName}</div>
                                 <div style="font-size:10px; color:rgba(255,255,255,0.4);">${sModel}</div>
+                                <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.08); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(formatStageLabel(sk.agent_profile || 'default'))}</span></div>
                             </div>
                         </div>
                         ${skillOutputHtml(sk.workflow_skill_id)}
@@ -1317,6 +1354,11 @@ async function checkAndStartNextStep(wfExecId, completedStepOrder) {
         if (wfStatus && wfStatus.blackboard_keys) {
             _blackboardKeys = wfStatus.blackboard_keys;
         }
+        _wfStageMeta = {
+            currentStage: wfStatus?.current_stage || null,
+            finalVerdict: wfStatus?.final_verdict || null,
+            handoffSummary: wfStatus?.handoff_summary || null,
+        };
 
         // 最新の通常スキルのステータスをフロービューに反映
         // (SVのrepeat後はcancelledの古いものではなく最新のExecution を使う)
@@ -1624,6 +1666,7 @@ async function showWorkflowHistoryDetail(weId) {
 
         const esc = execDetailModal.escapeHtml;
         const workflowName = execs[0]?.workflow_name || workflowDetail?.workflow?.name || 'ワークフロー';
+        const wfStatus = await apiRequest(`/api/user/workflow-executions/${weId}/status`);
 
         const leaderExec = execs.find(e => !e.workflow_skill_id || e.workflow_skill_id === null);
         const stepExecs = execs.filter(e => e.skill_order && e.workflow_skill_id);
@@ -1644,10 +1687,16 @@ async function showWorkflowHistoryDetail(weId) {
             tokens: exec.tokens_used,
             workflowSkillId: exec.workflow_skill_id,
             skillId: exec.skill_id,
+            agentProfile: exec.agent_profile || null,
         }));
         const finalOutput = leaderExec?.output_data || '';
         const resultHtml = execDetailModal.buildWorkflowFlowHTML({
             finalOutput, allStepResults, workflowName, groups,
+            stageMeta: {
+                currentStage: wfStatus?.current_stage || null,
+                finalVerdict: wfStatus?.final_verdict || null,
+                handoffSummary: wfStatus?.handoff_summary || null,
+            },
         });
 
         const detailHTML = `

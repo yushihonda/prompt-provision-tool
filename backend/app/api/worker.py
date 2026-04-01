@@ -24,6 +24,8 @@ from app.models import (
     Execution,
     Skill,
     WorkerAPIKey,
+    Workflow,
+    WorkflowExecution,
 )
 from app.encryption import encryption_service
 from app.config import settings
@@ -36,6 +38,7 @@ from app.services.worker_auth import (
 )
 from app.services.completion_service import finalize_execution, trigger_workflow_continuation
 from app.utils.skill_utils import replace_placeholders
+from app.services.agent_profiles import build_blackboard_summary, compose_agent_profile_prompt, normalize_agent_profile
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +146,7 @@ class BundleResponse(BaseModel):
     enable_deep_think: bool
     signature: str
     api_keys: Optional[dict] = None  # {"openai": "sk-...", "gemini": "AI..."} ローカル実行用
+    agent_profile: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -318,11 +322,45 @@ async def get_execution_bundle(
         except (json.JSONDecodeError, TypeError):
             input_data = {}
 
+    profile_value = getattr(execution, "agent_profile", None)
+    normalized_profile = normalize_agent_profile(profile_value) if profile_value else None
+    workflow_name = ""
+    workflow_goal = ""
+    parent_prompt = ""
+    if execution.workflow_execution_id:
+        wf_exec = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution.workflow_execution_id).first()
+        if wf_exec:
+            workflow = db.query(Workflow).filter(Workflow.id == wf_exec.workflow_id).first()
+            if workflow:
+                workflow_name = workflow.name or ""
+                workflow_goal = workflow.description or ""
+                if workflow.encrypted_parent_content and execution.skill_id is not None:
+                    try:
+                        parent_prompt = encryption_service.decrypt(workflow.encrypted_parent_content)
+                    except Exception:
+                        parent_prompt = ""
+
+    resolved_skill_prompt = replace_placeholders(decrypted, input_data)
+    if normalized_profile:
+        final_prompt = compose_agent_profile_prompt(
+            profile=normalized_profile,
+            workflow_name=workflow_name,
+            workflow_goal=workflow_goal,
+            parent_skill_prompt=parent_prompt,
+            current_skill_prompt=resolved_skill_prompt,
+            handoff_context=input_data.get("_ppt_handoff_context") or {},
+            resolved_input_data=input_data,
+            readonly_constraints=input_data.get("_ppt_readonly_constraints"),
+            verification_contract=input_data.get("_ppt_verification_contract"),
+            blackboard_summary=build_blackboard_summary(input_data.get("blackboard") or {}),
+            step_metadata=input_data.get("_ppt_step_metadata") or {},
+        )
+    else:
+        final_prompt = resolved_skill_prompt
+
     # ガードレール付加
     if settings.ENABLE_PROMPT_GUARDRAILS:
-        final_prompt = settings.GUARDRAIL_PREFIX + "\n\n" + replace_placeholders(decrypted, input_data)
-    else:
-        final_prompt = replace_placeholders(decrypted, input_data)
+        final_prompt = settings.GUARDRAIL_PREFIX + "\n\n" + final_prompt
 
     # ユーザーの API キーを取得（暗号化保存されているため復号する）
     api_keys = {}
@@ -368,6 +406,7 @@ async def get_execution_bundle(
         "input_data": input_data,
         "output_format": execution.output_format or "txt",
         "enable_deep_think": bool(execution.enable_deep_think),
+        "agent_profile": normalized_profile,
     }
     signature = sign_bundle(bundle_data)
     bundle_data["api_keys"] = api_keys if api_keys else None

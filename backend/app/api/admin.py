@@ -29,10 +29,27 @@ from app.schemas import (
     WorkflowListItem,
 )
 from app.encryption import encryption_service
+from app.services.agent_profiles import normalize_agent_profile
 import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_parallel_group_profiles(groups) -> None:
+    for grp in groups or []:
+        if getattr(grp, "execution_type", None) != "parallel":
+            continue
+        profiles = {
+            normalize_agent_profile(getattr(skill, "agent_profile", None) or "default")
+            for skill in (getattr(grp, "skills", None) or [])
+        }
+        if len(profiles) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="parallel group では mixed agent_profile を許可していません。MVP では同一 profile に揃えてください",
+            )
+
 
 # Redis 監視用
 try:
@@ -340,6 +357,7 @@ async def create_skill(
         enable_web_search=skill.enable_web_search,
         enable_code_interpreter=skill.enable_code_interpreter,
         enable_file_search=skill.enable_file_search,
+        default_agent_profile=getattr(skill, "default_agent_profile", None),
         created_by=current_user.id
     )
     db.add(db_skill)
@@ -366,6 +384,7 @@ async def create_skill(
         enable_web_search=db_skill.enable_web_search,
         enable_code_interpreter=db_skill.enable_code_interpreter,
         enable_file_search=db_skill.enable_file_search,
+        default_agent_profile=getattr(db_skill, "default_agent_profile", None),
         is_active=db_skill.is_active,
         created_by=db_skill.created_by,
         created_at=db_skill.created_at,
@@ -410,6 +429,7 @@ async def list_skills(
                 enable_web_search=skill.enable_web_search,
                 enable_code_interpreter=skill.enable_code_interpreter,
                 enable_file_search=skill.enable_file_search,
+                default_agent_profile=getattr(skill, "default_agent_profile", None),
                 is_active=skill.is_active,
                 created_by=skill.created_by,
                 created_at=skill.created_at,
@@ -529,6 +549,7 @@ async def create_workflow_with_parent_skill(
             )
 
     # 2. 子スキルを登録 — グループ優先、なければ旧 skills を1直列グループに包む
+    _validate_parallel_group_profiles(getattr(request, "groups", None))
     if request.groups is not None and len(request.groups) > 0:
         step_counter = 1
         for grp_data in request.groups:
@@ -599,6 +620,7 @@ async def create_workflow_with_parent_skill(
                     quality_gate_model=getattr(skill_data, 'quality_gate_model', None),
                     max_reflection_loops=getattr(skill_data, 'max_reflection_loops', 0) or 0,
                     handoff_rules=handoff_rules_str,
+                    agent_profile=getattr(skill_data, "agent_profile", None),
                 )
                 db.add(ws)
                 step_counter += 1
@@ -627,6 +649,7 @@ async def create_workflow_with_parent_skill(
                 config_json=config_json_str,
                 group_id=grp.id,
                 order_in_group=step_counter,
+                agent_profile=getattr(skill_item, "agent_profile", None),
             )
             db.add(workflow_skill)
             step_counter += 1
@@ -758,6 +781,7 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
                 quality_gate_model=getattr(ws, 'quality_gate_model', None),
                 max_reflection_loops=getattr(ws, 'max_reflection_loops', 0) or 0,
                 handoff_rules=handoff_rules_parsed,
+                agent_profile=getattr(ws, "agent_profile", None),
             )
             grp_skills.append(skill_item)
             # 後方互換: フラット skills
@@ -767,6 +791,7 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
                 skill_name=ws.skill_name,
                 skill_id=ws.skill_id,
                 skill_display_name=skill.name if skill else None,
+                agent_profile=getattr(ws, "agent_profile", None),
             ))
 
         condition_parsed = None
@@ -918,6 +943,7 @@ async def update_workflow(
 
     # グループ構造更新（全置換）
     if workflow_update.groups is not None:
+        _validate_parallel_group_profiles(workflow_update.groups)
         from app.models import WorkflowGroup
         # 既存グループ・スキル削除
         db.query(WorkflowSkill).filter(WorkflowSkill.workflow_id == workflow_id).delete()
@@ -987,6 +1013,7 @@ async def update_workflow(
                     quality_gate_model=getattr(skill_data, 'quality_gate_model', None),
                     max_reflection_loops=getattr(skill_data, 'max_reflection_loops', 0) or 0,
                     handoff_rules=handoff_rules_str,
+                    agent_profile=getattr(skill_data, "agent_profile", None),
                 )
                 db.add(ws)
                 step_counter += 1
@@ -1069,6 +1096,7 @@ async def update_workflow_skills(
             skill_order=item.skill_order,
             skill_name=item.skill_name,
             config_json=config_json_str,
+            agent_profile=getattr(item, "agent_profile", None),
         )
         db.add(ws)
 
@@ -1112,6 +1140,7 @@ async def get_skill(
         enable_web_search=skill.enable_web_search,
         enable_code_interpreter=skill.enable_code_interpreter,
         enable_file_search=skill.enable_file_search,
+        default_agent_profile=getattr(skill, "default_agent_profile", None),
         is_active=skill.is_active,
         created_by=skill.created_by,
         created_at=skill.created_at,
@@ -1184,6 +1213,8 @@ async def update_skill(
         skill.enable_code_interpreter = skill_update.enable_code_interpreter
     if skill_update.enable_file_search is not None:
         skill.enable_file_search = skill_update.enable_file_search
+    if getattr(skill_update, "default_agent_profile", None) is not None:
+        skill.default_agent_profile = skill_update.default_agent_profile
 
     db.commit()
     db.refresh(skill)

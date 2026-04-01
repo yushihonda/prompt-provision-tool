@@ -80,6 +80,7 @@ class Skill(Base):
     enable_web_search = Column(Boolean, default=False, nullable=False)
     enable_code_interpreter = Column(Boolean, default=False, nullable=False)
     enable_file_search = Column(Boolean, default=False, nullable=False)
+    default_agent_profile = Column(String(30), nullable=True)
     created_by = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -179,6 +180,7 @@ class WorkflowSkill(Base):
 
     # ハンドオフ (条件付き引継ぎ)
     handoff_rules = Column(Text, nullable=True)  # JSON: [{"condition": {...}, "target_skill_id": int}]
+    agent_profile = Column(String(30), nullable=True)
 
     # グループ所属
     group_id = Column(Integer, ForeignKey("workflow_groups.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -205,6 +207,9 @@ class WorkflowExecution(Base):
     continuation_lock_version = Column(Integer, nullable=False, default=0, server_default="0")  # 楽観ロック
     blackboard_data = Column(Text(length=16777215), nullable=True)  # MEDIUMTEXT: 共有メモリ (Blackboard)
     dynamic_plan_data = Column(Text, nullable=True)  # JSON: 動的分解プラン
+    current_stage = Column(String(30), nullable=True)
+    final_verdict = Column(String(10), nullable=True)
+    handoff_summary = Column(Text, nullable=True)  # JSON: UI/監査向け派生サマリー
     error_message = Column(Text)
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -251,6 +256,7 @@ class Execution(Base):
     reflection_loop = Column(Integer, nullable=False, default=0, server_default="0")  # 品質ゲートリフレクション回数
     execution_role = Column(String(30), nullable=True)  # null | "quality_gate" | "supervisor" | "debate_judge"
     execution_group_id = Column(Integer, nullable=True)  # ジャッジ/スーパーバイザー用: 対象グループID
+    agent_profile = Column(String(30), nullable=True)
     enable_deep_think = Column(Boolean, nullable=True)
     output_format = Column(String(10), nullable=True, default="txt")
     dispatch_mode = Column(String(30), nullable=False, default="server")

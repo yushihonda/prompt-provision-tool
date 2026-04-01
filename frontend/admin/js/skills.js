@@ -11,6 +11,22 @@ let wfCurrentPage = 1;
 const wfItemsPerPage = 10;
 let wfTotalItems = 0;
 
+const AGENT_PROFILE_OPTIONS = ['default', 'explore', 'plan', 'implement', 'verification'];
+
+function renderAgentProfileOptions(selected) {
+    return AGENT_PROFILE_OPTIONS.map(v => `<option value="${v}" ${selected === v ? 'selected' : ''}>${v}</option>`).join('');
+}
+
+function validateParallelGroupProfiles(groups) {
+    for (const grp of groups || []) {
+        if ((grp.execution_type || 'serial') !== 'parallel') continue;
+        const profiles = new Set((grp.skills || []).map(sk => sk.agent_profile || 'default'));
+        if (profiles.size > 1) {
+            throw new Error('parallel グループでは mixed agent_profile を許可していません。MVP では同一 profile に揃えてください。');
+        }
+    }
+}
+
 async function loadDashboardStats() {
     try {
         const stats = await apiRequest('/api/admin/dashboard');
@@ -162,6 +178,13 @@ async function showCreateModal() {
                 </label>
                 <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このスキルの実行結果をCSV、PDF、DOCXなどの形式で出力できます</small>
             </div>
+            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">デフォルト Agent Profile</label>
+                <select id="swal-default-agent-profile" class="swal2-select" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    ${renderAgentProfileOptions('default')}
+                </select>
+                <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">workflow 側で agent_profile 未指定時のフォールバックです</small>
+            </div>
             <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
                 <label style="display: flex; align-items: center; cursor: pointer;">
                     <input type="checkbox" id="swal-enable-web-search" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;">
@@ -202,6 +225,7 @@ async function showCreateModal() {
             const enableWebSearch = document.getElementById('swal-enable-web-search').checked;
             const enableCodeInterpreter = document.getElementById('swal-enable-code-interpreter').checked;
             const enableFileSearch = document.getElementById('swal-enable-file-search').checked;
+            const defaultAgentProfile = document.getElementById('swal-default-agent-profile').value;
 
             // モデル名からDeep Think設定を判定
             const enableDeepThink = model.includes('deep-think');
@@ -236,7 +260,8 @@ async function showCreateModal() {
                 enableDeepThink,
                 enableWebSearch,
                 enableCodeInterpreter,
-                enableFileSearch
+                enableFileSearch,
+                defaultAgentProfile
             };
         }
     });
@@ -325,6 +350,13 @@ async function editSkill(id) {
                 </label>
                 <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このスキルの実行結果をCSV、PDF、DOCXなどの形式で出力できます</small>
             </div>
+            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">デフォルト Agent Profile</label>
+                <select id="swal-default-agent-profile" class="swal2-select" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    ${renderAgentProfileOptions(skill.default_agent_profile || 'default')}
+                </select>
+                <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">workflow 側で agent_profile 未指定時のフォールバックです</small>
+            </div>
             <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
                 <label style="display: flex; align-items: center; cursor: pointer;">
                     <input type="checkbox" id="swal-enable-web-search" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;" ${skill.enable_web_search ? 'checked' : ''}>
@@ -365,6 +397,7 @@ async function editSkill(id) {
             const enableWebSearch = document.getElementById('swal-enable-web-search').checked;
             const enableCodeInterpreter = document.getElementById('swal-enable-code-interpreter').checked;
             const enableFileSearch = document.getElementById('swal-enable-file-search').checked;
+            const defaultAgentProfile = document.getElementById('swal-default-agent-profile').value;
 
             // モデル名からDeep Think設定を判定
             const enableDeepThink = model.includes('deep-think');
@@ -399,7 +432,8 @@ async function editSkill(id) {
                 enableDeepThink,
                 enableWebSearch,
                 enableCodeInterpreter,
-                enableFileSearch
+                enableFileSearch,
+                defaultAgentProfile
             };
         }
     });
@@ -421,7 +455,8 @@ async function saveSkill(id, formValues) {
         enable_deep_think: formValues.enableDeepThink,
         enable_web_search: formValues.enableWebSearch,
         enable_code_interpreter: formValues.enableCodeInterpreter,
-        enable_file_search: formValues.enableFileSearch
+        enable_file_search: formValues.enableFileSearch,
+        default_agent_profile: formValues.defaultAgentProfile
     };
 
     try {
@@ -1138,6 +1173,10 @@ function wfCreateRenderGroups() {
                         <label style="color:rgba(255,255,255,0.7);">最大:</label>
                         <input type="number" min="1" max="5" value="${sk.max_reflection_loops || 2}" onchange="wfCreateUpdateSkillField(${sk._uid},'max_reflection_loops',this.value)" style="width:35px; font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
                         ` : ''}
+                        <label style="color:rgba(255,255,255,0.7);">Profile:</label>
+                        <select onchange="_wfbUpdateSkillField(${gi},${si},'agent_profile',this.value)" style="font-size:11px; padding:2px 4px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:4px;">
+                            ${renderAgentProfileOptions(sk.agent_profile || 'default')}
+                        </select>
                     </div>
                 </div>`;
             if (useParallelLayout) {
@@ -1575,6 +1614,7 @@ async function openWorkflowDetail(id) {
                     quality_gate_type: s.quality_gate_type || 'disabled',
                     quality_gate_prompt: s.quality_gate_prompt || '',
                     max_reflection_loops: s.max_reflection_loops || 0,
+                    agent_profile: s.agent_profile || 'default',
                 })),
             })),
         };
@@ -1887,6 +1927,7 @@ function _wfbInitAddSkillSelects() {
                     quality_gate_type: 'disabled',
                     quality_gate_prompt: '',
                     max_reflection_loops: 0,
+                    agent_profile: p.default_agent_profile || 'default',
                 });
                 _renderWorkflowBuilder();
             });
@@ -1961,6 +2002,8 @@ async function _wfbSave() {
     const supervisorModeEl = document.getElementById('wfb-supervisor-mode');
     if (supervisorModeEl) s.supervisor_mode = supervisorModeEl.value;
 
+    validateParallelGroupProfiles(s.groups);
+
     const payload = {
         name: s.name,
         description: s.description,
@@ -1992,6 +2035,7 @@ async function _wfbSave() {
                 quality_gate_type: sk.quality_gate_type || 'disabled',
                 quality_gate_prompt: sk.quality_gate_prompt || '',
                 max_reflection_loops: parseInt(sk.max_reflection_loops) || 0,
+                agent_profile: sk.agent_profile || 'default',
             })),
         })),
     };
