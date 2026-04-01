@@ -68,6 +68,18 @@ def _resolve_agent_profile(ws, skill) -> str:
     return normalize_agent_profile(getattr(ws, "agent_profile", None) or getattr(skill, "default_agent_profile", None))
 
 
+def _resolve_agent_profile_with_source(ws, skill) -> tuple:
+    """agent_profile と解決元を返す。"""
+    ws_profile = getattr(ws, "agent_profile", None)
+    skill_default = getattr(skill, "default_agent_profile", None) if skill else None
+    if ws_profile:
+        return normalize_agent_profile(ws_profile), "workflow_override"
+    elif skill_default:
+        return normalize_agent_profile(skill_default), "skill_default"
+    else:
+        return "default", "fallback"
+
+
 def _collect_handoff_refs(ws) -> list[str]:
     refs = []
     output_key = getattr(ws, "output_key", None)
@@ -92,9 +104,10 @@ def _build_step_metadata(ws, skill, agent_profile: str) -> dict:
 
 
 def _augment_skill_input_with_profile(skill_input, wf_exec, workflow, ws, skill, structured_context):
-    agent_profile = _resolve_agent_profile(ws, skill)
+    agent_profile, profile_source = _resolve_agent_profile_with_source(ws, skill)
     blackboard = structured_context.get("blackboard", {}) if isinstance(structured_context, dict) else {}
     skill_input["_ppt_agent_profile"] = agent_profile
+    skill_input["_ppt_profile_source"] = profile_source  # skill_default / workflow_override / fallback
     skill_input["_ppt_workflow_name"] = getattr(workflow, "name", "") or ""
     skill_input["_ppt_workflow_goal"] = getattr(workflow, "description", "") or ""
     skill_input["_ppt_handoff_context"] = _parse_json_text(getattr(wf_exec, "handoff_summary", None), {})

@@ -166,6 +166,10 @@
             implement: 'Implement',
             verification: 'Verification',
         }[profile] || profile || '-');
+        const profileColor = (profile) => ({
+            default: '#9e9e9e', explore: '#2196f3', plan: '#ff9800',
+            implement: '#4caf50', verification: '#e91e63',
+        }[(profile || '').toLowerCase()] || '#9e9e9e');
 
         // stepOrder → stepResult のマップ
         const stepByOrder = {};
@@ -187,6 +191,18 @@
             } else if (sStatus === 'error' && step.errorMessage) {
                 bodyHtml = `<div style="padding:6px 8px; background:rgba(220,53,69,0.15); border-radius:4px; font-size:11px; color:#dc3545;">${esc(step.errorMessage)}</div>`;
             }
+            // profile 解決元バッジ
+            let profileSourceHtml = '';
+            if (step.inputData) {
+                try {
+                    const metaInp = typeof step.inputData === 'string' ? JSON.parse(step.inputData) : step.inputData;
+                    const src = metaInp?._ppt_profile_source;
+                    if (src && src !== 'fallback') {
+                        const srcLabel = { skill_default: 'inherited', workflow_override: 'override' }[src] || src;
+                        profileSourceHtml = `<span style="font-size:9px; padding:1px 6px; background:rgba(255,255,255,0.06); border-radius:8px; color:rgba(255,255,255,0.4); margin-left:4px;">${esc(srcLabel)}</span>`;
+                    }
+                } catch {}
+            }
             // 入力表示（_ppt_ メタを除外）
             let inputHtml = '';
             if (step.inputData) {
@@ -201,8 +217,8 @@
                     }
                 } catch {}
             }
-            // 入力 → 出力 の順で表示
-            return `${inputHtml}<details style="margin-top:6px;"><summary style="font-size:10px; color:rgba(255,255,255,0.5); cursor:pointer; user-select:none;">出力を表示</summary><div style="margin-top:4px;">${step.model ? `<div style="font-size:10px; color:#888; margin-bottom:4px;">${step.time ? step.time + 'ms' : '-'} | ${step.tokens || '-'} tokens</div>` : ''}${bodyHtml || '<div style="color:rgba(255,255,255,0.4); font-size:11px;">出力なし</div>'}</div></details>`;
+            // profileSource → 入力 → 出力 の順で表示
+            return `${profileSourceHtml}${inputHtml}<details style="margin-top:6px;"><summary style="font-size:10px; color:rgba(255,255,255,0.5); cursor:pointer; user-select:none;">▶ 出力を表示</summary><div style="margin-top:4px;">${step.model ? `<div style="font-size:10px; color:#888; margin-bottom:4px;">${step.time ? step.time + 'ms' : '-'} | ${step.tokens || '-'} tokens</div>` : ''}${bodyHtml || '<div style="color:rgba(255,255,255,0.4); font-size:11px;">出力なし</div>'}</div></details>`;
         }
 
         const cv = stageMeta?.coordinatorView;
@@ -222,7 +238,7 @@
         // 1行目: Stage + Verdict + 進捗
         html += `<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">`;
         html += `<span style="font-size:11px; color:rgba(255,255,255,0.55);">Stage</span>`;
-        html += `<span style="font-size:12px; font-weight:bold; color:#fff;">${esc(formatProfile(stage))}</span>`;
+        html += `<span style="font-size:12px; font-weight:bold; color:${profileColor(stage)};">${esc(formatProfile(stage))}</span>`;
         if (verdict !== '-') {
             html += `<span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Verdict</span>`;
             html += `<span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : 'rgba(255,255,255,0.7)'};">${esc(verdict)}</span>`;
@@ -292,7 +308,7 @@
                                 <span style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(sk.skill_name || sk.skill_display_name || '?')}</span>
                             </div>
                             <div style="font-size:10px; color:rgba(255,255,255,0.4);">${esc(sk.model_type || '')}</div>
-                            <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.08); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(formatProfile(sk.agent_profile || step?.agentProfile || 'default'))}</span></div>
+                            <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:${profileColor(sk.agent_profile || step?.agentProfile || 'default')}22; border-radius:10px; color:${profileColor(sk.agent_profile || step?.agentProfile || 'default')};">${esc(formatProfile(sk.agent_profile || step?.agentProfile || 'default'))}</span></div>
                             ${skillBody(step)}
                         </div>`;
                     });
@@ -308,7 +324,7 @@
                                 <div style="flex:1; min-width:0;">
                                     <div style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9);">${esc(sk.skill_name || sk.skill_display_name || '?')}</div>
                                     <div style="font-size:10px; color:rgba(255,255,255,0.4);">${esc(sk.model_type || '')}</div>
-                                    <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.08); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(formatProfile(sk.agent_profile || step?.agentProfile || 'default'))}</span></div>
+                                    <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:${profileColor(sk.agent_profile || step?.agentProfile || 'default')}22; border-radius:10px; color:${profileColor(sk.agent_profile || step?.agentProfile || 'default')};">${esc(formatProfile(sk.agent_profile || step?.agentProfile || 'default'))}</span></div>
                                 </div>
                             </div>
                             ${skillBody(step)}

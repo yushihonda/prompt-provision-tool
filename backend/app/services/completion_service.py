@@ -204,6 +204,16 @@ def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
         event["summary"] = execution.error_message or "エラーが発生"
     append_synthesis_event(wf_exec, event)
 
+    # 永続メモリ更新（成功時、通常スキルのみ）
+    if execution.status == "success" and not role and execution.workflow_skill_id:
+        try:
+            from app.services.memory_service import update_memory
+            summary_for_mem = _summarize_output(execution.output_data)
+            if summary_for_mem:
+                update_memory(db, wf_exec.workflow_id, profile, f"[{step_name}] {summary_for_mem}")
+        except Exception as e:
+            logger.warning(f"Failed to update memory: {e}")
+
     db.commit()
 
 

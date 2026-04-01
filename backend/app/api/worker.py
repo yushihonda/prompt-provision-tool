@@ -402,6 +402,23 @@ async def _get_execution_bundle_inner(
     else:
         final_prompt = resolved_skill_prompt
 
+    # 永続メモリ注入（ワークフロー実行時のみ）
+    if execution.workflow_execution_id and normalized_profile:
+        try:
+            from app.services.memory_service import get_or_init_memory, build_memory_prompt_section
+            wf_id = None
+            if execution.workflow_execution_id:
+                wf_e = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution.workflow_execution_id).first()
+                if wf_e:
+                    wf_id = wf_e.workflow_id
+            if wf_id:
+                memory_text = get_or_init_memory(db, wf_id, normalized_profile)
+                memory_section = build_memory_prompt_section(memory_text)
+                if memory_section:
+                    final_prompt = memory_section + "\n\n" + final_prompt
+        except Exception as e:
+            logger.warning(f"Failed to inject memory for execution {execution_id}: {e}")
+
     # ガードレール付加
     if settings.ENABLE_PROMPT_GUARDRAILS:
         final_prompt = settings.GUARDRAIL_PREFIX + "\n\n" + final_prompt

@@ -543,8 +543,44 @@ function renderInputFieldsForSchema(step, inputSchema) {
     return fieldsHTML;
 }
 
+// 常時ステータスバーを更新
+function updateStatusBar() {
+    const bar = document.getElementById('wf-status-bar');
+    if (!bar) return;
+    const cv = _wfStageMeta.coordinatorView;
+    const esc = typeof escapeHtml === 'function' ? escapeHtml : (t => t);
+    if (!cv && !_wfStageMeta.currentStage) {
+        bar.style.display = 'none';
+        return;
+    }
+    bar.style.display = 'block';
+    const stage = _wfStageMeta.currentStage || '-';
+    const verdict = _wfStageMeta.finalVerdict;
+    const summary = cv?.latest_summary || '';
+    const completedCount = cv?.completed_count || 0;
+    const totalExecs = cv?.total_executions || 0;
+    const nextAction = cv?.next_expected_action || '';
+    const stageColor = _profileColor(stage);
+    const verdictColor = verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : null;
+
+    let html = `<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">`;
+    html += `<span style="font-size:12px; font-weight:bold; color:${stageColor}; background:${stageColor}22; padding:2px 10px; border-radius:10px;">${esc(formatStageLabel(stage))}</span>`;
+    if (verdict) {
+        html += `<span style="font-size:11px; font-weight:bold; color:${verdictColor};">${esc(verdict)}</span>`;
+    }
+    if (totalExecs > 0) {
+        html += `<span style="font-size:10px; color:rgba(255,255,255,0.4);">${completedCount}/${totalExecs}</span>`;
+    }
+    if (summary) {
+        html += `<span style="font-size:11px; color:rgba(255,255,255,0.7); flex:1;">${esc(summary)}</span>`;
+    }
+    html += `</div>`;
+    bar.innerHTML = html;
+}
+
 // ステップの実行進捗を表示（フロービューが全て担当、下の出力パネルは非表示）
 function renderStepExecutions() {
+    updateStatusBar();
     // 下の結果コンテナは非表示（フロービューが各スキル出力を担当）
     const resultContainer = document.getElementById('workflow-result-container');
     if (resultContainer) resultContainer.style.display = 'none';
@@ -563,6 +599,18 @@ function formatStageLabel(stage) {
     if (!stage) return '-';
     const map = { default: 'Default', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
     return map[stage] || stage;
+}
+
+// profile / stage の固定色（全画面で統一）
+function _profileColor(profile) {
+    const colors = {
+        default: '#9e9e9e',
+        explore: '#2196f3',
+        plan: '#ff9800',
+        implement: '#4caf50',
+        verification: '#e91e63',
+    };
+    return colors[(profile || '').toLowerCase()] || '#9e9e9e';
 }
 
 function renderWorkflowStageSummary(esc) {
@@ -791,7 +839,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
                             <span style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sName}</span>
                         </div>
                         <div style="font-size:10px; color:rgba(255,255,255,0.4);">${sModel}</div>
-                        <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.08); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(formatStageLabel(sk.agent_profile || 'default'))}</span></div>
+                        <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:${_profileColor(sk.agent_profile || 'default')}22; border-radius:10px; color:${_profileColor(sk.agent_profile || 'default')};">${esc(formatStageLabel(sk.agent_profile || 'default'))}</span></div>
                         ${skillOutputHtml(sk.workflow_skill_id)}
                     </div>
                 `;
@@ -810,7 +858,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
                             <div style="flex:1; min-width:0;">
                                 <div style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9);">${sName}</div>
                                 <div style="font-size:10px; color:rgba(255,255,255,0.4);">${sModel}</div>
-                                <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.08); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(formatStageLabel(sk.agent_profile || 'default'))}</span></div>
+                                <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:${_profileColor(sk.agent_profile || 'default')}22; border-radius:10px; color:${_profileColor(sk.agent_profile || 'default')};">${esc(formatStageLabel(sk.agent_profile || 'default'))}</span></div>
                             </div>
                         </div>
                         ${skillOutputHtml(sk.workflow_skill_id)}

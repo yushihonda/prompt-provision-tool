@@ -221,6 +221,22 @@ class WorkflowExecution(Base):
     executions = relationship("Execution", back_populates="workflow_execution", order_by="Execution.skill_order")
 
 
+class WorkflowMemory(Base):
+    """ワークフロー × profile 単位の永続メモリ"""
+    __tablename__ = "workflow_memories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
+    profile = Column(String(30), nullable=False, default="default")
+    memory_data = Column(Text(length=16777215), nullable=True)  # MEDIUMTEXT: 蓄積メモリ
+    starter_seed = Column(Text, nullable=True)  # 初期 seed（初回のみ適用）
+    seed_version = Column(Integer, nullable=False, default=1)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    workflow = relationship("Workflow")
+
+
 class AccountSkill(Base):
     """アカウントとスキルの紐付けテーブル"""
     __tablename__ = "account_skills"
