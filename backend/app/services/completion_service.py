@@ -117,9 +117,11 @@ def _summarize_output(output: Optional[str]) -> str:
     parsed = _safe_json_loads(output, None)
     if isinstance(parsed, dict):
         keys = list(parsed.keys())
-        return f"dict keys: {', '.join(keys[:5])}" if keys else "empty dict"
+        if not keys:
+            return ""
+        return f"出力キー: {', '.join(keys[:5])}"
     if isinstance(parsed, list):
-        return f"list items: {len(parsed)}"
+        return f"{len(parsed)}件の結果"
     compact = str(output).strip().replace("\n", " ")
     return compact[:200]
 

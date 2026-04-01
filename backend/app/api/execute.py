@@ -436,6 +436,13 @@ async def execute_workflow(
     wf_execution.status = "processing"
     if launched_profiles:
         wf_execution.current_stage = launched_profiles[0]
+
+    # synthesis event: ワークフロー開始
+    from app.services.completion_service import append_synthesis_event
+    append_synthesis_event(wf_execution, {
+        "event_type": "workflow_start",
+        "summary": f"ワークフロー実行を開始（{len(created_executions)}ステップ）",
+    })
     db.commit()
     for ex in created_executions:
         db.refresh(ex)

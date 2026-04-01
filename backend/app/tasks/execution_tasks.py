@@ -947,6 +947,15 @@ def continue_workflow_execution(
 
             # --- 全スキル完了後のポスト処理 (Judge → Supervisor) ---
             if all_skills_done:
+                # synthesis event: グループ完了
+                group_name = group.group_name or f"Group {group.group_order}"
+                from app.services.completion_service import append_synthesis_event as _append_ev
+                _append_ev(wf_exec, {
+                    "event_type": "group_complete",
+                    "summary": f"{group_name}の全ステップが完了",
+                })
+                db.commit()
+
                 # Feature 5: ジャッジ未実行?（自動オーバーライド対応）
                 effective_judge_prompt = get_effective(group, "judge_prompt", orch_overrides, group.id, "groups")
                 if effective_judge_prompt and ("judge", group.id) not in completed_groups:
@@ -1278,6 +1287,14 @@ def _start_parent_skill(db, wf_exec, workflow, structured_context,
         raise RuntimeError(f"Failed to start parent skill: {e}") from e
 
     logger.info(f"WF {wf_exec.id}: parent skill launched (step={skill_order})")
+
+    # synthesis event: リーダー開始
+    from app.services.completion_service import append_synthesis_event
+    append_synthesis_event(wf_exec, {
+        "event_type": "leader_start",
+        "summary": "全結果の統合を開始",
+    })
+    db.commit()
 
     try:
         from app.services.redis_service import publish_workflow_next_step

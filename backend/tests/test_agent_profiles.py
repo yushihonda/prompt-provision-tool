@@ -64,6 +64,95 @@ class ExtractVerdictTests(unittest.TestCase):
     def test_returns_none_when_verdict_cannot_be_extracted(self):
         self.assertIsNone(extract_verdict("verification output without canonical verdict"))
 
+    def test_extracts_verdict_case_insensitive(self):
+        self.assertEqual(extract_verdict("verdict: pass"), "PASS")
+        self.assertEqual(extract_verdict("Verdict: Fail"), "FAIL")
+
+    def test_extracts_verdict_with_extra_whitespace(self):
+        self.assertEqual(extract_verdict("VERDICT:  PASS  "), "PASS")
+        self.assertEqual(extract_verdict("  VERDICT: FAIL"), "FAIL")
+
+    def test_extracts_first_verdict_when_multiple(self):
+        text = "VERDICT: PARTIAL\nsome text\nVERDICT: PASS"
+        self.assertEqual(extract_verdict(text), "PARTIAL")
+
+    def test_returns_none_for_empty_and_none(self):
+        self.assertIsNone(extract_verdict(None))
+        self.assertIsNone(extract_verdict(""))
+
+    def test_extracts_verdict_from_json_case_insensitive(self):
+        self.assertEqual(extract_verdict('{"verdict":"partial"}'), "PARTIAL")
+
+
+class ExtractStructuredEnvelopeTests(unittest.TestCase):
+    """_extract_structured_envelope のテスト"""
+
+    def test_extracts_from_top_level_json(self):
+        from app.services.completion_service import _extract_structured_envelope
+        output = '{"summary": "短い要約", "key_points": ["要点1"]}'
+        result = _extract_structured_envelope(output)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["summary"], "短い要約")
+
+    def test_extracts_from_trailing_json_block(self):
+        from app.services.completion_service import _extract_structured_envelope
+        output = '本文テキスト\n\n```json\n{"summary": "末尾の要約", "key_points": ["a"]}\n```'
+        result = _extract_structured_envelope(output)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["summary"], "末尾の要約")
+
+    def test_returns_none_for_no_envelope(self):
+        from app.services.completion_service import _extract_structured_envelope
+        self.assertIsNone(_extract_structured_envelope("普通のテキスト出力"))
+        self.assertIsNone(_extract_structured_envelope(None))
+        self.assertIsNone(_extract_structured_envelope(""))
+
+    def test_returns_none_for_json_without_summary(self):
+        from app.services.completion_service import _extract_structured_envelope
+        self.assertIsNone(_extract_structured_envelope('{"key": "value"}'))
+
+    def test_handles_malformed_json(self):
+        from app.services.completion_service import _extract_structured_envelope
+        self.assertIsNone(_extract_structured_envelope('```json\n{broken json}\n```'))
+
+
+class AppendSynthesisEventTests(unittest.TestCase):
+    """append_synthesis_event のテスト"""
+
+    def test_appends_event_with_timestamp(self):
+        from app.services.completion_service import append_synthesis_event
+        wf_exec = SimpleNamespace(synthesis_log=None)
+        append_synthesis_event(wf_exec, {"event_type": "step_complete", "summary": "テスト"})
+        events = json.loads(wf_exec.synthesis_log)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"], "step_complete")
+        self.assertIn("timestamp", events[0])
+
+    def test_appends_to_existing_events(self):
+        from app.services.completion_service import append_synthesis_event
+        wf_exec = SimpleNamespace(synthesis_log='[{"event_type": "first"}]')
+        append_synthesis_event(wf_exec, {"event_type": "second"})
+        events = json.loads(wf_exec.synthesis_log)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[1]["event_type"], "second")
+
+    def test_limits_to_100_events(self):
+        from app.services.completion_service import append_synthesis_event
+        existing = [{"event_type": f"ev_{i}"} for i in range(100)]
+        wf_exec = SimpleNamespace(synthesis_log=json.dumps(existing))
+        append_synthesis_event(wf_exec, {"event_type": "overflow"})
+        events = json.loads(wf_exec.synthesis_log)
+        self.assertEqual(len(events), 100)
+        self.assertEqual(events[-1]["event_type"], "overflow")
+        self.assertEqual(events[0]["event_type"], "ev_1")  # ev_0 dropped
+
+    def test_handles_corrupted_log(self):
+        from app.services.completion_service import append_synthesis_event
+        wf_exec = SimpleNamespace(synthesis_log="not valid json")
+        append_synthesis_event(wf_exec, {"event_type": "recovery"})
+        events = json.loads(wf_exec.synthesis_log)
+        self.assertEqual(len(events), 1)
+
 
 class PersistWorkflowMetadataTests(unittest.TestCase):
     class _FakeQuery:

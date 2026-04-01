@@ -130,7 +130,7 @@ def _build_coordinator_view(db, wf_exec):
             latest_summary = "スーパーバイザー判定中"
         elif any(not w.get("role") and not w.get("execution_id") for w in waiting_on):
             next_action = "waiting_for_leader"
-            latest_summary = "リーダーが最終統合を実行中"
+            latest_summary = "最終結果を統合中"
         else:
             next_action = "executing_steps"
             latest_summary = f"{', '.join(waiting_names)} を実行中"
@@ -139,7 +139,7 @@ def _build_coordinator_view(db, wf_exec):
         if last_completed_name:
             latest_summary = f"{last_completed_name}が完了、次のステップへ進行中"
         else:
-            latest_summary = "次のステップを準備中"
+            latest_summary = "次を準備中"
 
     # handoff_summary から「なぜ」の情報を抽出
     decision_why = None
@@ -152,7 +152,7 @@ def _build_coordinator_view(db, wf_exec):
                 hs_summary = hs.get("summary", "")
                 handoff_key_points = hs.get("key_points", []) or []
                 handoff_next_hint = hs.get("next_action_hint")
-                if hs_summary and hs_summary != "empty dict":
+                if hs_summary:
                     decision_why = hs_summary
         except (json.JSONDecodeError, TypeError):
             pass

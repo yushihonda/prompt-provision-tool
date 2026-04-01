@@ -241,7 +241,7 @@
             html += `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px;">`;
             const recentEvents = events.slice(-8);
             for (const ev of recentEvents) {
-                const evIcon = { 'step_complete': '✓', 'judge_complete': '⚖', 'supervisor_decision': '👁', 'quality_gate_pass': '🔍', 'leader_complete': '★', 'step_error': '✗' }[ev.event_type] || '•';
+                const evIcon = { 'workflow_start': '▶', 'group_complete': '◆', 'leader_start': '⟳', 'step_complete': '✓', 'judge_complete': '⚖', 'supervisor_decision': '👁', 'quality_gate_pass': '🔍', 'leader_complete': '★', 'step_error': '✗' }[ev.event_type] || '•';
                 const evColor = (ev.event_type || '').includes('error') ? '#dc3545' : '#28a745';
                 html += `<span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.06); border-radius:10px; color:rgba(255,255,255,0.65); display:inline-flex; align-items:center; gap:3px;"><span style="color:${evColor};">${evIcon}</span>${esc(ev.summary || ev.step_name || '')}</span>`;
             }

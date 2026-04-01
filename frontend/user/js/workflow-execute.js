@@ -621,6 +621,7 @@ function renderWorkflowStageSummary(esc) {
         html += `<div style="display:flex; flex-wrap:wrap; gap:4px;">`;
         for (const ev of recentEvents) {
             const evIcon = {
+                'workflow_start': '▶', 'group_complete': '◆', 'leader_start': '⟳',
                 'step_complete': '✓', 'judge_complete': '⚖', 'supervisor_decision': '👁',
                 'quality_gate_pass': '🔍', 'leader_complete': '★',
                 'step_error': '✗', 'debate_judge_error': '⚖✗',
