@@ -1,18 +1,59 @@
 // ユーザー 実行履歴画面 JavaScript
 
-let executions = [];
+let groupedRows = []; // { type: 'skill' | 'workflow', ... }
 let currentPage = 1;
 const itemsPerPage = 10;
 let totalItems = 0;
 
 async function loadHistory(page = 1) {
     try {
-        const skip = (page - 1) * itemsPerPage;
-        const response = await apiRequest(`/api/user/executions?skip=${skip}&limit=${itemsPerPage}`);
+        // ワークフロー実行をまとめるため、多めに取得してグルーピング
+        const response = await apiRequest(`/api/user/executions?skip=0&limit=500`);
+        const allExecs = response.items || response;
 
-        executions = response.items || response;
-        totalItems = response.total !== undefined ? response.total : (executions.length === itemsPerPage ? page * itemsPerPage + 1 : page * itemsPerPage);
+        // ワークフロー実行IDでグルーピング / スキル単体はそのまま
+        const wfGroups = {};
+        const skillRows = [];
 
+        for (const exec of allExecs) {
+            if (exec.workflow_execution_id) {
+                const weId = exec.workflow_execution_id;
+                if (!wfGroups[weId]) {
+                    wfGroups[weId] = {
+                        type: 'workflow',
+                        workflowExecutionId: weId,
+                        workflowName: exec.workflow_name || 'ワークフロー',
+                        executions: [],
+                    };
+                }
+                wfGroups[weId].executions.push(exec);
+            } else {
+                skillRows.push({ type: 'skill', execution: exec });
+            }
+        }
+
+        // ワークフローグループ内をステップ順でソート、代表日時を算出
+        const wfRows = Object.values(wfGroups).map(g => {
+            g.executions.sort((a, b) => (a.skill_order || 0) - (b.skill_order || 0));
+            g.executedAt = g.executions.reduce((earliest, e) => {
+                if (!e.executed_at) return earliest;
+                return !earliest || e.executed_at < earliest ? e.executed_at : earliest;
+            }, null);
+            return g;
+        });
+
+        // スキル行とワークフロー行を統合して日時降順ソート
+        const merged = [...skillRows, ...wfRows];
+        merged.sort((a, b) => {
+            const tA = a.type === 'skill' ? a.execution.executed_at : a.executedAt;
+            const tB = b.type === 'skill' ? b.execution.executed_at : b.executedAt;
+            if (!tA) return 1;
+            if (!tB) return -1;
+            return tB > tA ? 1 : tB < tA ? -1 : 0;
+        });
+
+        groupedRows = merged;
+        totalItems = merged.length;
         currentPage = page;
         renderHistory();
         renderPagination();
@@ -24,243 +65,142 @@ async function loadHistory(page = 1) {
 
 function renderHistory() {
     const tbody = document.getElementById('history-tbody');
+    const start = (currentPage - 1) * itemsPerPage;
+    const pageRows = groupedRows.slice(start, start + itemsPerPage);
 
-    if (executions.length === 0) {
+    if (pageRows.length === 0) {
         tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: rgba(255, 255, 255, 0.6);">実行履歴がありません</td></tr>';
         return;
     }
 
-    tbody.innerHTML = executions.map(execution => {
-        let modelDisplay = execution.model_used;
-
-        // Thinkingモデルの場合はサフィックスを削除して表示
-        let isThinkingModel = false;
-        if (modelDisplay && modelDisplay.includes('thinking')) {
-            modelDisplay = modelDisplay.replace('-thinking', '');
-            isThinkingModel = true;
+    tbody.innerHTML = pageRows.map(row => {
+        if (row.type === 'skill') {
+            return renderSkillRow(row.execution);
+        } else {
+            return renderWorkflowRow(row);
         }
-
-        // Deep Thinkモデルの場合はサフィックスを削除して表示
-        let isDeepThinkModel = false;
-        if (modelDisplay && modelDisplay.includes('deep-think')) {
-            modelDisplay = modelDisplay.replace('-deep-think', '');
-            isDeepThinkModel = true;
-        }
-
-        // Proモデルの場合は「-pro」を削除してProバッジを追加
-        const isProModel = execution.model_used && (execution.model_used.includes('-pro') || execution.model_used.endsWith('-pro'));
-        if (isProModel) {
-            // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
-            modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
-            modelDisplay += `<span class="pro-badge">Pro</span>`;
-        }
-
-        // 「-preview」を削除
-        modelDisplay = modelDisplay.replace(/-preview/g, '');
-
-        // Deep Thinkバッジを追加（管理画面と同じロジック）
-        // モデル名にdeep-thinkが含まれる場合、またはenable_deep_thinkが有効でGeminiモデルの場合
-        const isDeepThinkEnabled = execution.enable_deep_think === true || execution.enable_deep_think === 1 || execution.enable_deep_think === 'true';
-        const enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
-        if (isDeepThinkModel || enableDeepThink) {
-            modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
-        }
-
-        // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
-        if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
-            modelDisplay += `<span class="thinking-badge">Thinking</span>`;
-        }
-
-        // NEWバッジを追加（gpt-5.2系のみ）
-        if (execution.model_used === 'gpt-5.2' || execution.model_used === 'gpt-5.2-pro' || execution.model_used === 'gpt-5.2-thinking') {
-            modelDisplay += `<span class="new-badge">NEW</span>`;
-        }
-        
-        // プロンプト名の表示（ワークフロー実行の場合はワークフロー名とステップ名を表示）
-        let promptDisplay = execution.prompt_name || '-';
-        if (execution.workflow_name) {
-            const stepInfo = execution.step_name ? ` (${execution.step_name})` : (execution.step_order ? ` (Step ${execution.step_order})` : '');
-            promptDisplay = `<span style="color: #7c3aed; font-weight: 500;">[ワークフロー] ${execution.workflow_name}</span><br><span style="font-size: 11px; color: rgba(255,255,255,0.7);">${execution.prompt_name || '-'}${stepInfo}</span>`;
-        }
-        
-        return `
-        <tr>
-            <td>${formatDate(execution.executed_at)}</td>
-            <td>${promptDisplay}</td>
-            <td>${modelDisplay}</td>
-            <td>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</td>
-            <td>${execution.execution_time || '-'}${execution.execution_time ? 'ms' : ''}</td>
-            <td>${execution.tokens_used || '-'}</td>
-            <td><span style="color: ${execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'rgba(255, 255, 255, 0.6)'}">${execution.status}</span></td>
-            <td>
-                <button onclick="showDetail(${execution.id})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
-                    <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #17a2b8; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
-                </button>
-            </td>
-        </tr>
-        `;
     }).join('');
 }
 
+function renderSkillRow(execution) {
+    const modelDisplay = formatModelDisplay(execution.model_used, execution);
+    const statusColor = getStatusColor(execution.status);
+
+    return `
+    <tr>
+        <td>${formatDate(execution.executed_at)}</td>
+        <td>${escapeHtmlCommon(execution.skill_name || '-')}</td>
+        <td>${modelDisplay}</td>
+        <td>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</td>
+        <td>${execution.execution_time || '-'}${execution.execution_time ? 'ms' : ''}</td>
+        <td>${execution.tokens_used || '-'}</td>
+        <td><span style="color: ${statusColor}">${execution.status}</span></td>
+        <td>
+            <button onclick="showDetail(${execution.id})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer;">
+                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #17a2b8;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
+            </button>
+        </td>
+    </tr>
+    `;
+}
+
+function renderWorkflowRow(group) {
+    const execs = group.executions;
+    const normalExecs = execs.filter(e => !e.execution_role);
+    const totalTime = normalExecs.reduce((s, e) => s + (e.execution_time || 0), 0);
+    const totalTokens = normalExecs.reduce((s, e) => s + (e.tokens_used || 0), 0);
+    const overallStatus = getOverallStatus(execs);
+    const statusColor = getStatusColor(overallStatus);
+    const stepExecs = normalExecs.filter(e => e.skill_order && e.workflow_skill_id);
+    const leaderExec = normalExecs.find(e => !e.workflow_skill_id);
+    const parentModel = leaderExec?.model_used || normalExecs[0]?.model_used || '-';
+    const modelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModel, null, {}) : parentModel;
+    const weId = group.workflowExecutionId;
+
+    // 各スキルの小さなバー
+    const skillBars = stepExecs.map(e => {
+        const sc = getStatusColor(e.status);
+        const name = escapeHtmlCommon(e.skill_name || `Step ${e.skill_order}`);
+        return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px;background:rgba(0,0,0,0.2);border-left:2px solid ${sc};color:rgba(255,255,255,0.8);">${name}</span>`;
+    }).join(' ');
+
+    return `
+    <tr>
+        <td>${group.executedAt ? formatDate(group.executedAt) : '-'}</td>
+        <td>
+            <div style="margin-bottom:4px;">
+                <span style="color: #7c3aed; font-weight: 600; font-size: 13px;">${escapeHtmlCommon(group.workflowName)}</span>
+                <span style="color: rgba(255,255,255,0.4); font-size: 11px; margin-left: 6px;">${stepExecs.length} steps</span>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
+        </td>
+        <td>${modelDisplay}</td>
+        <td>-</td>
+        <td>${totalTime ? totalTime + 'ms' : '-'}</td>
+        <td>${totalTokens || '-'}</td>
+        <td><span style="color: ${statusColor}">${overallStatus}</span></td>
+        <td>
+            <button onclick="showWorkflowDetail(${weId})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer;">
+                <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #17a2b8;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
+            </button>
+        </td>
+    </tr>
+    `;
+}
+
+function getStatusColor(status) {
+    if (status === 'success') return '#28a745';
+    if (status === 'error') return '#dc3545';
+    if (status === 'cancelled') return '#ffc107';
+    if (status === 'pending' || status === 'pending_local' || status === 'processing') return '#7c3aed';
+    return 'rgba(255, 255, 255, 0.6)';
+}
+
+function getOverallStatus(execs) {
+    if (execs.some(e => e.status === 'error')) return 'error';
+    if (execs.some(e => e.status === 'cancelled')) return 'cancelled';
+    if (execs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
+    if (execs.every(e => e.status === 'success')) return 'success';
+    return 'pending';
+}
+
 function renderPagination() {
-    const container = document.getElementById('pagination-container');
-    const totalPages = Math.ceil(totalItems / itemsPerPage);
-
-    if (totalPages <= 1) {
-        container.style.display = 'none';
-        return;
-    }
-
-    container.style.display = 'flex';
-
-    let html = `
-        <button onclick="loadHistory(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>前へ</button>
-    `;
-
-    const startPage = Math.max(1, currentPage - 2);
-    const endPage = Math.min(totalPages, startPage + 4);
-
-    for (let i = startPage; i <= endPage; i++) {
-        html += `<button class="page-number ${i === currentPage ? 'active' : ''}" onclick="loadHistory(${i})">${i}</button>`;
-    }
-
-    html += `
-        <span class="page-info">${currentPage} / ${totalPages}</span>
-        <button onclick="loadHistory(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>次へ</button>
-    `;
-
-    container.innerHTML = html;
+    renderUserPagination('pagination-container', currentPage, totalItems, itemsPerPage, 'loadHistory');
 }
 
 async function showDetail(id) {
     try {
         const execution = await apiRequest(`/api/user/executions/${id}`);
 
-        // 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
-        // 保存されていない場合はプロンプト情報を取得（後方互換性のため）
-        let enableDeepThink = false;
-        if (execution.enable_deep_think !== undefined && execution.enable_deep_think !== null) {
-            // 実行時に保存された値を使用
-            const isDeepThinkEnabled = execution.enable_deep_think === true || execution.enable_deep_think === 1 || execution.enable_deep_think === 'true';
-            enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
-        } else if (execution.prompt_id) {
-            // 古い実行履歴の場合、プロンプト情報を取得
-            try {
-                const prompt = await apiRequest(`/api/user/prompts/${execution.prompt_id}`);
-                const isDeepThinkEnabled = prompt.enable_deep_think === true || prompt.enable_deep_think === 1 || prompt.enable_deep_think === 'true';
-                enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
-            } catch (e) {
-                console.error('Failed to load prompt detail:', e);
-            }
+        // ワークフロー実行の場合はワークフロー詳細に切り替え
+        if (execution.workflow_execution_id) {
+            await showWorkflowDetail(execution.workflow_execution_id);
+            return;
         }
 
-        const detailHTML = `
-            <div style="text-align: left; max-height: 70vh; overflow-y: auto;">
-                <div style="margin-bottom: 15px;">
-                    <strong>実行日時:</strong><br>
-                    <span>${formatDate(execution.executed_at)}</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>${execution.workflow_name ? 'ワークフロー' : 'プロンプト'}:</strong><br>
-                    <span>${execution.workflow_name ? `<span style="color: #7c3aed; font-weight: 500;">${execution.workflow_name}</span>` : (execution.prompt_name || '-')}</span>
-                    ${execution.workflow_name && execution.step_name ? `<br><span style="font-size: 12px; color: rgba(255,255,255,0.7);">ステップ: ${execution.step_name}</span>` : ''}
-                    ${execution.workflow_name && execution.prompt_name ? `<br><span style="font-size: 12px; color: rgba(255,255,255,0.7);">Skill: ${execution.prompt_name}</span>` : ''}
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>使用モデル:</strong><br>
-                    <span>${(() => {
-                        let modelDisplay = execution.model_used;
+        const modelHtml = formatModelDisplay(execution.model_used, execution);
+        const { escapeHtml, buildHtml } = execDetailModal;
 
-                        // Thinkingモデルの場合はサフィックスを削除して表示
-                        let isThinkingModel = false;
-                        if (modelDisplay && modelDisplay.includes('thinking')) {
-                            modelDisplay = modelDisplay.replace('-thinking', '');
-                            isThinkingModel = true;
-                        }
+        const summaryChips = [
+            { label: '実行日時', valueHtml: escapeHtml(formatDate(execution.executed_at)) },
+            { label: 'スキル', valueHtml: escapeHtml(execution.skill_name || '-') },
+            { label: 'モデル', valueHtml: modelHtml },
+        ];
 
-                        // Deep Thinkモデルの場合はサフィックスを削除して表示
-                        let isDeepThinkModel = false;
-                        if (modelDisplay && modelDisplay.includes('deep-think')) {
-                            modelDisplay = modelDisplay.replace('-deep-think', '');
-                            isDeepThinkModel = true;
-                        }
-
-                        // Proモデルの場合は「-pro」を削除してProバッジを追加
-                        const isProModel = execution.model_used && (execution.model_used.includes('-pro') || execution.model_used.endsWith('-pro'));
-                        if (isProModel) {
-                            // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
-                            modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
-                            modelDisplay += `<span class="pro-badge">Pro</span>`;
-                        }
-
-                        // 「-preview」を削除
-                        modelDisplay = modelDisplay.replace(/-preview/g, '');
-
-                        // Deep Thinkバッジを追加（モデル名にdeep-thinkが含まれる場合、またはenableDeepThinkが有効な場合）
-                        if (isDeepThinkModel || enableDeepThink) {
-                            modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
-                        }
-
-                        // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
-                        if (isThinkingModel || execution.model_used === 'gpt-5.1-thinking') {
-                            modelDisplay += `<span class="thinking-badge">Thinking</span>`;
-                        }
-
-                        // NEWバッジを追加（gpt-5.2系のみ）
-                        if (execution.model_used === 'gpt-5.2' || execution.model_used === 'gpt-5.2-pro' || execution.model_used === 'gpt-5.2-thinking') {
-                            modelDisplay += `<span class="new-badge">NEW</span>`;
-                        }
-
-                        return modelDisplay;
-                    })()}</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>入力データ:</strong><br>
-                    <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-top: 5px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word; color: rgba(255, 255, 255, 0.9);">${formatJSON(execution.input_data)}</div>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
-                        <strong>出力データ:</strong>
-                        <button onclick="copyHistoryOutput('${execution.id}', this)" title="出力をコピー" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 6px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; opacity: 0.7; margin-right: 10px;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" style="width: 18px; height: 18px; fill: rgba(255, 255, 255, 0.7); transition: fill 0.2s ease, transform 0.2s ease;"><path d="M16 10c3.469 0 2 4 2 4s4-1.594 4 2v6h-10v-12h4zm.827-2h-6.827v16h14v-8.842c0-2.392-4.011-7.158-7.173-7.158zm-8.827 12h-6v-16h4l2.102 2h3.898l2-2h4v2.145c.656.143 1.327.391 2 .754v-4.899h-3c-1.229 0-2.18-1.084-3-2h-8c-.82.916-1.771 2-3 2h-3v20h8v-2zm2-18c.553 0 1 .448 1 1s-.447 1-1 1-1-.448-1-1 .447-1 1-1zm4 18h6v-1h-6v1zm0-2h6v-1h-6v1zm0-2h6v-1h-6v1z"/></svg>
-                        </button>
-                    </div>
-                    <div id="output-data-${execution.id}" style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-top: 5px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; color: rgba(255, 255, 255, 0.9);">${execution.output_data || '-'}</div>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>実行時間:</strong><br>
-                    <span>${execution.execution_time ? `${execution.execution_time}ms` : '-'}</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>使用トークン数:</strong><br>
-                    <span>${execution.tokens_used || '-'}</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>出力形式:</strong><br>
-                    <span>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>ステータス:</strong><br>
-                    <span style="color: ${execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'rgba(255, 255, 255, 0.6)'}">${execution.status}</span>
-                </div>
-                ${execution.error_message ? `
-                <div style="margin-bottom: 15px;">
-                    <strong>エラーメッセージ:</strong><br>
-                    <div style="background: rgba(220, 53, 69, 0.2); border: 1px solid rgba(220, 53, 69, 0.4); color: rgba(255, 107, 107, 0.9); padding: 10px; border-radius: 8px; margin-top: 5px;">${execution.error_message}</div>
-                </div>
-                ` : ''}
-            </div>
-        `;
+        const detailHTML = buildHtml(execution, {
+            formatJSON,
+            summaryChips,
+            showOutputFormat: true,
+            outputCopyId: String(execution.id),
+        });
 
         await Swal.fire({
             title: '実行詳細',
             html: detailHTML,
-            width: '800px',
-            confirmButtonText: '閉じる',
-            confirmButtonColor: '#6c757d',
-            customClass: {
-                popup: 'swal-wide'
-            }
+            width: '880px',
+            confirmButtonText: USER_SWAL.btnClose,
+            confirmButtonColor: USER_SWAL.primary,
+            customClass: { popup: 'swal-wide swal-exec-detail' },
         });
     } catch (error) {
         await showAlert('詳細情報の読み込みに失敗しました', 'error');
@@ -268,64 +208,101 @@ async function showDetail(id) {
     }
 }
 
-function formatJSON(json) {
+async function showWorkflowDetail(weId) {
     try {
-        if (typeof json === 'string') {
-            json = JSON.parse(json);
+        const response = await apiRequest(`/api/user/executions?skip=0&limit=500`);
+        const execs = (response.items || response)
+            .filter(e => e.workflow_execution_id === weId)
+            .sort((a, b) => (a.skill_order || 0) - (b.skill_order || 0));
+
+        if (execs.length === 0) {
+            showAlert('実行データが見つかりません', 'error');
+            return;
         }
-        return JSON.stringify(json, null, 2);
-    } catch {
-        return json;
-    }
-}
 
-// 実行履歴の出力データをコピーする関数
-async function copyHistoryOutput(executionId, buttonElement) {
-    const outputElement = document.getElementById(`output-data-${executionId}`);
-    if (!outputElement) {
-        showAlert('出力データが見つかりません', 'warning');
-        return;
-    }
+        const esc = execDetailModal.escapeHtml;
+        const workflowName = execs[0]?.workflow_name || 'ワークフロー';
+        const normalExecs = execs.filter(e => !e.execution_role);
+        const leaderExec = normalExecs.find(e => !e.workflow_skill_id || e.workflow_skill_id === null);
+        const stepExecs = normalExecs.filter(e => e.skill_order && e.workflow_skill_id);
+        const totalTime = normalExecs.reduce((s, e) => s + (e.execution_time || 0), 0);
+        const totalTokens = normalExecs.reduce((s, e) => s + (e.tokens_used || 0), 0);
 
-    const text = outputElement.textContent || outputElement.innerText;
-
-    if (!text || text === '-') {
-        showAlert('コピーする内容がありません', 'warning');
-        return;
-    }
-
-    try {
-        await navigator.clipboard.writeText(text);
-        showAlert('出力をクリップボードにコピーしました', 'success');
-
-        // ボタンの視覚的フィードバック
-        if (buttonElement) {
-            const originalOpacity = buttonElement.style.opacity;
-            buttonElement.style.opacity = '1';
-            setTimeout(() => {
-                buttonElement.style.opacity = originalOpacity;
-            }, 500);
+        // グループ情報を取得
+        let groups = null;
+        const wfId = execs.find(e => e.workflow_id)?.workflow_id;
+        if (wfId) {
+            try {
+                const wfDetail = await apiRequest(`/api/user/workflows/${wfId}`);
+                groups = wfDetail?.workflow?.groups || null;
+            } catch (e) { /* グループ取得失敗時はフラット表示 */ }
         }
-    } catch (error) {
-        // フォールバック: テキストエリアを使用
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
+
+        const allStepResults = stepExecs.map(exec => ({
+            stepOrder: exec.skill_order,
+            stepName: exec.skill_name || `Step ${exec.skill_order}`,
+            status: exec.status,
+            output: exec.output_data || '',
+            errorMessage: exec.error_message,
+            model: exec.model_used,
+            time: exec.execution_time,
+            tokens: exec.tokens_used,
+            workflowSkillId: exec.workflow_skill_id,
+            skillId: exec.skill_id,
+            inputData: exec.input_data || null,
+            agentProfile: exec.agent_profile || null,
+        }));
+        const finalOutput = leaderExec?.output_data || '';
+        // coordinator view / synthesis events を取得
+        let wfStatus = null;
         try {
-            document.execCommand('copy');
-            showAlert('出力をクリップボードにコピーしました', 'success');
-        } catch (err) {
-            showAlert('コピーに失敗しました', 'error');
-        }
-        document.body.removeChild(textarea);
+            wfStatus = await apiRequest(`/api/user/workflow-executions/${weId}/status`);
+        } catch (e) { /* ignore */ }
+        const resultHtml = execDetailModal.buildWorkflowFlowHTML({
+            finalOutput, allStepResults, workflowName, groups,
+            stageMeta: {
+                currentStage: wfStatus?.current_stage || null,
+                finalVerdict: wfStatus?.final_verdict || null,
+                handoffSummary: wfStatus?.handoff_summary || null,
+                coordinatorView: wfStatus?.coordinator_view || null,
+                synthesisEvents: wfStatus?.synthesis_events || [],
+            },
+        });
+
+        const detailHTML = `
+            <div style="text-align: left;">
+                <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                    <div style="color: #c4b5fd; font-weight: 600; font-size: 16px; margin-bottom: 6px;">${esc(workflowName)}</div>
+                    <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
+                        <span>${stepExecs.length} ステップ</span>
+                        <span>${typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderExec?.model_used || '', null, {}) : (leaderExec?.model_used || '-')}</span>
+                        <span>合計 ${totalTime}ms</span>
+                        <span>${totalTokens} tokens</span>
+                    </div>
+                </div>
+                ${resultHtml}
+            </div>
+        `;
+
+        await Swal.fire({
+            title: 'ワークフロー実行詳細',
+            html: detailHTML,
+            width: '880px',
+            confirmButtonText: USER_SWAL.btnClose,
+            confirmButtonColor: USER_SWAL.primary,
+            customClass: { popup: 'swal-wide swal-exec-detail' },
+        });
+    } catch (error) {
+        await showAlert('詳細情報の読み込みに失敗しました', 'error');
+        console.error('showWorkflowDetail error:', error);
     }
 }
+
+// formatJSON は user-common.js で定義済み
 
 // ページ読み込み時に実行
 (async () => {
+    initUserLayout('history.html');
     await checkAuth();
     loadHistory(1);
 })();

@@ -1,29 +1,29 @@
-// ユーザー プロンプト実行画面 JavaScript
+// ユーザー スキル実行画面 JavaScript
 
-let promptId = null;
-let promptDetail = null;
+let skillId = null;
+let skillDetail = null;
 let executions = [];
 let allExecutions = []; // 全ての実行履歴
 let displayedHistoryCount = 3; // 表示する履歴の件数
 
 async function loadPromptDetail() {
-    promptId = getQueryParam('id');
-    if (!promptId) {
-        showAlert('プロンプトIDが指定されていません', 'error');
+    skillId = getQueryParam('id');
+    if (!skillId) {
+        showAlert('スキルIDが指定されていません', 'error');
         return;
     }
 
     try {
-        promptDetail = await apiRequest(`/api/user/prompts/${promptId}`);
+        skillDetail = await apiRequest(`/api/user/skills/${skillId}`);
 
-        // プロンプト情報を表示
-        document.getElementById('prompt-name').textContent = promptDetail.name;
-        document.getElementById('prompt-description').textContent = promptDetail.description || '説明なし';
-        document.getElementById('prompt-model').innerHTML = formatModelDisplay(promptDetail.model_type, null, promptDetail);
+        // スキル情報を表示
+        document.getElementById('skill-name').textContent = skillDetail.name;
+        document.getElementById('skill-description').textContent = skillDetail.description || '説明なし';
+        document.getElementById('skill-model').innerHTML = formatModelDisplay(skillDetail.model_type, null, skillDetail);
 
         // ファイル出力オプションの表示/非表示
         const fileOutputContainer = document.getElementById('file-output-container');
-        if (promptDetail.allows_file_output) {
+        if (skillDetail.allows_file_output) {
             fileOutputContainer.style.display = 'block';
         } else {
             fileOutputContainer.style.display = 'none';
@@ -31,7 +31,7 @@ async function loadPromptDetail() {
 
 
         // 入力フィールドを生成
-        generateInputFields(promptDetail.input_schema);
+        generateInputFields(skillDetail.input_schema);
 
         // 実行履歴を読み込む
         loadHistory();
@@ -45,20 +45,20 @@ async function loadPromptDetail() {
             await restoreActiveExecution();
         }
     } catch (error) {
-        showAlert('プロンプト情報の読み込みに失敗しました', 'error');
+        showAlert('スキル情報の読み込みに失敗しました', 'error');
     }
 }
 
 async function restoreActiveExecution() {
     // PersistentStatusBarに実行中のタスクがあるか確認
-    if (!PersistentStatusBar.executionId || !PersistentStatusBar.promptId) {
+    if (!PersistentStatusBar.executionId || !PersistentStatusBar.skillId) {
         return;
     }
 
-    // 現在のプロンプトIDと一致するか確認
-    const currentPromptId = parseInt(promptId);
-    if (PersistentStatusBar.promptId !== currentPromptId) {
-        return; // 別のプロンプトの実行中なので何もしない
+    // 現在のスキルIDと一致するか確認
+    const currentPromptId = parseInt(skillId);
+    if (PersistentStatusBar.skillId !== currentPromptId) {
+        return; // 別のスキルの実行中なので何もしない
     }
 
     const executionId = PersistentStatusBar.executionId;
@@ -134,7 +134,7 @@ function displayExecutionResult(execution, executionIdForDownload = null, output
     // モデル表示を更新
     const statModel = document.getElementById('stat-model');
     if (statModel) {
-        statModel.innerHTML = formatModelDisplay(execution.model_used, execution, promptDetail);
+        statModel.innerHTML = formatModelDisplay(execution.model_used, execution, skillDetail);
     }
 
     const statTime = document.getElementById('stat-time');
@@ -240,7 +240,7 @@ function displayExecutionError(execution) {
     const errorMsg = execution.error_message || '実行エラーが発生しました';
     const outputContent = document.getElementById('output-content');
     if (outputContent) {
-        outputContent.innerHTML = `<div style="color: ${execution.status === 'cancelled' ? '#ffc107' : '#dc3545'}; text-align: center; padding: 20px;">${execution.status === 'cancelled' ? '実行がキャンセルされました' : `エラー: ${errorMsg.trim()}`}</div>`;
+        outputContent.innerHTML = `<div style="color: ${execution.status === 'cancelled' ? '#ffc107' : '#dc3545'}; text-align: center; padding: 20px;">${execution.status === 'cancelled' ? '実行がキャンセルされました' : `エラー: ${escapeHtml(errorMsg.trim())}`}</div>`;
     }
 
     // 結果パネルにスクロール
@@ -256,77 +256,9 @@ let currentExecutionId = null;
 let accumulatedOutput = '';
 let currentOutputFormat = 'txt';  // 現在の実行の出力形式を保持
 
-// ========== 共通ユーティリティ関数 ==========
+// escapeHtml, formatJSON, getQueryParam は user-common.js で定義済み
 
-// HTMLエスケープ処理（XSS対策）
-function escapeHtml(text) {
-    if (!text) return '';
-    return String(text)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
-
-// モデル表示用のHTMLを生成する関数
-function formatModelDisplay(modelType, execution = null, promptDetail = null) {
-    if (!modelType) return '-';
-
-    let modelDisplay = modelType;
-    let isDeepThinkModel = false;
-    let isThinkingModel = false;
-
-    // Deep Thinkモデルの場合はサフィックスを削除
-    if (modelDisplay.includes('deep-think')) {
-        modelDisplay = modelDisplay.replace('-deep-think', '');
-        isDeepThinkModel = true;
-    }
-
-    // Thinkingモデルの場合はサフィックスを削除
-    if (modelDisplay.includes('thinking')) {
-        modelDisplay = modelDisplay.replace('-thinking', '');
-        isThinkingModel = true;
-    }
-
-    // Proモデルの場合は「-pro」を削除してProバッジを追加
-    const isProModel = modelType.includes('-pro') || modelType.endsWith('-pro');
-    if (isProModel) {
-        modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
-        modelDisplay += `<span class="pro-badge">Pro</span>`;
-    }
-
-    // 「-preview」を削除
-    modelDisplay = modelDisplay.replace(/-preview/g, '');
-
-    // Deep Thinkバッジを追加
-    let isDeepThinkEnabled = isDeepThinkModel;
-    if (!isDeepThinkEnabled && execution) {
-        if (execution.enable_deep_think !== undefined && execution.enable_deep_think !== null) {
-            isDeepThinkEnabled = execution.enable_deep_think === true || execution.enable_deep_think === 1 || execution.enable_deep_think === 'true';
-        } else if (promptDetail) {
-            isDeepThinkEnabled = promptDetail.enable_deep_think === true || promptDetail.enable_deep_think === 1 || promptDetail.enable_deep_think === 'true';
-        }
-    } else if (!isDeepThinkEnabled && promptDetail) {
-        isDeepThinkEnabled = promptDetail.enable_deep_think === true || promptDetail.enable_deep_think === 1 || promptDetail.enable_deep_think === 'true';
-    }
-
-    if (isDeepThinkEnabled && modelType.startsWith('gemini-')) {
-        modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
-    }
-
-    // Thinkingバッジを追加
-    if (isThinkingModel || modelType === 'gpt-5.1-thinking') {
-        modelDisplay += `<span class="thinking-badge">Thinking</span>`;
-    }
-
-    // NEWバッジを追加（gpt-5.2系のみ）
-    if (modelType === 'gpt-5.2' || modelType === 'gpt-5.2-pro' || modelType === 'gpt-5.2-thinking') {
-        modelDisplay += `<span class="new-badge">NEW</span>`;
-    }
-
-    return modelDisplay;
-}
+// formatModelDisplay は ../js/model-display.js で共通定義
 
 // 出力コンテンツを更新する関数
 function updateOutputContent(text) {
@@ -379,8 +311,8 @@ function createWorkerMessageHandler(executionId) {
                 if (parsed.type === 'workflow_next_step' && parsed.next_execution_id) {
                     // ワークフロー実行の次のステップが起動された
                     const nextExecutionId = parsed.next_execution_id;
-                    const nextStepOrder = parsed.next_step_order;
-                    const stepName = parsed.step_name || `Step ${nextStepOrder}`;
+                    const nextSkillOrder = parsed.next_skill_order;
+                    const stepName = parsed.skill_name || `Step ${nextSkillOrder}`;
                     const workflowName = parsed.workflow_name || 'ワークフロー';
                     
                     // バックグラウンドパネルに次のステップを追加
@@ -507,7 +439,8 @@ async function waitForReasoningModelCompletion(executionId, outputFormat) {
                     title: '実行完了',
                     text: '実行が完了しました',
                     icon: execution.status === 'success' ? 'success' : 'error',
-                    confirmButtonText: 'OK'
+                    confirmButtonText: USER_SWAL.btnClose,
+                    confirmButtonColor: USER_SWAL.primary
                 });
 
                 // 実行履歴を再読み込み
@@ -530,7 +463,8 @@ async function waitForReasoningModelCompletion(executionId, outputFormat) {
         title: 'タイムアウト',
         text: '実行がタイムアウトしました',
         icon: 'warning',
-        confirmButtonText: 'OK'
+        confirmButtonText: USER_SWAL.btnClose,
+        confirmButtonColor: USER_SWAL.primary
     });
 }
 
@@ -669,8 +603,8 @@ async function loadHistory() {
     try {
         const response = await apiRequest('/api/user/executions?limit=100');
         const responseExecutions = response.items || response;
-        // 現在のプロンプトIDでフィルタリング
-        allExecutions = responseExecutions.filter(exec => exec.prompt_id === parseInt(promptId));
+        // 現在のスキルIDでフィルタリング
+        allExecutions = responseExecutions.filter(exec => exec.skill_id === parseInt(skillId));
         displayedHistoryCount = 3; // リセット
         renderHistory();
     } catch (error) {
@@ -682,7 +616,7 @@ function renderHistory() {
     const container = document.getElementById('history-container');
 
     if (allExecutions.length === 0) {
-        container.innerHTML = '<p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">このプロンプトの実行履歴がありません</p>';
+        container.innerHTML = '<p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">このスキルの実行履歴がありません</p>';
         return;
     }
 
@@ -705,7 +639,7 @@ function renderHistory() {
             </thead>
             <tbody>
                 ${displayedExecutions.map(execution => {
-                    const modelDisplay = formatModelDisplay(execution.model_used, execution, promptDetail);
+                    const modelDisplay = formatModelDisplay(execution.model_used, execution, skillDetail);
 
                     return `
                     <tr>
@@ -747,16 +681,6 @@ function loadMoreHistory() {
     renderHistory();
 }
 
-function formatJSON(json) {
-    try {
-        if (typeof json === 'string') {
-            json = JSON.parse(json);
-        }
-        return JSON.stringify(json, null, 2);
-    } catch {
-        return json;
-    }
-}
 
 
 async function showHistoryDetail(id) {
@@ -764,74 +688,66 @@ async function showHistoryDetail(id) {
         const execution = await apiRequest(`/api/user/executions/${id}`);
 
         // 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
-        // 保存されていない場合はプロンプト情報を取得（後方互換性のため）
+        // 保存されていない場合はスキル情報を取得（後方互換性のため）
         let enableDeepThink = false;
         if (execution.enable_deep_think !== undefined && execution.enable_deep_think !== null) {
             // 実行時に保存された値を使用
             const isDeepThinkEnabled = execution.enable_deep_think === true || execution.enable_deep_think === 1 || execution.enable_deep_think === 'true';
             enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
-        } else if (execution.prompt_id) {
-            // 古い実行履歴の場合、プロンプト情報を取得
+        } else if (execution.skill_id) {
+            // 古い実行履歴の場合、スキル情報を取得
             try {
-                const prompt = await apiRequest(`/api/user/prompts/${execution.prompt_id}`);
-                const isDeepThinkEnabled = prompt.enable_deep_think === true || prompt.enable_deep_think === 1 || prompt.enable_deep_think === 'true';
+                const skill = await apiRequest(`/api/user/skills/${execution.skill_id}`);
+                const isDeepThinkEnabled = skill.enable_deep_think === true || skill.enable_deep_think === 1 || skill.enable_deep_think === 'true';
                 enableDeepThink = isDeepThinkEnabled && execution.model_used && execution.model_used.startsWith('gemini-');
             } catch (e) {
             }
         }
 
-        const detailHTML = `
-            <div style="text-align: left; max-height: 70vh; overflow-y: auto;">
-                <div style="margin-bottom: 15px;">
-                    <strong>実行日時:</strong><br>
-                    <span>${formatDate(execution.executed_at)}</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>使用モデル:</strong><br>
-                    <span>${formatModelDisplay(execution.model_used, execution, promptDetail)}</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>入力データ:</strong><br>
-                    <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-top: 5px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word; color: rgba(255, 255, 255, 0.9);">${formatJSON(execution.input_data)}</div>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>出力データ:</strong><br>
-                    <div style="background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-top: 5px; max-height: 300px; overflow-y: auto; color: rgba(255, 255, 255, 0.9);">${execution.output_data || '-'}</div>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>実行時間:</strong><br>
-                    <span>${execution.execution_time}ms</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>使用トークン数:</strong><br>
-                    <span>${execution.tokens_used || '-'}</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>出力形式:</strong><br>
-                    <span>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>ステータス:</strong><br>
-                    <span style="color: ${execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'rgba(255, 255, 255, 0.6)'}">${execution.status}</span>
-                </div>
-                ${execution.error_message ? `
-                <div style="margin-bottom: 15px;">
-                    <strong>エラーメッセージ:</strong><br>
-                    <div style="background: rgba(220, 53, 69, 0.2); border: 1px solid rgba(220, 53, 69, 0.4); color: rgba(255, 107, 107, 0.9); padding: 10px; border-radius: 8px; margin-top: 5px;">${execution.error_message}</div>
-                </div>
-                ` : ''}
-            </div>
-        `;
+        const modelHtml = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const { escapeHtml, buildHtml } = execDetailModal;
+
+        let afterSummaryHtml = '';
+        if (execution.workflow_name) {
+            afterSummaryHtml = `<div class="exec-detail-meta-block">
+                <div class="exec-detail-meta-block-title">ワークフロー</div>
+                <div class="exec-detail-meta-line" style="color:#c4b5fd;font-weight:600;">${escapeHtml(execution.workflow_name)}</div>
+                ${
+                    execution.skill_name
+                        ? `<div class="exec-detail-meta-line exec-detail-meta-line--sub">スキル: ${escapeHtml(execution.skill_name)}</div>`
+                        : ''
+                }
+            </div>`;
+        }
+
+        const summaryChips = [
+            { label: '実行日時', valueHtml: escapeHtml(formatDate(execution.executed_at)) },
+        ];
+        if (!execution.workflow_name) {
+            summaryChips.push({
+                label: 'スキル',
+                valueHtml: escapeHtml(execution.skill_name || '-'),
+            });
+        }
+        summaryChips.push({ label: 'モデル', valueHtml: modelHtml });
+
+        const detailHTML = buildHtml(execution, {
+            formatJSON,
+            summaryChips,
+            afterSummaryHtml,
+            showOutputFormat: true,
+            outputCopyId: String(execution.id),
+        });
 
         await Swal.fire({
             title: '実行履歴詳細',
             html: detailHTML,
-            width: '800px',
-            confirmButtonText: '閉じる',
-            confirmButtonColor: '#6c757d',
+            width: '880px',
+            confirmButtonText: USER_SWAL.btnClose,
+            confirmButtonColor: USER_SWAL.primary,
             customClass: {
-                popup: 'swal-wide'
-            }
+                popup: 'swal-wide swal-exec-detail',
+            },
         });
     } catch (error) {
         await showAlert('実行履歴の詳細取得に失敗しました', 'error');
@@ -889,9 +805,9 @@ async function restoreExecutionData(executionId) {
     try {
         const execution = await apiRequest(`/api/user/executions/${executionIdNum}`);
 
-        // 現在のプロンプトIDと一致するか確認
-        const currentPromptId = parseInt(promptId);
-        if (execution.prompt_id !== currentPromptId) {
+        // 現在のスキルIDと一致するか確認
+        const currentPromptId = parseInt(skillId);
+        if (execution.skill_id !== currentPromptId) {
             return;
         }
 
@@ -1233,7 +1149,8 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
                 title: 'キューが満杯です',
                 text: `最大${PersistentStatusBar.MAX_QUEUE_SIZE}つまで予約できます。現在の実行が完了するまでお待ちください。`,
                 icon: 'warning',
-                confirmButtonText: 'OK'
+                confirmButtonText: USER_SWAL.btnClose,
+                confirmButtonColor: USER_SWAL.primary
             });
             // ボタンを再有効化
             executeBtn.disabled = false;
@@ -1250,10 +1167,10 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
         }
 
         // キューに追加
-        const promptName = document.getElementById('prompt-name').textContent;
+        const skillName = document.getElementById('skill-name').textContent;
         PersistentStatusBar.addToQueue({
-            promptId: parseInt(promptId),
-            promptName: promptName,
+            skillId: parseInt(skillId),
+            skillName: skillName,
             inputData: inputData,
             outputFormat: outputFormat !== 'txt' ? outputFormat : undefined
         });
@@ -1286,9 +1203,9 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
         console.log('[Execute] Sending request with output_format:', outputFormat);
 
         const requestBody = {
-            prompt_id: parseInt(promptId),
+            skill_id: parseInt(skillId),
             input_data: inputData,
-            output_format: outputFormat  // 常に送信（'txt'も含む）
+            output_format: outputFormat,
         };
 
         console.log('[Execute] Request body:', requestBody);
@@ -1350,13 +1267,13 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
                 }, 200);
 
                 // ステータスバーを開始（ここでアイコンが青くなる）
-                const promptName = document.getElementById('prompt-name').textContent;
-                PersistentStatusBar.start(executionId, parseInt(promptId), promptName);
+                const skillName = document.getElementById('skill-name').textContent;
+                PersistentStatusBar.start(executionId, parseInt(skillId), skillName);
             }, 600);
         } else {
             // ターゲットが見つからない場合は即座に開始（フォールバック）
-            const promptName = document.getElementById('prompt-name').textContent;
-            PersistentStatusBar.start(executionId, parseInt(promptId), promptName);
+            const skillName = document.getElementById('skill-name').textContent;
+            PersistentStatusBar.start(executionId, parseInt(skillId), skillName);
         }
 
         // 2. 出力エリアに実行中表示を設定
@@ -1371,7 +1288,7 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
             tempRow.className = 'highlight-new-row'; // CSSでアニメーションなどをつけると良い
             tempRow.innerHTML = `
                 <td>${formatDate(now.toISOString())}</td>
-                <td>${document.getElementById('prompt-model').textContent.replace(/<[^>]*>/g, '')}</td>
+                <td>${document.getElementById('skill-model').textContent.replace(/<[^>]*>/g, '')}</td>
                 <td>-</td>
                 <td>-</td>
                 <td><span style="color: orange;">pending</span> <div class="spinner" style="width: 12px; height: 12px; border-width: 1px; display: inline-block; vertical-align: middle;"></div></td>
@@ -1394,9 +1311,9 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
             }
         }
 
-        // プロンプトのモデルタイプを取得して推論モデルかどうかを判定
-        const promptDetail = await apiRequest(`/api/user/prompts/${promptId}`);
-        const modelType = promptDetail.model_type;
+        // スキルのモデルタイプを取得して推論モデルかどうかを判定
+        const skillDetail = await apiRequest(`/api/user/skills/${skillId}`);
+        const modelType = skillDetail.model_type;
         const isReasoning = isReasoningModel(modelType);
 
         if (isReasoning) {
@@ -1405,85 +1322,22 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
             return;
         }
 
-        // ストリーミング開始
+        // ストリーミング開始（完了は createWorkerMessageHandler が独立して処理）
         startStreaming(executionId, outputFormat);
+        // fire-and-forget: ユーザーは自由にページ遷移可能
+        // 完了時の処理:
+        //   - SSE接続中: createWorkerMessageHandler → handleStreamingComplete()
+        //   - ページ遷移後: PersistentStatusBar.verifyStatus() → executionCompleted event
+        //   - ページ復帰時: restoreActiveExecution() → resumeStreaming() or 結果表示
 
-        // 完了を待つ（Promise形式で処理）
-        const result = await new Promise((resolve, reject) => {
-            const originalOnMessage = executionWorker.onmessage;
-            executionWorker.onmessage = (event) => {
-                originalOnMessage(event);
-                const { type, data } = event.data;
-                if (type === 'complete') {
-                    resolve({ executionId, status: 'success' });
-                } else if (type === 'error') {
-                    const errorMsg = typeof data === 'string' ? data : (data?.message || data?.text || '実行エラーが発生しました');
-                    reject(new Error(errorMsg));
-                } else if (type === 'cancel') {
-                    reject(new Error('実行がキャンセルされました'));
-                }
-            };
-        });
-
-        // ストリーミング完了後の処理
-        stopStreaming();
-
-        // 最終結果を取得
-        const execution = await apiRequest(`/api/user/executions/${executionId}`);
-
-        // 入力データを入力フィールドに復元
-        restoreInputData(execution);
-
-        // 結果を表示（関数を使用）
-        // displayExecutionResult関数内でファイル出力のダウンロードボタンも表示される
-        // execution.output_formatを優先的に使用（APIレスポンスから取得）
-        const finalOutputFormat = execution?.output_format || outputFormat || 'txt';
-        displayExecutionResult(execution, executionId, finalOutputFormat !== 'txt' ? finalOutputFormat : null);
-
-        // 出力パネルを確実に表示
-        showOutputPanel();
-
-        await Swal.fire({
-            title: '実行完了',
-            text: '実行が完了しました',
-            icon: 'success',
-            confirmButtonText: 'OK'
-        });
-
-        // 実行履歴を再読み込み
-        loadHistory();
     } catch (error) {
-        // クリーンアップ（エラー時も）
+        // POST /api/execute の失敗のみをキャッチ（SSEエラーは handleStreamingError が処理）
         stopStreaming();
+        setExecutionButtonState(false);
 
-        // キャンセルされた場合は特別な処理
-        if (error.message === 'キャンセルされました' || error.message === '実行がキャンセルされました') {
-            document.getElementById('output-content').innerHTML = '<div style="color: #ffc107; text-align: center; padding: 20px;">実行がキャンセルされました</div>';
-        } else {
-            await Swal.fire({
-                title: '実行エラー',
-                text: '実行に失敗しました: ' + error.message,
-                icon: 'error',
-                confirmButtonText: 'OK'
-            });
-            document.getElementById('output-content').innerHTML = `<div style="color: #dc3545; text-align: center; padding: 20px;">エラー: ${error.message.trim()}</div>`;
-        }
-    } finally {
-        // 実行ボタンを再有効化
-        executeBtn.disabled = false;
-        executeBtnText.textContent = '実行';
-
-        // スピナーを非表示
-        if (executeBtnSpinner) {
-            executeBtnSpinner.style.display = 'none';
-        }
-
-        // 全ての入力フィールドを再有効化
-        inputFields.forEach(field => {
-            if (field !== executeBtn) {
-                field.disabled = false;
-            }
-        });
+        showAlert('実行に失敗しました: ' + error.message, 'error');
+        document.getElementById('output-content').innerHTML =
+            `<div style="color: #dc3545; text-align: center; padding: 20px;">エラー: ${escapeHtml(error.message.trim())}</div>`;
     }
 });
 
@@ -1565,9 +1419,9 @@ window.addEventListener('executionCompleted', async (event) => {
     const { execution, executionId } = event.detail;
     if (!execution || !executionId) return;
 
-    // 現在のプロンプトIDと一致するか確認
-    const currentPromptId = parseInt(promptId);
-    if (execution.prompt_id !== currentPromptId) return;
+    // 現在のスキルIDと一致するか確認
+    const currentPromptId = parseInt(skillId);
+    if (execution.skill_id !== currentPromptId) return;
 
     // 既に処理済みかチェック（重複実行を防ぐ）
     if (execution.status === 'success') {
@@ -1602,17 +1456,17 @@ window.executeQueuedTask = async function(taskData) {
         const initialResponse = await apiRequest('/api/execute', {
             method: 'POST',
             body: JSON.stringify({
-                prompt_id: parseInt(taskData.promptId),
+                skill_id: parseInt(taskData.skillId),
                 input_data: taskData.inputData,
                 output_format: taskData.outputFormat !== 'txt' ? taskData.outputFormat : undefined
             })
         });
 
         const executionId = initialResponse.execution_id;
-        const promptName = taskData.promptName || document.getElementById('prompt-name')?.textContent || '実行中...';
+        const skillName = taskData.skillName || document.getElementById('skill-name')?.textContent || '実行中...';
 
         // ステータスバーを開始
-        PersistentStatusBar.start(executionId, parseInt(taskData.promptId), promptName);
+        PersistentStatusBar.start(executionId, parseInt(taskData.skillId), skillName);
 
         // 以前のストリーミング接続を確実に終了
         stopStreaming();
@@ -1620,52 +1474,19 @@ window.executeQueuedTask = async function(taskData) {
         // 出力エリアに実行中表示を設定
         showProcessingMessage();
 
-        // ストリーミング開始（キューから実行する場合、outputFormatを保持）
+        // ストリーミング開始（完了は createWorkerMessageHandler が独立して処理）
         const outputFormat = taskData.outputFormat || 'txt';
         startStreaming(executionId, outputFormat);
+        // fire-and-forget
 
-        // 完了を待つ
-        const result = await new Promise((resolve, reject) => {
-            const originalOnMessage = executionWorker.onmessage;
-            executionWorker.onmessage = (event) => {
-                originalOnMessage(event);
-                const { type, data } = event.data;
-                if (type === 'complete') {
-                    resolve({ executionId, status: 'success' });
-                } else if (type === 'error') {
-                    const errorMsg = typeof data === 'string' ? data : (data?.message || data?.text || '実行エラーが発生しました');
-                    reject(new Error(errorMsg));
-                } else if (type === 'cancel') {
-                    reject(new Error('実行がキャンセルされました'));
-                }
-            };
-        });
-
-        stopStreaming();
-
-        const execution = await apiRequest(`/api/user/executions/${executionId}`);
-        restoreInputData(execution);
-        setExecutionButtonState(false);
-        displayExecutionResult(execution, executionId, taskData.outputFormat);
-        showOutputPanel();
-
-        loadHistory();
     } catch (error) {
         setExecutionButtonState(false);
-        if (error.message === 'キャンセルされました' || error.message === '実行がキャンセルされました') {
-            displayExecutionError({ status: 'cancelled', error_message: error.message });
-        } else {
-            displayExecutionError({ status: 'error', error_message: error.message });
-        }
+        displayExecutionError({ status: 'error', error_message: error.message });
         loadHistory();
     }
 };
 
-// URLパラメータを取得する関数
-function getQueryParam(name) {
-    const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get(name);
-}
+// getQueryParam は user-common.js で定義済み
 
 // モバイルデバイスかどうかを判定する関数
 function isMobileDevice() {
@@ -1729,8 +1550,10 @@ function setupPanelHeightSync() {
     }
 }
 
+
 // ページ読み込み時に実行
 (async () => {
+    initUserLayout('');  // execute.html はナビでactive無し
     await checkAuth();
     loadPromptDetail();
 

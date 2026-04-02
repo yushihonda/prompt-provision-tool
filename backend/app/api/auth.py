@@ -1,9 +1,10 @@
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.auth import authenticate_user, create_access_token
+from app.models import Account, AccountType
 from app.schemas import Token
 from app.config import settings
 import logging
@@ -56,4 +57,56 @@ async def login(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"サーバー内部エラーが発生しました: {str(e)}"
         )
+
+
+@router.get("/dev-login")
+async def dev_login(
+    role: str = Query("admin", pattern="^(admin|user)$"),
+    db: Session = Depends(get_db),
+):
+    """
+    開発環境専用: ログインをスキップしてトークンを取得する。
+    本番環境では無効化される。
+
+    Args:
+        role: "admin" (親アカウント) or "user" (子アカウント)
+    """
+    if settings.ENVIRONMENT == "production":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found",
+        )
+
+    # 対応するアカウントを取得（最初に見つかったものを使用）
+    if role == "admin":
+        account = (
+            db.query(Account)
+            .filter(Account.account_type == AccountType.PARENT, Account.is_active == True)
+            .first()
+        )
+    else:
+        account = (
+            db.query(Account)
+            .filter(Account.account_type == AccountType.CHILD, Account.is_active == True)
+            .first()
+        )
+
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{role} アカウントが見つかりません。先にアカウントを作成してください。",
+        )
+
+    access_token = create_access_token(
+        data={"sub": account.username, "type": str(account.account_type)},
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+
+    logger.info(f"Dev auto-login: {account.username} (role={role})")
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "username": account.username,
+        "account_type": str(account.account_type),
+    }
 

@@ -3,67 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>プロンプト実行 - Prompt Provision Tool</title>
+    <title>スキル実行 - Prompt Provision Tool</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body class="user-theme">
     <div class="container">
-        <div class="header">
-            <span class="tool-name">Prompt Provision Tool</span>
-            <div class="user-info">
-                <span id="username-display">-</span>
-                <button class="btn-logout" onclick="logout()">ログアウト</button>
-            </div>
-            <button class="hamburger-menu" onclick="toggleMobileMenu()">
-                <span></span>
-                <span></span>
-                <span></span>
-            </button>
-        </div>
-
-        <!-- モバイルメニュー -->
-        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
-        <div class="mobile-menu" id="mobile-menu">
-            <div class="mobile-menu-header">
-                <span class="tool-name">Prompt Provision Tool</span>
-                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                </button>
-            </div>
-            <div class="mobile-menu-content">
-                <div class="nav">
-                    <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト一覧</button>
-                    <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
-                </div>
-                <div class="user-info">
-                    <span id="mobile-username-display">-</span>
-                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
-                </div>
-            </div>
-        </div>
-
         <div class="content">
             <div class="page-title-container">
-                <h1 class="page-title">プロンプト実行</h1>
+                <h1 class="page-title">スキル実行</h1>
             </div>
             <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
                 <div style="display: flex; gap: 10px;">
-                    <button class="nav-item" onclick="location.href='dashboard.html'">プロンプト一覧</button>
+                    <button class="nav-item" onclick="location.href='dashboard.html'">ワークフロー / スキル管理</button>
                     <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
                 </div>
                 <button class="btn btn-secondary" onclick="location.href='dashboard.html'" style="display: inline-flex; align-items: center; gap: 5px; padding: 10px 20px;">
-                    ← プロンプト一覧に戻る
+                    ← ワークフロー / スキル管理に戻る
                 </button>
             </div>
 
 
             <div class="card">
-                <h2 id="prompt-name">-</h2>
-                <p id="prompt-description">-</p>
-                <p><strong>モデル:</strong> <span id="prompt-model">-</span></p>
+                <h2 id="skill-name">-</h2>
+                <p id="skill-description">-</p>
+                <p><strong>モデル:</strong> <span id="skill-model">-</span></p>
             </div>
 
             <div class="execute-layout">
@@ -86,6 +50,10 @@
                                 </select>
                                 <small style="color: rgba(255, 255, 255, 0.6);">実行結果を指定した形式でファイルとして出力できます</small>
                             </div>
+                        </div>
+
+                        <div style="margin-top: 8px; padding: 8px 12px; background: rgba(40, 167, 69, 0.08); border: 1px solid rgba(40, 167, 69, 0.2); border-radius: 6px; font-size: 11px; color: rgba(255,255,255,0.6);">
+                            ローカルワーカーで実行されます。ターミナルで <code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:3px; cursor:pointer;" onclick="navigator.clipboard.writeText('python -m local_worker daemon')" title="コピー">python -m local_worker daemon</code> を起動してください。
                         </div>
 
                         <button type="submit" class="btn btn-primary" id="execute-btn" style="display: flex; align-items: center; justify-content: center; gap: 10px;">
@@ -138,6 +106,8 @@
     </div>
 
 
+    <script src="../js/model-display.js"></script>
+    <script src="../js/exec-detail-modal.js"></script>
     <script src="js/user-common.js"></script>
     <script src="js/execute.js"></script>
 </body>

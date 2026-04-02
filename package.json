@@ -1,7 +1,7 @@
 {
   "name": "prompt-provision-tool",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.0.0",
   "description": "Python アプリ本体。Mermaid 画像化・cloc は開発用のみ。",
   "scripts": {
     "audit": "./audit.sh"

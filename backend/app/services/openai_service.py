@@ -13,24 +13,20 @@ class OpenAIService:
 
     # 推論モデル（Responses APIを使用）
     REASONING_MODELS = {
-        "gpt-5-pro",  # 最上位モデル（Responses APIのみサポート）
-        "gpt-5.2-pro",  # GPT-5.2 Pro（Responses APIのみサポート）
+        "gpt-5.2-pro", "gpt-5.4-pro", "o4-mini",
     }
 
     # temperatureをサポートしないモデル
     NO_TEMPERATURE_MODELS = {
-        "gpt-5",
-        "gpt-5.1",  # Responses APIでtemperature非対応
-        "gpt-5.2",  # Responses APIでtemperature非対応
-        "gpt-5.2-pro",  # Responses APIでtemperature非対応
-        "gpt-5-pro",  # Responses APIでtemperature非対応
+        "gpt-5.2", "gpt-5.2-pro",
+        "gpt-5.4", "gpt-5.4-pro",
+        "o4-mini",
     }
 
     # max_completion_tokensを使用する必要があるモデル（max_tokensの代わり）
     MAX_COMPLETION_TOKENS_MODELS = {
-        "gpt-5",
-        "gpt-5.1",
         "gpt-5.2",
+        "gpt-5.4", "gpt-5.4-mini",
     }
 
     def __init__(self, api_key: Optional[str] = None):
@@ -125,8 +121,6 @@ class OpenAIService:
         messages: list,
         temperature: Optional[float],
         max_tokens: Optional[int],
-        enable_code_interpreter: bool = False,
-        enable_file_search: bool = False
     ) -> Tuple[str, int]:
         """Responses API を呼び出す（推論モデル向け）"""
         if not self.client:
@@ -159,34 +153,10 @@ class OpenAIService:
         if reasoning_effort:
             kwargs["reasoning"] = {"effort": reasoning_effort}
 
-        # ツールの設定
-        tools = []
-        tools_log = []
-        
-        if enable_code_interpreter:
-            tools.append({
-                "type": "code_interpreter",
-                "container": {"type": "auto", "memory_limit": "4g"}
-            })
-            tools_log.append("Code Interpreter")
-        
-        if enable_file_search:
-            # file_searchはvector_store_idsが必要なため、ここでは基本的な設定のみ
-            # 実際の使用時にはvector_store_idsを指定する必要がある
-            tools.append({
-                "type": "file_search"
-            })
-            tools_log.append("File Search")
-        
-        if tools:
-            kwargs["tools"] = tools
-
         logger.info(f"→ Responses API呼び出し: {model_name}")
         logger.info(f"  Reasoning effort: {reasoning_effort}")
         if temperature is not None and model_name not in self.NO_TEMPERATURE_MODELS:
             logger.info(f"  Temperature: {temperature}")
-        if tools_log:
-            logger.info(f"  ツール有効化: {', '.join(tools_log)}")
 
         # デバッグモード時のみ詳細な情報を出力
         if settings.is_debug_mode:
@@ -310,8 +280,6 @@ class OpenAIService:
         messages: list,
         temperature: float,
         max_tokens: Optional[int],
-        enable_code_interpreter: bool = False,
-        enable_file_search: bool = False
     ) -> Tuple[str, int]:
         """Chat Completions API を呼び出す（通常モデル向け）"""
         if not self.client:
@@ -336,23 +304,7 @@ class OpenAIService:
         else:
             logger.info(f"  {model_name}はtemperature非対応のため除外")
 
-        # ツールの設定（Chat Completions APIでも利用可能な場合）
-        tools = []
-        tools_log = []
-        
-        if enable_code_interpreter:
-            # Chat Completions APIではcode_interpreterの形式が異なる可能性がある
-            # 現時点ではResponses APIのみをサポート
-            tools_log.append("Code Interpreter (Responses API推奨)")
-        
-        if enable_file_search:
-            # Chat Completions APIではfile_searchの形式が異なる可能性がある
-            # 現時点ではResponses APIのみをサポート
-            tools_log.append("File Search (Responses API推奨)")
-
         logger.info(f"→ Chat Completions API呼び出し: {model_name}")
-        if tools_log:
-            logger.info(f"  ツール: {', '.join(tools_log)} (注: Chat Completions APIでは制限あり)")
 
         # デバッグモード時のみ詳細な情報を出力
         if settings.is_debug_mode:
@@ -400,7 +352,7 @@ class OpenAIService:
                     try:
                         error_detail = e.response.json() if hasattr(e.response, 'json') else str(e.response)
                         logger.debug(f"  レスポンス詳細: {error_detail}")
-                    except:
+                    except Exception:
                         logger.debug(f"  レスポンス: {e.response}")
                 import traceback
                 logger.debug(f"  トレースバック:\n{traceback.format_exc()}")
@@ -420,8 +372,6 @@ class OpenAIService:
         model: str = "gpt-4o",
         temperature: float = 0.0,
         max_tokens: Optional[int] = None,
-        enable_code_interpreter: bool = False,
-        enable_file_search: bool = False
     ) -> dict:
         """
         プロンプトを実行
@@ -497,8 +447,6 @@ class OpenAIService:
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    enable_code_interpreter=enable_code_interpreter,
-                    enable_file_search=enable_file_search
                 )
             else:
                 logger.info(f"  通常モデル: {model}")
@@ -507,8 +455,6 @@ class OpenAIService:
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    enable_code_interpreter=enable_code_interpreter,
-                    enable_file_search=enable_file_search
                 )
 
             logger.info(f"✓ プロンプト実行成功")
@@ -543,8 +489,7 @@ class OpenAIService:
         model: str = "gpt-4o",
         temperature: float = 0.0,
         max_tokens: Optional[int] = None,
-        enable_code_interpreter: bool = False,
-        enable_file_search: bool = False
+        messages_override: list = None,
     ):
         """
         ストリーミングでプロンプトを実行
@@ -570,8 +515,6 @@ class OpenAIService:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                enable_code_interpreter=enable_code_interpreter,
-                enable_file_search=enable_file_search
             )
             yield result["output"]
             return
@@ -579,10 +522,13 @@ class OpenAIService:
         if not self.client:
             raise RuntimeError("OpenAI クライアントが未初期化です")
 
-        messages = []
-        if settings.ENABLE_PROMPT_GUARDRAILS:
-            messages.append({"role": "system", "content": settings.GUARDRAIL_PREFIX})
-        messages.append({"role": "user", "content": prompt})
+        if messages_override:
+            messages = messages_override
+        else:
+            messages = []
+            if settings.ENABLE_PROMPT_GUARDRAILS:
+                messages.append({"role": "system", "content": settings.GUARDRAIL_PREFIX})
+            messages.append({"role": "user", "content": prompt})
 
         kwargs = {
             "model": model,
