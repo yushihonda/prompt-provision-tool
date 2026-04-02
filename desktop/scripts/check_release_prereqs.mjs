@@ -1,7 +1,7 @@
 import path from "node:path";
 import process from "node:process";
 
-import { pathExists } from "./common.mjs";
+import { desktopDir, pathExists } from "./common.mjs";
 
 function requireEnv(name) {
   const value = process.env[name]?.trim();
@@ -52,7 +52,7 @@ function parseJsonArray(name, rawValue) {
 }
 
 const configPath = path.resolve(
-  process.cwd(),
+  desktopDir,
   process.env.PPT_TAURI_CONFIG_PATH?.trim() || "src-tauri/tauri.release.conf.json",
 );
 

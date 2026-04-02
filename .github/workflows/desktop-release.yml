@@ -25,11 +25,11 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            cargo_target_dir: ${{ github.workspace }}/desktop/.cargo-target-release
+            cargo_target_dir: desktop/.cargo-target-release
           - os: windows-latest
-            cargo_target_dir: ${{ github.workspace }}\desktop\.cargo-target-release
+            cargo_target_dir: desktop/.cargo-target-release
     env:
-      CARGO_TARGET_DIR: ${{ matrix.cargo_target_dir }}
+      CARGO_TARGET_DIR: ${{ format('{0}/{1}', github.workspace, matrix.cargo_target_dir) }}
       PPT_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
       PPT_UPDATER_ENDPOINTS_JSON: ${{ format('["https://github.com/{0}/releases/latest/download/latest.json"]', github.repository) }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
