@@ -1,7 +1,9 @@
 // 共通のユーザー用JavaScript関数
 
-// API_BASEの設定（本番環境ではNginx経由でアクセス）
-const API_BASE = window.location.origin;
+// runtime adapter を唯一の読取窓口にする
+const getApiBase = () => window.PPTRuntime.getApiBase();
+const runtimeFetch = (path, options) => window.PPTRuntime.fetchWithRuntime(path, options);
+const navigateTo = (path) => window.PPTRuntime.navigate(path);
 
 /** HTML特殊文字をエスケープ（XSS防止） */
 function escapeHtmlCommon(text) {
@@ -26,18 +28,18 @@ const USER_SWAL = {
 
 // 認証チェック（非同期）
 async function checkAuth() {
-    const token = sessionStorage.getItem('token');
-    const username = sessionStorage.getItem('username');
+    const token = await window.PPTRuntime.getAuthToken();
+    const username = await window.PPTRuntime.getAuthUsername();
 
     if (!token) {
-        window.location.href = 'login.html';
+        navigateTo('login.html');
         return;
     }
 
     // トークンの有効性をサーバー側で確認
     try {
         // ユーザー側のAPIエンドポイントを呼び出してトークンを検証
-        const response = await fetch(`${API_BASE}/api/user/skills?skip=0&limit=1`, {
+        const response = await runtimeFetch('/api/user/skills?skip=0&limit=1', {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${token}`,
@@ -55,9 +57,8 @@ async function checkAuth() {
                 response: errorText,
                 timestamp: new Date().toISOString()
             }));
-            sessionStorage.removeItem('token');
-            sessionStorage.removeItem('username');
-            window.location.href = 'login.html';
+            await window.PPTRuntime.clearAuthSession();
+            navigateTo('login.html');
             return;
         }
 
@@ -97,9 +98,8 @@ async function checkAuth() {
             stack: error.stack,
             timestamp: new Date().toISOString()
         }));
-        sessionStorage.removeItem('token');
-        sessionStorage.removeItem('username');
-        window.location.href = 'login.html';
+        await window.PPTRuntime.clearAuthSession();
+        navigateTo('login.html');
     }
 }
 
@@ -117,8 +117,7 @@ async function logout() {
     });
 
     if (result.isConfirmed) {
-        sessionStorage.removeItem('token');
-        sessionStorage.removeItem('username');
+        await window.PPTRuntime.clearAuthSession();
         await Swal.fire({
             title: 'ログアウトしました',
             text: 'ログイン画面に戻ります',
@@ -127,13 +126,13 @@ async function logout() {
             timer: 1500,
             showConfirmButton: false
         });
-        window.location.href = 'login.html';
+        navigateTo('login.html');
     }
 }
 
 // API リクエスト
 async function apiRequest(endpoint, options = {}) {
-    const token = sessionStorage.getItem('token');
+    const token = await window.PPTRuntime.getAuthToken();
 
     const defaultOptions = {
         headers: {
@@ -152,13 +151,12 @@ async function apiRequest(endpoint, options = {}) {
     };
 
     try {
-        const response = await fetch(`${API_BASE}${endpoint}`, mergedOptions);
+        const response = await runtimeFetch(endpoint, mergedOptions);
 
         // 認証エラーの場合はログイン画面へ
         if (response.status === 401) {
-            sessionStorage.removeItem('token');
-            sessionStorage.removeItem('username');
-            window.location.href = 'login.html';
+            await window.PPTRuntime.clearAuthSession();
+            navigateTo('login.html');
             return;
         }
 
@@ -272,7 +270,7 @@ function initUserLayout(activePage) {
 
     const navHtml = () =>
         USER_NAV_ITEMS.map(n =>
-            `<button class="nav-item${n.href === activePage ? ' active' : ''}" onclick="location.href='${n.href}'">${n.label}</button>`
+            `<button class="nav-item${n.href === activePage ? ' active' : ''}" onclick="window.PPTRuntime.navigate('${n.href}')">${n.label}</button>`
         ).join('\n');
 
     const headerHtml = `

@@ -1,0 +1,115 @@
+name: Desktop Clean Machine Verify
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-clean-machine-verify.yml"
+      - "desktop/**"
+      - "sidecar/**"
+      - "local_worker/**"
+      - "frontend/**"
+      - "README.md"
+      - "docs/README_FULL.md"
+
+jobs:
+  packaged-health:
+    name: Packaged health (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            cargo_target_dir: ${{ github.workspace }}/desktop/.cargo-target
+          - os: windows-latest
+            cargo_target_dir: ${{ github.workspace }}\desktop\.cargo-target
+    env:
+      CARGO_TARGET_DIR: ${{ matrix.cargo_target_dir }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install desktop build dependencies
+        run: python -m pip install -r local_worker/requirements-build.txt
+
+      - name: Install desktop npm dependencies
+        run: npm --prefix desktop ci
+
+      - name: Build packaged desktop app
+        run: npm --prefix desktop run tauri:build
+
+      - name: Verify packaged health
+        # Runtime semantics come from Rust/Tauri; CI only executes the gate.
+        run: npm --prefix desktop run verify:packaged:health
+
+      - name: Verify packaged secure storage
+        # Secure storage proof also comes from Rust/Tauri; CI only asserts the returned report.
+        run: npm --prefix desktop run verify:packaged:storage
+
+  packaged-real-skill:
+    name: Packaged real skill (${{ matrix.os }})
+    needs: packaged-health
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            cargo_target_dir: ${{ github.workspace }}/desktop/.cargo-target
+          - os: windows-latest
+            cargo_target_dir: ${{ github.workspace }}\desktop\.cargo-target
+    env:
+      CARGO_TARGET_DIR: ${{ matrix.cargo_target_dir }}
+      PPT_DESKTOP_API_BASE: ${{ secrets[format('{0}', 'PPT_DESKTOP_API_BASE')] }}
+      PPT_VERIFY_AUTH_TOKEN: ${{ secrets[format('{0}', 'PPT_VERIFY_AUTH_TOKEN')] }}
+      PPT_VERIFY_SKILL_ID: ${{ secrets[format('{0}', 'PPT_VERIFY_SKILL_ID')] }}
+      PPT_VERIFY_SKILL_NAME: "Desktop Packaged Verification Skill"
+      PPT_VERIFY_ENABLE_DEEP_THINK: "true"
+      PPT_VERIFY_INPUT_JSON: '{"topic":"clean machine packaged verification","objective":"assert bundled sidecar and cli provider semantics"}'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install desktop build dependencies
+        run: python -m pip install -r local_worker/requirements-build.txt
+
+      - name: Install desktop npm dependencies
+        run: npm --prefix desktop ci
+
+      - name: Build packaged desktop app
+        run: npm --prefix desktop run tauri:build
+
+      - name: Verify packaged real skill
+        # The helper decides whether to skip based on the Rust-owned contract plus env presence.
+        run: npm --prefix desktop run verify:packaged:skill:optional

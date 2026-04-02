@@ -65,6 +65,7 @@ class ExecutionResult:
     model_used: str
     tokens_used: int
     execution_time_ms: int
+    token_accounting_source: str = "unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +99,30 @@ CLAUDE_MODELS = {
 }
 
 
-async def execute_bundle(
+def classify_executor_failure(error: Exception) -> str:
+    msg = str(error).lower()
+    if isinstance(error, TimeoutError) or "timeout" in msg or "timed out" in msg:
+        return "timeout"
+    if isinstance(error, ConnectionError) or "connection" in msg or "unreachable" in msg:
+        return "connection_error"
+    if isinstance(error, OSError):
+        return "os_error"
+    if (
+        "api key" in msg
+        or "api キー" in msg
+        or "設定されていません" in msg
+        or "認証" in msg
+        or "authentication" in msg
+    ):
+        return "missing_credentials"
+    if "サポートされていないモデル" in msg or "model_not_found" in msg or "does not exist" in msg:
+        return "unsupported_model"
+    if "インストールされていません" in msg or "package" in msg:
+        return "dependency_missing"
+    return "unknown_error"
+
+
+async def execute_bundle_once(
     bundle: dict,
     model_override: str = None,
     on_chunk=None,
@@ -130,30 +154,38 @@ async def execute_bundle(
     anthropic_key = bundle_keys.get("anthropic") or config.anthropic_api_key
 
     start = time.time()
+    if model in OPENAI_MODELS:
+        result = await _execute_openai(prompt, model, api_key=openai_key, on_chunk=on_chunk)
+    elif model in GEMINI_MODELS:
+        result = await _execute_gemini(prompt, model, enable_deep_think, api_key=gemini_key, on_chunk=on_chunk)
+    elif model in CLAUDE_MODELS:
+        result = await _execute_claude(prompt, model, api_key=anthropic_key, on_chunk=on_chunk)
+    else:
+        raise ValueError(f"サポートされていないモデル: {model}")
+
+    elapsed_ms = int((time.time() - start) * 1000)
+    result.execution_time_ms = elapsed_ms
+    return result
+
+
+async def execute_bundle(
+    bundle: dict,
+    model_override: str = None,
+    on_chunk=None,
+) -> ExecutionResult:
+    prompt = bundle["final_prompt"]
+    model = model_override or bundle["model"]
     last_error = None
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            if model in OPENAI_MODELS:
-                result = await _execute_openai(prompt, model, api_key=openai_key, on_chunk=on_chunk)
-            elif model in GEMINI_MODELS:
-                result = await _execute_gemini(prompt, model, enable_deep_think, api_key=gemini_key, on_chunk=on_chunk)
-            elif model in CLAUDE_MODELS:
-                result = await _execute_claude(prompt, model, api_key=anthropic_key, on_chunk=on_chunk)
-            else:
-                raise ValueError(f"サポートされていないモデル: {model}")
-
-            elapsed_ms = int((time.time() - start) * 1000)
-            result.execution_time_ms = elapsed_ms
-
-            # tiktoken で正確なトークン数を再計算
-            if result.tokens_used == 0 or result.tokens_used == len(prompt) // 4 + len(result.output) // 4:
+            result = await execute_bundle_once(bundle, model_override=model_override, on_chunk=on_chunk)
+            if result.token_accounting_source != "provider_usage":
                 prompt_tokens = _count_tokens(prompt, model)
                 output_tokens = _count_tokens(result.output, model)
                 result.tokens_used = prompt_tokens + output_tokens
-
+                result.token_accounting_source = "tiktoken_estimate"
             return result
-
         except Exception as e:
             last_error = e
             if attempt < MAX_RETRIES and _is_retryable(e):
@@ -195,6 +227,7 @@ async def _execute_openai(prompt: str, model: str, api_key: str = None, on_chunk
         )
         output = resp.output_text or ""
         tokens_used = (resp.usage.input_tokens or 0) + (resp.usage.output_tokens or 0) if resp.usage else 0
+        token_accounting_source = "provider_usage" if resp.usage else "unavailable"
         if on_chunk and output:
             await on_chunk(output)
     else:
@@ -225,6 +258,9 @@ async def _execute_openai(prompt: str, model: str, api_key: str = None, on_chunk
 
         if tokens_used == 0:
             tokens_used = len(prompt) // 4 + len(output) // 4
+            token_accounting_source = "char_estimate"
+        else:
+            token_accounting_source = "provider_usage"
 
     logger.info(f"OpenAI execution complete: model={model}, tokens={tokens_used}, output_len={len(output)}")
     return ExecutionResult(
@@ -232,6 +268,7 @@ async def _execute_openai(prompt: str, model: str, api_key: str = None, on_chunk
         model_used=model,
         tokens_used=tokens_used,
         execution_time_ms=0,
+        token_accounting_source=token_accounting_source,
     )
 
 
@@ -282,9 +319,13 @@ async def _execute_gemini(prompt: str, model: str, enable_deep_think: bool, api_
         tokens_used = (getattr(um, "prompt_token_count", 0) or 0) + (
             getattr(um, "candidates_token_count", 0) or 0
         )
+        token_accounting_source = "provider_usage"
+    else:
+        token_accounting_source = "unavailable"
 
     if tokens_used == 0:
         tokens_used = len(prompt) // 3 + len(output) // 3
+        token_accounting_source = "char_estimate"
 
     logger.info(f"Gemini execution complete: model={model}, tokens={tokens_used}, output_len={len(output)}")
     return ExecutionResult(
@@ -292,6 +333,7 @@ async def _execute_gemini(prompt: str, model: str, enable_deep_think: bool, api_
         model_used=model,
         tokens_used=tokens_used,
         execution_time_ms=0,
+        token_accounting_source=token_accounting_source,
     )
 
 
@@ -344,9 +386,13 @@ async def _execute_claude(prompt: str, model: str, api_key: str = None, on_chunk
 
     if response.usage:
         tokens_used = (response.usage.input_tokens or 0) + (response.usage.output_tokens or 0)
+        token_accounting_source = "provider_usage"
+    else:
+        token_accounting_source = "unavailable"
 
     if tokens_used == 0:
         tokens_used = len(prompt) // 4 + len(output) // 4
+        token_accounting_source = "char_estimate"
 
     logger.info(f"Claude execution complete: model={model}, tokens={tokens_used}, output_len={len(output)}")
     return ExecutionResult(
@@ -354,4 +400,5 @@ async def _execute_claude(prompt: str, model: str, api_key: str = None, on_chunk
         model_used=model,
         tokens_used=tokens_used,
         execution_time_ms=0,
+        token_accounting_source=token_accounting_source,
     )

@@ -8,6 +8,251 @@ let allExecutions = []; // 全ての実行履歴
 let displayedHistoryCount = 3; // 表示する履歴の件数
 let streamingWorkers = new Map(); // executionId -> worker
 let _wfStageMeta = { currentStage: null, finalVerdict: null, handoffSummary: null, coordinatorView: null, synthesisEvents: [] };
+let desktopWorkflowRun = null;
+
+async function createDesktopWorkflowRun(workflowExecutionIdValue) {
+    if (!window.PPTRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+
+    const workflowName = workflowDetail?.workflow?.name || `Workflow ${workflowId}`;
+    const correlationId = `workflow-execution-${workflowExecutionIdValue}`;
+    const run = await window.PPTRuntime.createWorkflowRun(`Workflow Execution: ${workflowName}`);
+    const recorder = window.PPTRuntime.createDesktopEventRecorder({
+        runId: run.id,
+        correlationId,
+    });
+    const commonPayload = {
+        workflow_execution_id: workflowExecutionIdValue,
+        workflow_id: parseInt(workflowId, 10),
+        workflow_name: workflowName,
+    };
+    const uiIntent = await recorder.append('ui.workflow_execute_clicked', {
+        attemptNo: 0,
+        originLayer: 'ui',
+        idempotencyKey: `run:${run.id}:ui:workflow_execute_clicked`,
+        payloadJson: commonPayload,
+    });
+    const workflowCreated = await recorder.append('workflow_run_created', {
+        attemptNo: 0,
+        causationId: uiIntent.eventId,
+        triggerEventId: uiIntent.eventId,
+        originLayer: 'engine',
+        idempotencyKey: `run:${run.id}:workflow_run_created`,
+        payloadJson: commonPayload,
+    });
+    desktopWorkflowRun = {
+        runId: run.id,
+        correlationId,
+        workflowExecutionId: workflowExecutionIdValue,
+        recorder,
+        rootEventId: recorder.getState().rootEventId,
+        uiIntentEventId: uiIntent.eventId,
+        workflowCreatedEventId: workflowCreated.eventId,
+        lastNodeFinishedEventId: workflowCreated.eventId,
+        stepEvents: new Map(),
+        isFinalized: false,
+    };
+}
+
+function getDesktopWorkflowNodeState(executionId, stepOrder) {
+    if (!desktopWorkflowRun) {
+        return null;
+    }
+
+    const nodeKey = `${stepOrder}:${executionId}`;
+    let nodeState = desktopWorkflowRun.stepEvents.get(nodeKey);
+    if (!nodeState) {
+        nodeState = {
+            nodeKey,
+            nodeId: `workflow-${desktopWorkflowRun.workflowExecutionId}-step-${stepOrder}-execution-${executionId}`,
+            executionId,
+            stepOrder,
+            nodeStartedEventId: null,
+            providerStartedEventId: null,
+            providerFinishedEventId: null,
+            retryDecisionEventId: null,
+            nodeFinishedEventId: null,
+        };
+        desktopWorkflowRun.stepEvents.set(nodeKey, nodeState);
+    }
+    return nodeState;
+}
+
+async function appendDesktopWorkflowNodeEvent(eventType, executionId, stepOrder, payloadJson = {}) {
+    if (!desktopWorkflowRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+
+    const nodeState = getDesktopWorkflowNodeState(executionId, stepOrder);
+    const nodeId = nodeState.nodeId;
+    const suffix = eventType === 'node_execution_started' ? 'started' : 'finished';
+    const event = await desktopWorkflowRun.recorder.append(eventType, {
+        nodeId,
+        attemptNo: 1,
+        causationId: desktopWorkflowRun.workflowCreatedEventId,
+        triggerEventId: desktopWorkflowRun.workflowCreatedEventId,
+        originLayer: 'engine',
+        idempotencyKey: `run:${desktopWorkflowRun.runId}:node:${nodeId}:${suffix}`,
+        payloadJson: {
+            workflow_execution_id: desktopWorkflowRun.workflowExecutionId,
+            execution_id: executionId,
+            step_order: stepOrder,
+            ...payloadJson,
+        }
+    });
+    if (eventType === 'node_execution_started') {
+        nodeState.nodeStartedEventId = event.eventId;
+    }
+    return event;
+}
+
+async function ensureDesktopWorkflowProviderStarted(executionId, stepOrder, payloadJson = {}) {
+    if (!desktopWorkflowRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+    if (!window.PPTRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
+        return null;
+    }
+
+    const nodeState = getDesktopWorkflowNodeState(executionId, stepOrder);
+    if (!nodeState || nodeState.providerStartedEventId) {
+        return nodeState;
+    }
+
+    const providerStarted = await desktopWorkflowRun.recorder.append('provider_request_started', {
+        nodeId: nodeState.nodeId,
+        attemptNo: 1,
+        causationId: nodeState.nodeStartedEventId || desktopWorkflowRun.workflowCreatedEventId,
+        triggerEventId: nodeState.nodeStartedEventId || desktopWorkflowRun.workflowCreatedEventId,
+        originLayer: 'provider',
+        idempotencyKey: `run:${desktopWorkflowRun.runId}:node:${nodeState.nodeId}:provider:start:1`,
+        payloadJson: {
+            workflow_execution_id: desktopWorkflowRun.workflowExecutionId,
+            execution_id: executionId,
+            step_order: stepOrder,
+            observation_source: window.PPTRuntime.getObservationSource('provider', 'http-api'),
+            boundary_kind: payloadJson.boundaryKind || 'sse_stream',
+            ...payloadJson,
+        }
+    });
+    nodeState.providerStartedEventId = providerStarted.eventId;
+    return nodeState;
+}
+
+async function finishDesktopWorkflowNode(executionId, stepOrder, status, errorMessage = null, details = {}) {
+    if (!desktopWorkflowRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+        return null;
+    }
+
+    const nodeState = await ensureDesktopWorkflowProviderStarted(executionId, stepOrder, {
+        boundaryKind: details.boundaryKind || 'completion_fallback',
+    });
+    if (!nodeState || nodeState.nodeFinishedEventId) {
+        return nodeState;
+    }
+
+    let nodeFinishedCausationId = nodeState.nodeStartedEventId || desktopWorkflowRun.workflowCreatedEventId;
+
+    if (window.PPTRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
+        const providerFinished = await desktopWorkflowRun.recorder.append('provider_request_finished', {
+            nodeId: nodeState.nodeId,
+            attemptNo: 1,
+            causationId: nodeState.providerStartedEventId || nodeState.nodeStartedEventId || desktopWorkflowRun.workflowCreatedEventId,
+            triggerEventId: nodeState.providerStartedEventId || nodeState.nodeStartedEventId || desktopWorkflowRun.workflowCreatedEventId,
+            originLayer: 'provider',
+            idempotencyKey: `run:${desktopWorkflowRun.runId}:node:${nodeState.nodeId}:provider:finish:1`,
+            payloadJson: {
+                workflow_execution_id: desktopWorkflowRun.workflowExecutionId,
+                execution_id: executionId,
+                step_order: stepOrder,
+                status,
+                error_message: errorMessage,
+                error_code: details.errorCode || null,
+                observation_source: window.PPTRuntime.getObservationSource('provider', 'http-api'),
+                boundary_kind: details.boundaryKind || 'sse_stream',
+            }
+        });
+        nodeState.providerFinishedEventId = providerFinished.eventId;
+
+        const retryDecision = window.PPTRuntime.classifyRetryDecision({
+            status,
+            errorCode: details.errorCode || null,
+        });
+        const retryEvent = await desktopWorkflowRun.recorder.append('retry_decision_made', {
+            nodeId: nodeState.nodeId,
+            attemptNo: 1,
+            causationId: providerFinished.eventId,
+            triggerEventId: providerFinished.eventId,
+            originLayer: 'retry',
+            idempotencyKey: `run:${desktopWorkflowRun.runId}:node:${nodeState.nodeId}:retry:1`,
+            payloadJson: {
+                workflow_execution_id: desktopWorkflowRun.workflowExecutionId,
+                execution_id: executionId,
+                step_order: stepOrder,
+                status,
+                error_message: errorMessage,
+                error_code: details.errorCode || null,
+                observation_source: window.PPTRuntime.getObservationSource('retry', 'http-api'),
+                ...retryDecision,
+            }
+        });
+        nodeState.retryDecisionEventId = retryEvent.eventId;
+        nodeFinishedCausationId = retryEvent.eventId;
+    }
+
+    const nodeFinished = await desktopWorkflowRun.recorder.append('node_execution_finished', {
+        nodeId: nodeState.nodeId,
+        attemptNo: 1,
+        causationId: nodeFinishedCausationId,
+        triggerEventId: nodeFinishedCausationId,
+        originLayer: 'engine',
+        idempotencyKey: `run:${desktopWorkflowRun.runId}:node:${nodeState.nodeId}:finished`,
+        payloadJson: {
+            workflow_execution_id: desktopWorkflowRun.workflowExecutionId,
+            execution_id: executionId,
+            step_order: stepOrder,
+            status,
+            error_message: errorMessage,
+        }
+    });
+    nodeState.nodeFinishedEventId = nodeFinished.eventId;
+    desktopWorkflowRun.lastNodeFinishedEventId = nodeFinished.eventId;
+    return nodeState;
+}
+
+async function finishDesktopWorkflowRun(status, payloadJson = {}, details = {}) {
+    if (!desktopWorkflowRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+
+    if (desktopWorkflowRun.isFinalized) {
+        return;
+    }
+
+    desktopWorkflowRun.isFinalized = true;
+
+    try {
+        await desktopWorkflowRun.recorder.append('workflow_run_finished', {
+            nodeId: null,
+            attemptNo: 1,
+            causationId: details.causationId || desktopWorkflowRun.lastNodeFinishedEventId || desktopWorkflowRun.workflowCreatedEventId,
+            triggerEventId: details.triggerEventId || desktopWorkflowRun.lastNodeFinishedEventId || desktopWorkflowRun.workflowCreatedEventId,
+            originLayer: 'engine',
+            idempotencyKey: `run:${desktopWorkflowRun.runId}:workflow_run_finished`,
+            payloadJson: {
+                workflow_execution_id: desktopWorkflowRun.workflowExecutionId,
+                status,
+                ...payloadJson,
+            }
+        });
+        await window.PPTRuntime.updateWorkflowRunStatus(desktopWorkflowRun.runId, status);
+    } catch (error) {
+        console.error('Failed to finish desktop workflow run:', error);
+    } finally {
+        desktopWorkflowRun = null;
+    }
+}
 
 async function loadWorkflowDetail() {
     workflowId = getQueryParam('id');
@@ -962,14 +1207,43 @@ function startStepStreaming(executionId, stepOrder, stepName, skillName) {
     if (matchSkill) updateFlowStatus(stepOrder, matchSkill.skill_id, 'processing');
 
     // Web Workerを作成してストリーミングを開始（execute.htmlと同じWorkerを再利用）
-    const worker = new Worker('/user/js/execution-worker.js');
+    const worker = window.PPTRuntime.createWorker();
     streamingWorkers.set(executionId, worker);
-
-    worker.postMessage({
-        type: 'start',
-        executionId: executionId,
-        token: sessionStorage.getItem('token')
+    void window.PPTRuntime.getAuthToken()
+        .then((token) => {
+            worker.postMessage({
+                type: 'start',
+                executionId: executionId,
+                token,
+                apiBase: window.PPTRuntime.getApiBase()
+            });
+        })
+        .catch((error) => {
+            console.error('Failed to resolve auth token for workflow streaming:', error);
+            stepExecutions.set(stepOrder, {
+                ...stepExecutions.get(stepOrder),
+                status: 'error',
+                errorMessage: `認証情報の取得に失敗しました: ${error.message}`,
+            });
+            renderStepExecutions();
+        });
+    const nodeStartEventPromise = appendDesktopWorkflowNodeEvent('node_execution_started', executionId, stepOrder, {
+        step_name: stepName,
+        skill_name: skillName,
     });
+    void nodeStartEventPromise.catch((error) => {
+        console.error('Failed to append desktop workflow start event:', error);
+    });
+    void nodeStartEventPromise
+        .then(() => ensureDesktopWorkflowProviderStarted(executionId, stepOrder, {
+            step_name: stepName,
+            skill_name: skillName,
+            boundaryKind: 'sse_stream',
+            api_base: window.PPTRuntime.getApiBase(),
+        }))
+        .catch((error) => {
+            console.error('Failed to append desktop workflow provider start event:', error);
+        });
 
     let accumulatedOutput = '';
 
@@ -1053,22 +1327,42 @@ function startStepStreaming(executionId, stepOrder, stepName, skillName) {
             handleStepComplete(executionId, stepOrder, 'success');
         } else if (type === 'error') {
             console.log('Step error event received:', { executionId, stepOrder, error: data.message });
-            handleStepComplete(executionId, stepOrder, 'error', data.message || 'エラーが発生しました');
+            handleStepComplete(executionId, stepOrder, 'error', data.message || 'エラーが発生しました', {
+                errorCode: data?.code || null,
+                boundaryKind: 'sse_stream',
+            });
+        } else if (type === 'runtime_error') {
+            console.error('Step runtime error event received:', { executionId, stepOrder, error: data });
+            handleStepComplete(executionId, stepOrder, 'error', data?.message || 'runtime error', {
+                errorCode: data?.code || null,
+                boundaryKind: 'sse_stream',
+            });
+        } else if (type === 'diagnostic') {
+            console.debug('Step worker diagnostic:', { executionId, stepOrder, diagnostic: data });
         } else if (type === 'cancel') {
             console.log('Step cancel event received:', { executionId, stepOrder });
-            handleStepComplete(executionId, stepOrder, 'cancelled');
+            handleStepComplete(executionId, stepOrder, 'cancelled', null, {
+                errorCode: 'cancelled_by_user',
+                boundaryKind: 'sse_stream',
+            });
         }
     };
 
     worker.onerror = (error) => {
         console.error('Stream worker error:', error);
-        handleStepComplete(executionId, stepOrder, 'error', 'ストリーミングエラーが発生しました');
+        handleStepComplete(executionId, stepOrder, 'error', 'ストリーミングエラーが発生しました', {
+            errorCode: 'worker_error',
+            boundaryKind: 'sse_stream',
+        });
     };
 }
 
 // ステップの完了処理
-async function handleStepComplete(executionId, stepOrder, status, errorMessage = null) {
+async function handleStepComplete(executionId, stepOrder, status, errorMessage = null, details = {}) {
     console.log('handleStepComplete called:', { executionId, stepOrder, status, errorMessage });
+    await finishDesktopWorkflowNode(executionId, stepOrder, status, errorMessage, details).catch((error) => {
+        console.error('Failed to append desktop workflow finish chain:', error);
+    });
 
     // Workerを停止
     const worker = streamingWorkers.get(executionId);
@@ -1242,6 +1536,12 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
                 console.log('Workflow completed, PersistentStatusBar updated:', finalStatus);
             }
         }
+        const allStepsSuccess = allStepResults.every(s => s.status === 'success');
+        const workflowStatus = (leaderExecution?.status === 'success' || (!leaderExecution && allStepsSuccess)) ? 'success' : 'error';
+        await finishDesktopWorkflowRun(workflowStatus, {
+            leader_execution_id: leaderExecution?.id || null,
+            workflow_execution_id: workflowExecutionId,
+        });
 
         // リーダー出力をフロービュー用に保存（リーダーがなければ最後のステップ出力をフォールバック）
         const lastStepResult = allStepResults.length > 0 ? allStepResults[allStepResults.length - 1].output : '';
@@ -1915,6 +2215,54 @@ async function showHistoryDetail(id) {
     }
 }
 
+async function executeWorkflowWithDesktopLocalEngine({ workflowId, globalInputData, perSkillInput, outputFormat }) {
+    const token = await window.PPTRuntime.getAuthToken();
+    if (!token) {
+        throw new Error('ログイン情報が見つかりません');
+    }
+
+    const result = await window.PPTRuntime.runLocalWorkflowExecution({
+        authToken: token,
+        workflowId: parseInt(workflowId),
+        workflowName: workflowDetail?.workflow?.name || `Workflow ${workflowId}`,
+        globalInputData,
+        perSkillInput,
+        outputFormat,
+    });
+    window.__PPT_LAST_LOCAL_WORKFLOW_RESULT = result;
+    console.info('[DesktopLocalWorkflowResult]', {
+        configuredEngineMode: result.configuredEngineMode,
+        effectiveEngineMode: result.effectiveEngineMode,
+        providerMode: result.providerMode,
+        providerTransport: result.providerTransport,
+        providerAdapter: result.providerAdapter,
+        providerRuntime: result.providerRuntime,
+        providerImpl: result.providerImpl,
+        authKeySource: result.authKeySource,
+        observationSource: result.observationSource,
+        tokenAccountingSource: result.tokenAccountingSource,
+        providerErrorCode: result.providerErrorCode,
+        retryReason: result.retryReason,
+    });
+
+    workflowExecutionId = result.workflowExecutionId;
+    await loadHistory();
+
+    let leaderExecution = null;
+    if (result.leaderExecutionId) {
+        leaderExecution = await apiRequest(`/api/user/executions/${result.leaderExecutionId}`);
+    } else {
+        leaderExecution = {
+            id: null,
+            status: result.status,
+            output_data: result.output || '',
+        };
+    }
+
+    await handleWorkflowComplete(result.workflowExecutionId, leaderExecution);
+    return result;
+}
+
 document.getElementById('workflow-execute-form').addEventListener('submit', async (e) => {
     e.preventDefault();
 
@@ -1970,6 +2318,26 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
         if (executeBtnSpinner) executeBtnSpinner.style.display = 'inline';
         inputs.forEach((el) => { if (el !== executeBtn) el.disabled = true; });
 
+        if (window.PPTRuntime?.shouldUseDesktopLocalExecution?.()) {
+            const resultContainer = document.getElementById('workflow-result-container');
+            if (resultContainer) resultContainer.style.display = '';
+            _flowStepStatuses = {};
+            _flowLeaderOutput = '';
+            _orchestrationStatuses = [];
+            _blackboardKeys = [];
+            _flowViewDetail = workflowDetail;
+            if (workflowDetail) {
+                renderFlowView(workflowDetail, _flowStepStatuses);
+            }
+            await executeWorkflowWithDesktopLocalEngine({
+                workflowId,
+                globalInputData,
+                perSkillInput,
+                outputFormat,
+            });
+            return;
+        }
+
         const resp = await apiRequest('/api/execute/workflow', {
             method: 'POST',
             body: JSON.stringify(body)
@@ -1977,6 +2345,11 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
 
         // workflow_execution_idを保存
         workflowExecutionId = resp.workflow_execution_id;
+        try {
+            await createDesktopWorkflowRun(workflowExecutionId);
+        } catch (error) {
+            console.error('Failed to create desktop workflow run:', error);
+        }
         stepExecutions.clear();
         _checkNextStepRetryCount = 0;
 
@@ -2030,6 +2403,10 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
         // 実行成功 — ボタンは完了まで非活性のまま維持
         return;
     } catch (error) {
+        await finishDesktopWorkflowRun('error', {
+            workflow_execution_id: workflowExecutionId,
+            error_message: error?.message || 'workflow execute error',
+        });
         await showAlert('ワークフロー実行に失敗しました', 'error');
         console.error('execute workflow error:', error);
         // エラー時のみボタンを再有効化

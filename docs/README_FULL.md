@@ -21,6 +21,383 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 - Profile 固定色（Explore=青 / Plan=橙 / Implement=緑 / Verification=桃 / Leader=紫）
 - ワークフロー単位のスキル一括有効化・無効化
 
+## Desktop Preview / Observable Local Execution
+
+既存の Web アプリとは別に、`desktop/` + `sidecar/` を使った Tauri ベースの desktop preview を段階導入している。目的は、既存 `frontend/` 資産を再利用しながら local execution を desktop 側で可観測にし、将来の local-first 実行へ安全に寄せること。
+
+### 現時点の決定事項
+
+- SQLite は desktop 側が単一ライタ
+- 実行イベントの正本は `workflow_run_events`
+- `workflow_runs` は一覧・状態表示用の補助テーブル
+- continuation 重複防止は DB 制約と event 記録をセットで扱う
+- frontend の browser / desktop 差分は `frontend/js/runtime-adapter.js` に集約する
+
+### Desktop 実行フロー
+
+```mermaid
+flowchart TD
+    DesktopHome[frontend/index.html] --> Adapter[frontend/js/runtime-adapter.js]
+    Adapter --> Tauri[Tauri commands]
+    Tauri --> Events[(workflow_run_events)]
+    Tauri --> Runs[(workflow_runs)]
+    Tauri --> Locks[(continuation_locks)]
+    Tauri --> Sidecar[sidecar/main.py]
+    Sidecar --> Bundle[backend bundle / complete / error API]
+    Bundle --> Provider[local_worker.execute_bundle]
+    Provider --> Sidecar
+    Sidecar --> Tauri
+```
+
+### Real Local Execution（現段階）
+
+- desktop runtime では `run_local_skill_execution` / `run_local_workflow_execution` を Tauri command として追加した
+- frontend の desktop 分岐は `/api/execute` / `/api/execute/workflow` を直接叩かず、Tauri invoke を入口にする
+- sidecar は backend を bundle 配信・完了保存・workflow continuation の制御面として利用しつつ、LLM 実行 owner 自体は sidecar 側に寄せる
+- `local_worker.executor.execute_bundle` を sidecar から再利用し、prompt plaintext は従来どおり永続化しない
+- desktop local execution の provider / retry event は sidecar の engine-origin batch を正本とし、frontend は result-first / history reload ベースの observer とする
+- `configured_engine_mode` は desktop 設定値、`effective_engine_mode` は実行時の採用経路として分離して扱う
+- `provider_mode` は `api_key` または `cli` の stable identifier とし、`provider_transport` / `provider_adapter` / `provider_runtime` / `provider_impl` で実装詳細を出し分ける
+- `auth_key_source` は `bundle_api_keys` / `local_env` / `bundle_or_local_env` / `not_applicable` / `none` を使う
+- `token_accounting_source` / `provider_error_code` / `retry_reason` は sidecar が canonical source になる
+- `local_worker` は API key path では executor 共有モジュール、CLI path では subprocess adapter として使うが、provider-level failure の意味づけは sidecar に寄せる
+- packaged CLI binary を使う場合も `provider_mode=cli` は維持し、主に `provider_runtime=python -> binary` と `provider_impl=local_worker.provider_adapter -> ppt-provider-adapter` を差し替える
+- bundled executable を subprocess で呼ぶ限り、`provider_transport=subprocess` は不変とする
+- restart recovery は `executions` / `workflow_executions` の再読込で吸収し、desktop 固有 state を正本にしない
+- sidecar crash 前の未返却 event は batch durability の制約上欠落しうる
+
+### Provider Field Naming Rules
+
+目的:
+
+- `provider_mode` は意味レベルの stable identifier として扱う
+- `provider_transport` / `provider_adapter` / `provider_runtime` / `provider_impl` は実装詳細の diagnostics field として扱う
+- packaging や内部置換で変更してよいのは detail fields であり、`provider_mode` ではない
+
+field rule table:
+
+| Field | Role | Layer | Example Values | Naming Rule | Change When | Do Not Change When |
+|------|------|------|------|------|------|------|
+| `provider_mode` | 実行経路の意味を表す安定 ID | semantic / stable | `api_key`, `cli` | 実装詳細を含めず、意味だけを表す | API key 実行から CLI 実行へ変わるなど意味上の経路が変わるとき | Python module -> binary、adapter 差し替え、バイナリ名変更など内部実装だけが変わるとき |
+| `provider_transport` | 到達方式 | diagnostic / implementation | `sdk`, `subprocess`, `http`, `grpc`, `ipc` | 何を呼ぶかではなく、どう到達するかで命名する | subprocess -> SDK 直呼び、HTTP 常駐化など接続方式が変わるとき | subprocess 呼び出しのままで target だけが module -> binary に変わるとき |
+| `provider_adapter` | 仲介層 | diagnostic / implementation | `none`, `local_worker`, `embedded_adapter` | sidecar と provider の間にある仲介責務を表す | adapter を追加・削除・差し替えするとき | 仲介層を保ったまま runtime / impl だけが変わるとき |
+| `provider_runtime` | 実行環境 | diagnostic / implementation | `python`, `binary`, `node`, `rust` | 実装対象の runtime 種別を表す | Python -> binary のように runtime が変わるとき | runtime は同じで impl 名だけが変わるとき |
+| `provider_impl` | 具体的実装識別子 | diagnostic / implementation | `sdk_execute_bundle`, `local_worker.provider_adapter`, `ppt-provider-adapter` | 最も具体的な診断用識別子。集計主キーには使わない | 実際に呼ぶ target が変わるとき | 同じ target を呼び続けるとき |
+
+short decision rules:
+
+- 意味が変わらないなら `provider_mode` は変えない
+- 接続方式が変わったときだけ `provider_transport` を変える
+- 仲介層が変わったときだけ `provider_adapter` を変える
+- 実行環境が変わったときだけ `provider_runtime` を変える
+- 具体的に呼ぶ対象が変わったときだけ `provider_impl` を変える
+
+stable semantic fields:
+
+- `configured_engine_mode`
+- `effective_engine_mode`
+- `provider_mode`
+- `auth_key_source`
+- `provider_error_code`
+- `retry_reason`
+- `token_accounting_source`
+
+diagnostic detail fields:
+
+- `provider_transport`
+- `provider_adapter`
+- `provider_runtime`
+- `provider_impl`
+
+naming anti-patterns:
+
+- `cli_subprocess_provider`
+- `sdk_execute_bundle`
+- `python_cli_provider`
+- `local_worker_cli`
+- `ppt-provider-adapter`
+
+これらは `provider_mode` に入れない。理由は意味ではなく実装詳細だから。
+
+scenario table:
+
+| Scenario | `provider_mode` | `provider_transport` | `provider_adapter` | `provider_runtime` | `provider_impl` |
+|------|------|------|------|------|------|
+| API key 実行 -> CLI 実行 | change | maybe change | maybe change | maybe change | change |
+| `python -m local_worker.provider_adapter` -> `ppt-provider-adapter`、ただし subprocess 継続 | keep | keep | maybe change | change | change |
+| `local_worker` を撤去し sidecar から packaged binary を直接 subprocess 起動 | keep | keep | change | maybe keep / maybe change | change |
+| subprocess をやめて SDK 直呼び | maybe keep / maybe change | change | maybe change | maybe change | change |
+| subprocess をやめて local HTTP service 化 | keep | change | maybe change | maybe keep | change |
+| バイナリ名だけ変更 | keep | keep | keep | keep | change |
+
+provider contract verification:
+
+- `provider_mode` は内部実装差し替えだけでは変わらない
+- `provider_transport` は到達方式が変わったときだけ変わる
+- `provider_adapter` は仲介層の有無が変わったときだけ変わる
+- `provider_runtime` は Python / Binary などの runtime change でのみ変わる
+- `provider_impl` は具体実装の変更に追随するが、集計主キーには使わない
+
+### Event Schema
+
+`workflow_run_events` の event 共通フィールド:
+
+| フィールド | 役割 |
+|------|------|
+| `event_id` | event の一意識別子 |
+| `event_type` | `workflow_run_created` などの種別 |
+| `run_id` | 対象 run |
+| `node_id` | 対象 node。run 全体 event では `NULL` 可 |
+| `attempt_no` | retry / continuation の試行番号 |
+| `occurred_at` | 発生時刻 |
+| `correlation_id` | 1 つの run 系列を横断追跡する |
+| `causation_id` | engine event chain における直前原因 |
+| `root_event_id` | 系列の最初の起点 event |
+| `trigger_event_id` | 直近の外部トリガーまたは親 event |
+| `origin_layer` | `ui` / `engine` / `provider` / `retry` / `continuation` |
+| `idempotency_key` | 二重 append / duplicate suppression の基盤 |
+| `schema_version` | payload 進化のための版 |
+| `payload_json` | event 固有 payload |
+
+推奨 index:
+
+- `(run_id, occurred_at)`
+- `(run_id, event_type, occurred_at)`
+- `(idempotency_key)` unique
+- `(correlation_id, occurred_at)`
+- 必要に応じて `(run_id, node_id, attempt_no)`
+
+### 最小 Event 列
+
+demo workflow の最小 event 列:
+
+1. `ui.single_skill_execute_clicked` または `ui.workflow_execute_clicked`
+2. `workflow_run_created`
+3. `node_execution_started`
+4. `provider_request_started`
+5. `provider_request_finished`
+6. `retry_decision_made`
+7. `node_execution_finished`
+
+continuation 検証時の追加 event:
+
+8. `continuation_candidate_detected`
+9. `continuation_lock_acquired` または `continuation_lock_rejected`
+10. `continuation_spawned` または `duplicate_suppressed`
+
+### Provider 観測境界
+
+- desktop の `workflow_run_events` append は引き続き Tauri command 単一路を維持する
+- demo workflow は `run_demo_workflow` command と `demo_sidecar_preview` を使う preview 専用導線で、real path とは別物として扱う
+- 実利用の skill / workflow 実行は `sidecar/main.py` が `provider_request_started` / `provider_request_finished` / `retry_decision_made` を batch で返し、Tauri が永続化する
+- real path の `observation_source` は `engine_origin_batch`、demo path は `demo_sidecar_preview`
+- browser / server path の SSE/stream 観測は既存挙動として残すが、desktop local execution path では proxy producer を使わない
+- `configured_engine_mode=cli` の real path では、`local_worker` は raw transport/executor failure だけを返し、`provider_error_code` / `retry_reason` / `token_accounting_source` の最終決定は sidecar が行う
+
+### Causality Model
+
+- `causation_id` は UI ではなく engine chain の直前原因を指す
+- UI 起点は `root_event_id` / `trigger_event_id` / `origin_layer = ui` で分離して保持する
+- `provider_request_started` の原因は `node_execution_started`
+- `provider_request_finished` の原因は `provider_request_started`
+- `retry_decision_made` の原因は `provider_request_finished`
+- continuation child run を作る場合、子 run の `causation_id` は `continuation_spawned` を指し、UI event へ戻さない
+
+### Packaging 前提条件
+
+- sidecar bundling に進む前に、desktop local execution の provider 観測正本が sidecar/local engine へ固定されていること
+- `workflow_run_events` の append 単一路を Tauri command から増やさない
+- bundle.active を有効化しても prompt plaintext を event payload に含めない
+- packaged CLI binary の既定識別子を `ppt-provider-adapter` に固定し、resource path が見つからない場合は Python module fallback に戻れること
+- diagnostics と result payload の両方で `configured_engine_mode` / `effective_engine_mode` / `provider_mode` / `auth_key_source` を確認できること
+- diagnostics では `provider_transport` / `provider_adapter` / `provider_runtime` / `provider_impl` も確認でき、集計軸の `provider_mode` と混同しないこと
+- CLI real path で `token_accounting_source` / `provider_error_code` / `retry_reason` が result payload と event payload の両方で確認できること
+- demo preview と real local execution が command 名・UI 導線・docs の全てで分離されていること
+
+### Packaging Completion Gates
+
+PC アプリ化の完了判定で最低限必要な gate:
+
+- packaged binary 実体が Tauri bundle から解決できること
+- `runtime_config` / `sidecar_health` / real result / event payload が同じ field semantics を返すこと
+- Python fallback と packaged binary 経路の両方で canonical source が sidecar のままであること
+- `cargo check` / `tauri build` / `verify:packaged:health` / `verify:packaged:storage` が通ること
+- `desktop-release.yml` の preflight / signed build / strict storage round-trip / artifact sanity / notarization / updater manifest / release upload が通ること
+- signed release run で `authSessionRoundTripOk=true` を確認し、token を SQLite に保存しないこと
+
+現時点で PC アプリ化全体に残る代表タスク:
+
+- Tauri packaged build 実行
+- release secrets を投入した初回 signed / notarized run
+- updater endpoint / public key の本番値確定
+- 配布チャネル運用（draft / promote / rollback）
+- packaged 実機での E2E verification
+
+### Packaged Build Verification
+
+CLI adapter を packaged binary 化して runtime field 遷移を確認する最小手順:
+
+```bash
+npm --prefix desktop ci
+cd desktop/src-tauri && cargo check
+cd ../../
+python3 -m pip install -r local_worker/requirements-build.txt
+CARGO_TARGET_DIR="$PWD/desktop/.cargo-target" \
+npm --prefix desktop run tauri:build
+
+CARGO_TARGET_DIR="$PWD/desktop/.cargo-target" \
+npm --prefix desktop run verify:packaged:health
+
+CARGO_TARGET_DIR="$PWD/desktop/.cargo-target" \
+npm --prefix desktop run verify:packaged:storage
+```
+
+期待する field transition:
+
+- keep: `provider_mode=cli`
+- keep: `provider_transport=subprocess`
+- maybe keep/change: `provider_adapter`
+- change: `provider_runtime=python -> binary`
+- change: `provider_impl=local_worker.provider_adapter -> ppt-provider-adapter`
+
+packaged executable 自体の verification mode:
+
+```bash
+PPT_DESKTOP_API_BASE="<backend base url>" \
+PPT_VERIFY_AUTH_TOKEN="<dev-login or user token>" \
+PPT_VERIFY_SKILL_ID=17 \
+PPT_VERIFY_SKILL_NAME="総合リサーチ＆戦略立案（単体版）" \
+PPT_VERIFY_ENABLE_DEEP_THINK=true \
+PPT_VERIFY_INPUT_JSON='{"topic":"clean machine packaged verification","objective":"assert bundled sidecar and cli provider semantics"}' \
+CARGO_TARGET_DIR="$PWD/desktop/.cargo-target" \
+npm --prefix desktop run verify:packaged:skill
+```
+
+verification mode の設計意図:
+
+- 通常起動のコードパスは変えず、env がある時だけ packaged executable 自身が `runtime_config` / `sidecar_health` / real run を JSON で出力して終了する
+- `provider_mode` の stable semantics を壊さず、packaged 実行時の detail fields (`provider_runtime`, `provider_impl`) だけを確定できる
+- GUI 手動確認に依存せず、`O(1)` の再現可能な packaged runtime 検証手段になる
+- `desktop/scripts/run_packaged_verification.mjs` が macOS `.app` と Windows `.exe` の packaged executable path を吸収する
+- `Rust/Tauri = runtime truth`、`Node helper = discover / launch / read / assert only` を守り、mode semantics や fallback semantics を helper 側へ複製しない
+- `PPT_VERIFY_EXECUTABLE_PATH` を与えると artifact path を手動 override できる
+- real skill verification の最小 fixture contract は `PPT_DESKTOP_API_BASE`, `PPT_VERIFY_AUTH_TOKEN`, `PPT_VERIFY_SKILL_ID`
+- `verify:packaged:storage` は auth session write path が keyring 経由であることと、token / username が SQLite に保存されていないことを packaged app 自身に証明させる
+- `verify:packaged:storage:strict` は signed release workflow 専用で、上記に加えて `authSessionRoundTripOk=true` を要求する
+
+今回の実測結果:
+
+- `cargo check` は通過
+- `npm --prefix desktop run tauri:build` は通過
+- `CARGO_TARGET_DIR="$PWD/desktop/.cargo-target"` を固定すると packaged executable path を再現的に解決できる
+- `npm --prefix desktop run verify:packaged:health` は通過
+- `npm --prefix desktop run verify:packaged:storage` は通過し、`authSessionWriteOk=true`, `tokenFoundInDb=false`, `usernameFoundInDb=false` を返す
+- `npm --prefix desktop run verify:packaged:skill:optional` は fixture 未設定時に skip できる
+- unsigned/local packaged build では `authSessionRoundTripOk` が false になり得るため、secure storage の最終 round-trip 確認は signed release run で行う
+- release artifact sanity check は `metadata.json` / asset / `.sig` の存在と targetKey 重複を fail-fast する
+- packaged verification report は `contract.truthOwner=rust_tauri`, `contract.helperPolicy=discover_launch_read_assert_only` を返す
+- packaged app は `Contents/Resources/resources/bin/ppt-provider-adapter` を自動解決
+- packaged app は `Contents/Resources/resources/bin/ppt-sidecar` を自動解決
+- packaged `runtime_config.sidecarScriptPath` と verification report の `resolvedSidecarPath` は bundle 内の `ppt-sidecar` を返す
+- packaged `runtime_config` / `sidecar_health` は `provider_mode=cli`, `provider_transport=subprocess`, `provider_runtime=binary`, `provider_impl=ppt-provider-adapter`
+- packaged real skill 1 本は `success`
+- result payload は `token_accounting_source=provider_usage`, `provider_error_code=null`, `retry_reason=null`
+- `workflow_run_events` は 7 件で、少なくとも以下を確認済み:
+  - `workflow_run_created`
+  - `node_execution_started`
+  - `provider_request_started`
+  - `provider_request_finished`
+  - `retry_decision_made`
+  - `node_execution_finished`
+  - `workflow_run_finished`
+- 上記 7 event の payload でも `provider_mode=cli`, `provider_transport=subprocess`, `provider_runtime=binary`, `provider_impl=ppt-provider-adapter` が一致
+
+補足:
+
+- `tauri:build` は Rust toolchain (`cargo`) が入っていることが前提
+- `cargo` が無い環境では artifact build までは確認できても packaged app build で止まる
+- repo 相対の `sidecar/main.py` ではなく bundled `ppt-sidecar` を優先して起動する
+- verification mode は sidecar も CLI provider も bundle 内 resource path を出力できる
+- mode ごとの required env names と expected packaged/runtime contract は Rust が返し、helper / CI / docs はそれを参照する
+- `.github/workflows/desktop-clean-machine-verify.yml` は macOS / Windows clean machine 向けの packaged health verification を required gate、real skill verification を optional gate として持つ
+- `desktop/src-tauri/tauri.release.conf.json` は release build 専用 overlay で、通常の `tauri:build` に updater artifact / signing semantics を混ぜない
+- `.github/workflows/desktop-release.yml` は sign / notarize / updater manifest / GitHub Release publish を担当し、verification workflow と責務を分離する
+- release workflow は build 前に `desktop/scripts/check_release_prereqs.mjs` を通し、updater/signing/notarization secrets の不足を fail-fast する
+- release workflow は build 後に `verify:packaged:storage:strict` を通し、signed runtime のみで `authSessionRoundTripOk=true` を要求する
+- release workflow は artifact upload 前後に `desktop/scripts/check_release_artifacts.mjs` を通し、metadata / asset / signature の整合を fail-fast する
+- desktop auth session は OS keychain に保存し、SQLite は workflow/event/engine_mode の正本に限定する
+
+Completion gate:
+
+- `.github/workflows/desktop-clean-machine-verify.yml` の `packaged-health` を macOS / Windows 両方で green にし、その中の `verify:packaged:storage` で `tokenFoundInDb=false` を維持すること
+- `packaged-real-skill` は optional gate とし、fixture 未設定時は skip、設定時のみ追加 E2E として扱うこと
+- `.github/workflows/desktop-release.yml` で `release preflight -> signed build -> verify:packaged:storage:strict -> artifact sanity -> updater manifest publish -> GitHub Release upload` が通ること
+- signed release run で desktop auth session の `authSessionRoundTripOk=true` を確認し、token を SQLite に保存しないこと
+
+初回 hosted signed release で見る順序:
+
+- `Validate release prerequisites`
+- `Build signed desktop release`
+- `Verify signed packaged secure storage round-trip`
+- `Verify collected release artifacts`
+- `Verify downloaded release artifacts`
+- `Build updater manifest`
+- `Upload release assets and latest manifest`
+
+release-ready 後に残る運用領域:
+
+- updater endpoint / public key の本番値確定
+- 配布チャネル運用（draft / promote / rollback）
+
+残見積もり:
+
+- clean machine verification workflow 定義まで含めた PC アプリ化はおよそ `94-96%`
+- hosted runner での初回 green run 確認で追加 `0.5-1営業日`
+- release secrets を使った初回 signed release 検証で追加 `1-2営業日`
+- 署名 / notarization / updater / 配布導線まで含めると `1週間弱`
+
+同一 runtime 内で binary 名だけ変える場合:
+
+- keep: `provider_mode`
+- keep: `provider_transport`
+- keep: `provider_runtime`
+- change: `provider_impl`
+
+### continuation dedupe の最小制約
+
+- 同一 dedupe key に対して active continuation は 1 件まで
+- lock acquire 成功時のみ `continuation_spawned` を許可する
+- `continuation_lock_rejected` も必ず event 化する
+- `duplicate_suppressed` は success 扱いではなく distinct event として記録する
+
+dedupe key の材料:
+
+- `run_id`
+- `node_id`
+- `continuation_reason`
+- `failure_fingerprint`
+- `delta_instruction_hash`
+
+### Tauri Commands（preview）
+
+現在の desktop preview で主要な command は以下:
+
+- `initialize_storage`
+- `get_engine_mode`
+- `set_engine_mode`
+- `list_workflow_runs`
+- `create_workflow_run`
+- `append_workflow_run_event`
+- `update_workflow_run_status`
+- `list_workflow_run_events`
+- `simulate_continuation`
+- `start_sidecar`
+- `stop_sidecar`
+- `sidecar_health`
+- `run_demo_workflow`
+- `run_local_skill_execution`
+- `run_local_workflow_execution`
+
 ## 対応モデル
 - **OpenAI**:
   - gpt-5.4, gpt-5.4-mini, gpt-5.4-pro, gpt-5.4-thinking（最新）
@@ -138,6 +515,7 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 | `frontend/user/js/user-common.js` | 認証・`apiRequest`・実行 UI 共通処理 |
 | `frontend/user/js/*.js` | 画面別（`execute.js`、`workflow-execute.js`、`history.js`、`dashboard.js`、`login.js`） |
 | `frontend/user/js/execution-worker.js` | SSE ストリーミング用 Web Worker（`fetch` + 読み取りループ） |
+| `frontend/js/runtime-adapter.js` | browser / desktop の `apiBase`、Worker URL、navigate 差分を吸収 |
 
 **API の目安**: `POST /api/auth/login`（子）、`/api/user/*`（スキル・履歴・ワークフロー等）、実行は `POST /api/execute` および `GET /api/execute/{id}/stream`（Worker 経由）。
 
@@ -154,6 +532,8 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 |------|------|
 | `deployment/` | 本番向け Nginx・systemd・セットアップ。`deployment/local/` はローカル検証用 Nginx サンプル等 |
 | `docs/` | 図のソース `*.mmd`、生成物 `diagrams/*.png`・`complexity_report.txt`（`audit.sh` / `npm run audit`） |
+| `desktop/` | Tauri shell。`src-tauri/src/main.rs` に SQLite / sidecar / event repository 実装 |
+| `sidecar/` | desktop sidecar。`main.py` は stdio JSON RPC で demo workflow を返す |
 | `.github/workflows/` | CI（デプロイワークフロー等） |
 | 直下 | `docker-compose.local.yml`（ローカル検証）、`audit.sh`・`package.json`（監査）、`.env.sample`、`.cursorrules`（任意）、`README.md` |
 
@@ -173,7 +553,14 @@ prompt-provision-tool/
 ├── frontend/
 │   ├── admin/                       # 【管理画面】ダッシュボード(WF/スキル管理), アカウント, 実行ログ
 │   ├── user/                        # 【ユーザー画面】実行, 履歴, ダウンロード
+│   ├── js/runtime-adapter.js        # browser / desktop 差分吸収
 │   ├── css/, img/                   # 【フロント共通】
+├── desktop/                         # 【Tauri shell】
+│   ├── package.json                 # tauri dev / build
+│   └── src-tauri/src/main.rs        # SQLite, event repository, sidecar process 管理
+├── sidecar/                         # 【Desktop sidecar】
+│   ├── main.py                      # stdio JSON RPC / demo workflow
+│   └── app/                         # provider / retry / security stub
 ├── local_worker/                    # 【ローカル実行 CLI】
 │   ├── cli.py                       # コマンド定義 (list, skill, workflow, daemon)
 │   ├── executor.py                  # LLM 呼び出し (OpenAI/Gemini/Claude, リトライ)

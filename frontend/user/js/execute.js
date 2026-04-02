@@ -200,9 +200,10 @@ function displayExecutionResult(execution, executionIdForDownload = null, output
         downloadLink.onclick = async (e) => {
             e.preventDefault();
             try {
-                const response = await fetch(`/api/execute/download/${executionIdForDownload}?output_format=${finalOutputFormat}`, {
+                const token = await window.PPTRuntime.getAuthToken();
+                const response = await window.PPTRuntime.fetchWithRuntime(`/api/execute/download/${executionIdForDownload}?output_format=${finalOutputFormat}`, {
                     headers: {
-                        'Authorization': `Bearer ${sessionStorage.getItem('token')}`
+                        'Authorization': `Bearer ${token}`
                     }
                 });
                 if (!response.ok) throw new Error('Download failed');
@@ -255,10 +256,194 @@ let executionWorker = null;
 let currentExecutionId = null;
 let accumulatedOutput = '';
 let currentOutputFormat = 'txt';  // 現在の実行の出力形式を保持
+let desktopExecutionRun = null;
 
 // escapeHtml, formatJSON, getQueryParam は user-common.js で定義済み
 
 // formatModelDisplay は ../js/model-display.js で共通定義
+
+async function createDesktopExecutionRun(executionId, skillName) {
+    if (!window.PPTRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+
+    const correlationId = `skill-execution-${executionId}`;
+    const nodeId = `skill-${skillId}-execution-${executionId}`;
+    const run = await window.PPTRuntime.createWorkflowRun(`Skill Execution: ${skillName}`);
+    const recorder = window.PPTRuntime.createDesktopEventRecorder({
+        runId: run.id,
+        correlationId,
+    });
+    const commonPayload = {
+        execution_id: executionId,
+        skill_id: parseInt(skillId, 10),
+        skill_name: skillName,
+    };
+    const uiIntent = await recorder.append('ui.single_skill_execute_clicked', {
+        attemptNo: 0,
+        originLayer: 'ui',
+        idempotencyKey: `run:${run.id}:ui:skill_execute_clicked`,
+        payloadJson: commonPayload,
+    });
+    const workflowCreated = await recorder.append('workflow_run_created', {
+        attemptNo: 0,
+        causationId: uiIntent.eventId,
+        triggerEventId: uiIntent.eventId,
+        originLayer: 'engine',
+        idempotencyKey: `run:${run.id}:workflow_run_created`,
+        payloadJson: commonPayload,
+    });
+    const nodeStarted = await recorder.append('node_execution_started', {
+        nodeId,
+        attemptNo: 1,
+        causationId: workflowCreated.eventId,
+        triggerEventId: workflowCreated.eventId,
+        originLayer: 'engine',
+        idempotencyKey: `run:${run.id}:node:${nodeId}:started`,
+        payloadJson: commonPayload,
+    });
+
+    desktopExecutionRun = {
+        runId: run.id,
+        correlationId,
+        nodeId,
+        executionId,
+        skillName,
+        recorder,
+        rootEventId: recorder.getState().rootEventId,
+        uiIntentEventId: uiIntent.eventId,
+        workflowCreatedEventId: workflowCreated.eventId,
+        nodeStartedEventId: nodeStarted.eventId,
+        providerStartedEventId: null,
+        providerFinishedEventId: null,
+        isFinalized: false,
+    };
+}
+
+async function ensureDesktopExecutionProviderStarted(details = {}) {
+    if (!desktopExecutionRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+    if (!window.PPTRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
+        return;
+    }
+
+    if (desktopExecutionRun.providerStartedEventId) {
+        return;
+    }
+
+    const providerStarted = await desktopExecutionRun.recorder.append('provider_request_started', {
+        nodeId: desktopExecutionRun.nodeId,
+        attemptNo: 1,
+        causationId: desktopExecutionRun.nodeStartedEventId,
+        triggerEventId: desktopExecutionRun.nodeStartedEventId,
+        originLayer: 'provider',
+        idempotencyKey: `run:${desktopExecutionRun.runId}:node:${desktopExecutionRun.nodeId}:provider:start:1`,
+        payloadJson: {
+            execution_id: desktopExecutionRun.executionId,
+            skill_name: desktopExecutionRun.skillName,
+            observation_source: window.PPTRuntime.getObservationSource('provider', 'http-api'),
+            boundary_kind: details.boundaryKind || 'sse_stream',
+            api_base: window.PPTRuntime.getApiBase(),
+        }
+    });
+    desktopExecutionRun.providerStartedEventId = providerStarted.eventId;
+}
+
+async function finishDesktopExecutionRun(status, errorMessage = null, details = {}) {
+    if (!desktopExecutionRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+
+    if (desktopExecutionRun.isFinalized) {
+        return;
+    }
+
+    desktopExecutionRun.isFinalized = true;
+
+    try {
+        let nodeFinishedCausationId = desktopExecutionRun.nodeStartedEventId;
+
+        if (window.PPTRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
+            await ensureDesktopExecutionProviderStarted({
+                boundaryKind: details.boundaryKind || 'completion_fallback',
+            });
+
+            const providerFinished = await desktopExecutionRun.recorder.append('provider_request_finished', {
+                nodeId: desktopExecutionRun.nodeId,
+                attemptNo: 1,
+                causationId: desktopExecutionRun.providerStartedEventId || desktopExecutionRun.nodeStartedEventId,
+                triggerEventId: desktopExecutionRun.providerStartedEventId || desktopExecutionRun.nodeStartedEventId,
+                originLayer: 'provider',
+                idempotencyKey: `run:${desktopExecutionRun.runId}:node:${desktopExecutionRun.nodeId}:provider:finish:1`,
+                payloadJson: {
+                    execution_id: desktopExecutionRun.executionId,
+                    status,
+                    error_message: errorMessage,
+                    error_code: details.errorCode || null,
+                    observation_source: window.PPTRuntime.getObservationSource('provider', 'http-api'),
+                    boundary_kind: details.boundaryKind || 'sse_stream',
+                    worker_stage: details.workerStage || null,
+                }
+            });
+            desktopExecutionRun.providerFinishedEventId = providerFinished.eventId;
+
+            const retryDecision = window.PPTRuntime.classifyRetryDecision({
+                status,
+                errorCode: details.errorCode || null,
+            });
+            const retryEvent = await desktopExecutionRun.recorder.append('retry_decision_made', {
+                nodeId: desktopExecutionRun.nodeId,
+                attemptNo: 1,
+                causationId: providerFinished.eventId,
+                triggerEventId: providerFinished.eventId,
+                originLayer: 'retry',
+                idempotencyKey: `run:${desktopExecutionRun.runId}:node:${desktopExecutionRun.nodeId}:retry:1`,
+                payloadJson: {
+                    execution_id: desktopExecutionRun.executionId,
+                    status,
+                    error_message: errorMessage,
+                    error_code: details.errorCode || null,
+                    observation_source: window.PPTRuntime.getObservationSource('retry', 'http-api'),
+                    ...retryDecision,
+                }
+            });
+            nodeFinishedCausationId = retryEvent.eventId;
+        }
+
+        const nodeFinished = await desktopExecutionRun.recorder.append('node_execution_finished', {
+            nodeId: desktopExecutionRun.nodeId,
+            attemptNo: 1,
+            causationId: nodeFinishedCausationId,
+            triggerEventId: nodeFinishedCausationId,
+            originLayer: 'engine',
+            idempotencyKey: `run:${desktopExecutionRun.runId}:node:${desktopExecutionRun.nodeId}:finished`,
+            payloadJson: {
+                execution_id: desktopExecutionRun.executionId,
+                status,
+                error_message: errorMessage,
+            }
+        });
+        await desktopExecutionRun.recorder.append('workflow_run_finished', {
+            nodeId: null,
+            attemptNo: 1,
+            causationId: nodeFinished.eventId,
+            triggerEventId: nodeFinished.eventId,
+            originLayer: 'engine',
+            idempotencyKey: `run:${desktopExecutionRun.runId}:workflow_run_finished`,
+            payloadJson: {
+                execution_id: desktopExecutionRun.executionId,
+                status,
+                error_message: errorMessage,
+            }
+        });
+        await window.PPTRuntime.updateWorkflowRunStatus(desktopExecutionRun.runId, status);
+    } catch (error) {
+        console.error('Failed to finish desktop execution run:', error);
+    } finally {
+        desktopExecutionRun = null;
+    }
+}
 
 // 出力コンテンツを更新する関数
 function updateOutputContent(text) {
@@ -346,12 +531,30 @@ function createWorkerMessageHandler(executionId) {
                 PersistentStatusBar.markAsCompleted('error');
             }
             const errorMsg = typeof data === 'string' ? data : (data?.message || data?.text || '実行エラーが発生しました');
-            handleStreamingError(executionId, errorMsg);
+            handleStreamingError(executionId, errorMsg, 'error', {
+                errorCode: data?.code || null,
+                workerStage: data?.stage || null,
+                boundaryKind: 'sse_stream',
+            });
+        } else if (type === 'runtime_error') {
+            const errorMsg = data?.message || 'runtime error';
+            console.error('Worker runtime error:', data);
+            handleStreamingError(executionId, errorMsg, 'error', {
+                errorCode: data?.code || null,
+                workerStage: data?.stage || null,
+                boundaryKind: 'sse_stream',
+            });
+        } else if (type === 'diagnostic') {
+            console.debug('Worker diagnostic:', data);
         } else if (type === 'cancel') {
             if (PersistentStatusBar.executionId === executionId) {
                 PersistentStatusBar.markAsCompleted('cancelled');
             }
-            handleStreamingError(executionId, '実行がキャンセルされました', 'cancelled');
+            handleStreamingError(executionId, '実行がキャンセルされました', 'cancelled', {
+                errorCode: 'cancelled_by_user',
+                workerStage: data?.stage || null,
+                boundaryKind: 'sse_stream',
+            });
         }
     };
 }
@@ -369,22 +572,41 @@ function startStreaming(executionId, outputFormat = 'txt') {
     currentOutputFormat = outputFormat;  // 出力形式を保持
 
     // Web Workerを作成
-    executionWorker = new Worker('/user/js/execution-worker.js');
+    executionWorker = window.PPTRuntime.createWorker();
+    void ensureDesktopExecutionProviderStarted({
+        boundaryKind: 'sse_stream',
+    }).catch((error) => {
+        console.error('Failed to append desktop provider start event:', error);
+    });
 
     // メッセージ受信ハンドラを設定
     executionWorker.onmessage = createWorkerMessageHandler(executionId);
 
     executionWorker.onerror = (error) => {
-        handleStreamingError(executionId, 'ストリーミング接続エラーが発生しました');
+        handleStreamingError(executionId, 'ストリーミング接続エラーが発生しました', 'error', {
+            errorCode: 'worker_error',
+            workerStage: 'worker.onerror',
+            boundaryKind: 'sse_stream',
+        });
     };
 
     // Workerを開始
-    const token = sessionStorage.getItem('token');
-    executionWorker.postMessage({
-        type: 'start',
-        executionId: executionId,
-        token: token
-    });
+    void window.PPTRuntime.getAuthToken()
+        .then((token) => {
+            executionWorker?.postMessage({
+                type: 'start',
+                executionId: executionId,
+                token,
+                apiBase: window.PPTRuntime.getApiBase()
+            });
+        })
+        .catch((error) => {
+            handleStreamingError(executionId, `認証情報の取得に失敗しました: ${error.message}`, 'error', {
+                errorCode: 'auth_session_missing',
+                workerStage: 'startStreaming.auth',
+                boundaryKind: 'sse_stream',
+            });
+        });
 }
 
 // 推論モデルかどうかを判定する関数
@@ -409,6 +631,10 @@ async function waitForReasoningModelCompletion(executionId, outputFormat) {
             const execution = await apiRequest(`/api/user/executions/${executionId}`);
 
             if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+                await finishDesktopExecutionRun(execution.status, execution.error_message || null, {
+                    boundaryKind: 'polling_completion',
+                    workerStage: 'polling',
+                });
                 // 完了したので結果を表示
                 restoreInputData(execution);
                 setExecutionButtonState(false);
@@ -458,6 +684,11 @@ async function waitForReasoningModelCompletion(executionId, outputFormat) {
     }
 
     // タイムアウト
+    await finishDesktopExecutionRun('error', 'reasoning model polling timeout', {
+        errorCode: 'polling_timeout',
+        boundaryKind: 'polling_completion',
+        workerStage: 'polling',
+    });
     setExecutionButtonState(false);
     await Swal.fire({
         title: 'タイムアウト',
@@ -544,6 +775,10 @@ async function handleStreamingComplete(executionId) {
 
     try {
         const execution = await apiRequest(`/api/user/executions/${executionId}`);
+        await finishDesktopExecutionRun(execution.status || 'success', execution.error_message || null, {
+            boundaryKind: 'sse_stream',
+            workerStage: 'complete',
+        });
 
         restoreInputData(execution);
         setExecutionButtonState(false);
@@ -575,7 +810,7 @@ async function handleStreamingComplete(executionId) {
     }
 }
 
-async function handleStreamingError(executionId, errorMessage, status = 'error') {
+async function handleStreamingError(executionId, errorMessage, status = 'error', details = {}) {
     stopStreaming();
     setExecutionButtonState(false);
 
@@ -584,12 +819,14 @@ async function handleStreamingError(executionId, errorMessage, status = 'error')
         const execution = await apiRequest(`/api/user/executions/${executionId}`);
         const finalStatus = execution.status || status;
         const finalErrorMessage = execution.error_message || errorMessage || 'エラーが発生しました';
+        await finishDesktopExecutionRun(finalStatus, finalErrorMessage, details);
 
         displayExecutionError({
             status: finalStatus,
             error_message: finalErrorMessage
         });
     } catch (err) {
+        await finishDesktopExecutionRun(status, errorMessage || 'エラーが発生しました', details);
         displayExecutionError({
             status: status,
             error_message: errorMessage || 'エラーが発生しました'
@@ -1095,6 +1332,53 @@ function generateInputFields(inputSchema) {
     }, 50);
 }
 
+async function executeWithDesktopLocalEngine({ skillId, inputData, outputFormat }) {
+    const token = await window.PPTRuntime.getAuthToken();
+    if (!token) {
+        throw new Error('ログイン情報が見つかりません');
+    }
+
+    const result = await window.PPTRuntime.runLocalSkillExecution({
+        authToken: token,
+        skillId: parseInt(skillId),
+        skillName: document.getElementById('skill-name')?.textContent || `Skill ${skillId}`,
+        inputData,
+        outputFormat,
+        enableDeepThink: skillDetail?.enable_deep_think ?? undefined,
+    });
+    window.__PPT_LAST_LOCAL_SKILL_RESULT = result;
+    console.info('[DesktopLocalSkillResult]', {
+        configuredEngineMode: result.configuredEngineMode,
+        effectiveEngineMode: result.effectiveEngineMode,
+        providerMode: result.providerMode,
+        providerTransport: result.providerTransport,
+        providerAdapter: result.providerAdapter,
+        providerRuntime: result.providerRuntime,
+        providerImpl: result.providerImpl,
+        authKeySource: result.authKeySource,
+        observationSource: result.observationSource,
+        tokenAccountingSource: result.tokenAccountingSource,
+        providerErrorCode: result.providerErrorCode,
+        retryReason: result.retryReason,
+    });
+
+    currentExecutionId = result.executionId;
+    const execution = await apiRequest(`/api/user/executions/${result.executionId}`);
+    restoreInputData(execution);
+    setExecutionButtonState(false);
+
+    if (execution.status === 'success') {
+        const finalOutputFormat = execution?.output_format || outputFormat || 'txt';
+        displayExecutionResult(execution, result.executionId, finalOutputFormat !== 'txt' ? finalOutputFormat : null);
+    } else {
+        displayExecutionError(execution);
+    }
+
+    await loadHistory();
+    showOutputPanel();
+    return result;
+}
+
 document.getElementById('execute-form').addEventListener('submit', async (e) => {
     e.preventDefault();
 
@@ -1210,12 +1494,26 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
 
         console.log('[Execute] Request body:', requestBody);
 
+        if (window.PPTRuntime?.shouldUseDesktopLocalExecution?.()) {
+            showProcessingMessage();
+            await executeWithDesktopLocalEngine({
+                skillId,
+                inputData,
+                outputFormat,
+            });
+            return;
+        }
+
         const initialResponse = await apiRequest('/api/execute', {
             method: 'POST',
             body: JSON.stringify(requestBody)
         });
 
         const executionId = initialResponse.execution_id;
+        const skillName = document.getElementById('skill-name').textContent;
+        const desktopRunPromise = createDesktopExecutionRun(executionId, skillName).catch((error) => {
+            console.error('Failed to create desktop execution run:', error);
+        });
         executeBtnText.textContent = '実行中...';
 
         // ドロップアニメーションとステータスバー開始
@@ -1252,7 +1550,7 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
             });
 
             // アニメーション完了時の処理
-            setTimeout(() => {
+            setTimeout(async () => {
                 if (document.body.contains(particle)) {
                     document.body.removeChild(particle);
                 }
@@ -1267,12 +1565,12 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
                 }, 200);
 
                 // ステータスバーを開始（ここでアイコンが青くなる）
-                const skillName = document.getElementById('skill-name').textContent;
+                await desktopRunPromise;
                 PersistentStatusBar.start(executionId, parseInt(skillId), skillName);
             }, 600);
         } else {
             // ターゲットが見つからない場合は即座に開始（フォールバック）
-            const skillName = document.getElementById('skill-name').textContent;
+            await desktopRunPromise;
             PersistentStatusBar.start(executionId, parseInt(skillId), skillName);
         }
 
@@ -1318,11 +1616,16 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
 
         if (isReasoning) {
             // 推論モデルの場合はストリーミング接続を開始せずに、ポーリングで完了を待つ
+            await desktopRunPromise;
+            await ensureDesktopExecutionProviderStarted({
+                boundaryKind: 'polling_completion',
+            });
             await waitForReasoningModelCompletion(executionId, outputFormat);
             return;
         }
 
         // ストリーミング開始（完了は createWorkerMessageHandler が独立して処理）
+        await desktopRunPromise;
         startStreaming(executionId, outputFormat);
         // fire-and-forget: ユーザーは自由にページ遷移可能
         // 完了時の処理:
@@ -1464,6 +1767,11 @@ window.executeQueuedTask = async function(taskData) {
 
         const executionId = initialResponse.execution_id;
         const skillName = taskData.skillName || document.getElementById('skill-name')?.textContent || '実行中...';
+        try {
+            await createDesktopExecutionRun(executionId, skillName);
+        } catch (error) {
+            console.error('Failed to create desktop execution run from queue:', error);
+        }
 
         // ステータスバーを開始
         PersistentStatusBar.start(executionId, parseInt(taskData.skillId), skillName);

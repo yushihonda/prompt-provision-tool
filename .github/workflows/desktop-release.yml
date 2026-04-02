@@ -1,0 +1,279 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (e.g. desktop-v0.1.0)"
+        required: true
+      release_version:
+        description: "App version without leading v (e.g. 0.1.0)"
+        required: true
+      release_notes:
+        description: "Optional release notes for latest.json and GitHub release body"
+        required: false
+  push:
+    tags:
+      - "desktop-v*"
+
+jobs:
+  build-release:
+    name: Build signed desktop release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            cargo_target_dir: ${{ github.workspace }}/desktop/.cargo-target-release
+          - os: windows-latest
+            cargo_target_dir: ${{ github.workspace }}\desktop\.cargo-target-release
+    env:
+      CARGO_TARGET_DIR: ${{ matrix.cargo_target_dir }}
+      PPT_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+      PPT_UPDATER_ENDPOINTS_JSON: ${{ format('["https://github.com/{0}/releases/latest/download/latest.json"]', github.repository) }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Validate release prerequisites
+        env:
+          PPT_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          PPT_UPDATER_ENDPOINTS_JSON: ${{ format('["https://github.com/{0}/releases/latest/download/latest.json"]', github.repository) }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: node desktop/scripts/check_release_prereqs.mjs
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve release metadata
+        id: release_meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "release_tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+            echo "release_version=${{ inputs.release_version }}" >> "$GITHUB_OUTPUT"
+            printf 'release_notes<<EOF\n%s\nEOF\n' "${{ inputs.release_notes }}" >> "$GITHUB_OUTPUT"
+          else
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#desktop-v}"
+            echo "release_tag=${tag}" >> "$GITHUB_OUTPUT"
+            echo "release_version=${version}" >> "$GITHUB_OUTPUT"
+            printf 'release_notes<<EOF\n%s\nEOF\n' "" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve updater target key
+        id: target_key
+        shell: bash
+        run: |
+          case "${RUNNER_OS}:${RUNNER_ARCH}" in
+            "macOS:ARM64") key="darwin-aarch64" ;;
+            "macOS:X64") key="darwin-x86_64" ;;
+            "Windows:X64") key="windows-x86_64" ;;
+            "Windows:ARM64") key="windows-aarch64" ;;
+            *)
+              echo "Unsupported runner tuple ${RUNNER_OS}:${RUNNER_ARCH}" >&2
+              exit 1
+              ;;
+          esac
+          echo "value=${key}" >> "$GITHUB_OUTPUT"
+
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          CERT_ID="$(security find-identity -v -p codesigning build.keychain | awk -F'\"' '/Developer ID Application/ { print $2; exit }')"
+          if [ -z "$CERT_ID" ]; then
+            echo "Developer ID Application identity not found in build.keychain" >&2
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+
+      - name: Write App Store Connect API key
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/appstoreconnect"
+          key_path="$RUNNER_TEMP/appstoreconnect/AuthKey.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$key_path"
+          echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+
+      - name: Export notarization credentials
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          echo "APPLE_API_ISSUER=${{ secrets.APPLE_API_ISSUER }}" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY=${{ secrets.APPLE_API_KEY_ID }}" >> "$GITHUB_ENV"
+
+      - name: Import Windows signing certificate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          New-Item -ItemType Directory -Path certificate -Force | Out-Null
+          Set-Content -Path certificate/tempCert.txt -Value $env:WINDOWS_CERTIFICATE
+          certutil -decode certificate/tempCert.txt certificate/certificate.pfx | Out-Null
+          Import-PfxCertificate -FilePath certificate/certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText) | Out-Null
+          $thumbprint = (Get-PfxCertificate certificate/certificate.pfx).Thumbprint
+          if ([string]::IsNullOrWhiteSpace($thumbprint)) {
+            throw "Failed to resolve Windows certificate thumbprint"
+          }
+          "PPT_WINDOWS_CERTIFICATE_THUMBPRINT=$thumbprint" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install desktop build dependencies
+        run: python -m pip install -r local_worker/requirements-build.txt
+
+      - name: Install desktop npm dependencies
+        run: npm --prefix desktop ci
+
+      - name: Build signed desktop release
+        run: npm --prefix desktop run tauri:build:release
+
+      - name: Verify signed packaged secure storage round-trip
+        run: npm --prefix desktop run verify:packaged:storage:strict
+
+      - name: Collect updater release artifacts
+        env:
+          PPT_RELEASE_TARGET_KEY: ${{ steps.target_key.outputs.value }}
+          PPT_RELEASE_ASSET_DIR: ${{ github.workspace }}/release-assets/${{ runner.os }}
+        run: npm --prefix desktop run release:prepare-artifacts
+
+      - name: Verify collected release artifacts
+        env:
+          PPT_RELEASE_ASSET_DIR: ${{ github.workspace }}/release-assets/${{ runner.os }}
+          PPT_RELEASE_EXPECTED_COUNT: "1"
+          PPT_RELEASE_EXPECTED_TARGET_KEYS_JSON: ${{ format('["{0}"]', steps.target_key.outputs.value) }}
+        run: npm --prefix desktop run release:check-artifacts
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-${{ runner.os }}
+          path: ${{ github.workspace }}/release-assets/${{ runner.os }}
+
+  publish-release:
+    name: Publish desktop release
+    runs-on: ubuntu-latest
+    needs: build-release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Resolve release metadata
+        id: release_meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "release_tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+            echo "release_version=${{ inputs.release_version }}" >> "$GITHUB_OUTPUT"
+            printf 'release_notes<<EOF\n%s\nEOF\n' "${{ inputs.release_notes }}" >> "$GITHUB_OUTPUT"
+          else
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#desktop-v}"
+            echo "release_tag=${tag}" >> "$GITHUB_OUTPUT"
+            echo "release_version=${version}" >> "$GITHUB_OUTPUT"
+            printf 'release_notes<<EOF\n%s\nEOF\n' "" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download macOS release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-release-macOS
+          path: release-assets/macos
+
+      - name: Download Windows release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-release-Windows
+          path: release-assets/windows
+
+      - name: Verify downloaded release artifacts
+        env:
+          PPT_RELEASE_ASSET_DIR: ${{ github.workspace }}/release-assets
+          PPT_RELEASE_EXPECTED_COUNT: "2"
+        run: npm --prefix desktop run release:check-artifacts
+
+      - name: Build updater manifest
+        env:
+          PPT_RELEASE_ASSET_DIR: ${{ github.workspace }}/release-assets
+          PPT_RELEASE_MANIFEST_PATH: ${{ github.workspace }}/release-assets/latest.json
+          PPT_RELEASE_REPOSITORY: ${{ github.repository }}
+          PPT_RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
+          PPT_RELEASE_VERSION: ${{ steps.release_meta.outputs.release_version }}
+          PPT_RELEASE_NOTES: ${{ steps.release_meta.outputs.release_notes }}
+        run: node desktop/scripts/build_updater_manifest.mjs
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
+          RELEASE_TITLE: Prompt Provision Tool Desktop ${{ steps.release_meta.outputs.release_version }}
+          RELEASE_NOTES: ${{ steps.release_meta.outputs.release_notes }}
+        shell: bash
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TITLE" --notes "${RELEASE_NOTES:-Desktop release}"
+          fi
+
+      - name: Upload release assets and latest manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          assets=()
+          for file in release-assets/**/*; do
+            if [[ -f "$file" && "$file" != *"/metadata.json" ]]; then
+              assets+=("$file")
+            fi
+          done
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            echo "No release assets found under release-assets/" >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber

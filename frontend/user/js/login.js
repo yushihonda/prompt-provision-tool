@@ -1,6 +1,7 @@
 // ユーザー ログイン画面 JavaScript
 
-const API_BASE = window.location.origin;
+const runtimeFetch = (path, options) => window.PPTRuntime.fetchWithRuntime(path, options);
+const navigateTo = (path) => window.PPTRuntime.navigate(path);
 
 function _loginEsc(s) {
     if (s == null) return '';
@@ -60,7 +61,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
         formData.append('username', username);
         formData.append('password', password);
 
-        const response = await fetch(`${API_BASE}/api/auth/login`, {
+        const response = await runtimeFetch('/api/auth/login', {
             method: 'POST',
             body: formData
         });
@@ -96,12 +97,14 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
                 }
             }
 
-            // トークンをセッションストレージに保存
-            sessionStorage.setItem('token', data.access_token);
-            sessionStorage.setItem('username', username);
+            // desktop では secure storage、browser では sessionStorage に保存
+            await window.PPTRuntime.saveAuthSession({
+                token: data.access_token,
+                username,
+            });
 
             // ダッシュボードへリダイレクト
-            window.location.href = 'dashboard.html';
+            navigateTo('dashboard.html');
         } else {
             showAlert(data.detail || 'ログインに失敗しました', 'error');
         }

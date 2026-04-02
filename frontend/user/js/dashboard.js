@@ -101,7 +101,7 @@ function renderUserWorkflows() {
                     </div>
                     <div class="card-corner">
                         <button class="btn btn-primary card-execute-btn"
-                                onclick="location.href='workflow-execute.html?id=${wf.id}'">
+                                onclick="window.PPTRuntime.navigate('workflow-execute.html?id=${wf.id}')">
                             実行
                         </button>
                     </div>
@@ -134,7 +134,7 @@ function renderSkills() {
             </div>
             <div class="card-corner">
                 <button class="btn btn-primary card-execute-btn"
-                        onclick="location.href='execute.html?id=${skill.id}'">
+                        onclick="window.PPTRuntime.navigate('execute.html?id=${skill.id}')">
                     ${isExecuting ? '実行中' : '実行'}
                 </button>
             </div>

@@ -1,0 +1,21 @@
+{
+  "bundle": {
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "entitlements": "entitlements.release.plist",
+      "hardenedRuntime": true
+    },
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "https://timestamp.digicert.com",
+      "signCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign-windows.ps1 %1"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

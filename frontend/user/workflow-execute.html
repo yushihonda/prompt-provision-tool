@@ -15,7 +15,7 @@
             </div>
             <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
                 <div id="desktop-nav" style="display: flex; gap: 10px;"></div>
-                <button class="btn btn-secondary" onclick="location.href='dashboard.html'" style="display: inline-flex; align-items: center; gap: 5px; padding: 10px 20px;">
+                <button class="btn btn-secondary" onclick="window.PPTRuntime.navigate('dashboard.html')" style="display: inline-flex; align-items: center; gap: 5px; padding: 10px 20px;">
                     ← ワークフロー / スキル管理に戻る
                 </button>
             </div>
@@ -97,6 +97,14 @@
         </div>
     </div>
 
+    <script>
+        window.__PPT_RUNTIME = window.__PPT_RUNTIME || {
+            desktop: Boolean(window.__TAURI__?.core?.invoke),
+            apiBase: window.__TAURI__?.core?.invoke ? 'http://127.0.0.1:8000' : window.location.origin,
+            workerScriptPath: 'js/execution-worker.js'
+        };
+    </script>
+    <script src="../js/runtime-adapter.js"></script>
     <script src="../js/model-display.js"></script>
     <script src="../js/exec-detail-modal.js"></script>
     <script src="js/user-common.js"></script>

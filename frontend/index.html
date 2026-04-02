@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prompt Provision Tool Desktop</title>
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        .desktop-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-top: 24px;
+        }
+
+        .desktop-card {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .desktop-card h2 {
+            margin-top: 0;
+            font-size: 18px;
+        }
+
+        .desktop-meta {
+            display: grid;
+            gap: 8px;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.82);
+        }
+
+        .desktop-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .desktop-actions button,
+        .desktop-actions a {
+            min-width: 140px;
+        }
+
+        .desktop-pill {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(124, 58, 237, 0.18);
+            color: #d8b4fe;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .desktop-output {
+            margin-top: 12px;
+            padding: 12px;
+            border-radius: 10px;
+            background: rgba(0, 0, 0, 0.25);
+            white-space: pre-wrap;
+            line-height: 1.5;
+            min-height: 84px;
+        }
+
+        .desktop-note {
+            color: rgba(255, 255, 255, 0.66);
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .desktop-select {
+            width: 100%;
+            margin-top: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="content">
+            <div class="card">
+                <h1>Prompt Provision Tool Desktop</h1>
+                <p class="desktop-note">
+                    この画面は Tauri shell の最小ホームです。既存 frontend 資産を流用しつつ、
+                    app info、SQLite 初期化、engine mode 切替、runtime diagnostics、sidecar 疎通確認をここから行います。
+                </p>
+                <div class="desktop-actions">
+                    <a class="btn btn-secondary" href="user/login.html">Real User UI を開く</a>
+                    <a class="btn btn-secondary" href="admin/login.html">既存 Admin UI を開く</a>
+                </div>
+            </div>
+
+            <div class="desktop-grid">
+                <section class="desktop-card">
+                    <h2>App Info</h2>
+                    <div class="desktop-meta" id="app-info">読み込み中...</div>
+                </section>
+
+                <section class="desktop-card">
+                    <h2>Runtime Diagnostics</h2>
+                    <div class="desktop-meta" id="runtime-diagnostics-info">runtime 未確認</div>
+                    <div class="desktop-output" id="runtime-diagnostics-output">診断詳細はここに表示されます。</div>
+                </section>
+
+                <section class="desktop-card">
+                    <h2>Storage</h2>
+                    <div class="desktop-meta" id="storage-info">未初期化</div>
+                    <div class="desktop-actions">
+                        <button class="btn btn-primary" id="init-storage-btn">SQLite 初期化</button>
+                        <button class="btn btn-secondary" id="refresh-runs-btn">最新 Run 一覧</button>
+                    </div>
+                    <div class="desktop-output" id="workflow-runs-output">まだ run はありません。</div>
+                    <div class="desktop-output" id="workflow-events-output">event はここに表示されます。</div>
+                </section>
+
+                <section class="desktop-card">
+                    <h2>Engine Mode</h2>
+                    <span class="desktop-pill" id="engine-mode-pill">loading</span>
+                    <select class="desktop-select" id="engine-mode-select">
+                        <option value="api_key">API Key Mode</option>
+                        <option value="cli">CLI Mode</option>
+                    </select>
+                    <p class="desktop-note">
+                        `configured_engine_mode` は設定値、`effective_engine_mode` は実際に採用される経路です。
+                        real local path では `providerMode` を安定識別子として表示し、`providerTransport` / `providerAdapter` / `providerRuntime` / `providerImpl` は診断用詳細として分離表示します。
+                    </p>
+                </section>
+
+                <section class="desktop-card">
+                    <h2>Sidecar / Demo Preview</h2>
+                    <div class="desktop-meta" id="sidecar-info">未起動</div>
+                    <div class="desktop-actions">
+                        <button class="btn btn-primary" id="start-sidecar-btn">起動 / Health</button>
+                        <button class="btn btn-secondary" id="demo-workflow-btn">Preview Demo Workflow</button>
+                        <button class="btn btn-secondary" id="simulate-continuation-btn">Preview Continuation Guard</button>
+                        <button class="btn btn-danger" id="stop-sidecar-btn">停止</button>
+                    </div>
+                    <p class="desktop-note">
+                        このカードの demo 操作は preview 専用です。real skill / workflow 実行は `Real User UI` から確認します。
+                    </p>
+                    <div class="desktop-output" id="sidecar-output">sidecar の応答はここに表示されます。</div>
+                </section>
+
+                <section class="desktop-card">
+                    <h2>Migration Guardrails</h2>
+                    <div class="desktop-meta">
+                        <span>sidecar 通信: `stdio` の最小構成</span>
+                        <span>prompt 復号: memory-only contract</span>
+                        <span>local DB: SQLite v1 schema</span>
+                        <span>`workflow_run_events` append: Tauri command 単一路</span>
+                    </div>
+                    <p class="desktop-note">
+                        既存の `frontend/user` と `frontend/admin` は引き続き再利用するが、
+                        real local execution は sidecar 正本、demo preview は別導線として明示的に分離して扱う。
+                    </p>
+                </section>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.__PPT_RUNTIME = window.__PPT_RUNTIME || {
+            desktop: Boolean(window.__TAURI__?.core?.invoke),
+            apiBase: window.__TAURI__?.core?.invoke ? 'http://127.0.0.1:8000' : window.location.origin,
+            workerScriptPath: 'js/execution-worker.js'
+        };
+    </script>
+    <script src="js/runtime-adapter.js"></script>
+    <script src="js/desktop-home.js"></script>
+</body>
+</html>

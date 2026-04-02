@@ -102,6 +102,14 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <script>
+        window.__PPT_RUNTIME = window.__PPT_RUNTIME || {
+            desktop: Boolean(window.__TAURI__?.core?.invoke),
+            apiBase: window.__TAURI__?.core?.invoke ? 'http://127.0.0.1:8000' : window.location.origin,
+            workerScriptPath: 'js/execution-worker.js'
+        };
+    </script>
+    <script src="../js/runtime-adapter.js"></script>
     <script src="../js/model-display.js"></script>
     <script src="js/admin-common.js"></script>
     <script src="js/skills.js"></script>
