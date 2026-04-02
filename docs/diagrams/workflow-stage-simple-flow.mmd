@@ -1,48 +1,69 @@
 flowchart TD
-    A[Workflow Start<br/>POST execute] --> B[Server Orchestration<br/>execution_tasks.py]
+    A[Workflow Start<br/>POST execute] --> A1[synthesis_log: workflow_start]
+    A1 --> B[Auto Orchestration<br/>auto_orchestration.py<br/>output_key / retry / quality_gate / judge 自動推論]
 
-    B --> C[Explore Step<br/>agent_profile=explore]
-    C --> C1[worker bundle 作成<br/>AgentProfile Prompt + Parent Skill + Skill Prompt + Handoff + Constraints + Input]
+    B --> C[Explore Step<br/>agent_profile=explore<br/>色: 青]
+    C --> C1[bundle 生成<br/>AgentProfile Prompt + Memory + Skill Prompt]
     C1 --> C2[local_worker 実行<br/>read-only 制約]
-    C2 --> C3[completion_service.py<br/>結果保存]
-    C3 --> C4[blackboard_data に探索結果を書き込み<br/>output_key と input_mapping が正本]
-    C4 --> C5[handoff_summary 更新<br/>from_profile=explore]
-    C5 --> D[Plan Step<br/>agent_profile=plan]
+    C2 --> C3[completion_service<br/>結果保存 + メモリ更新]
+    C3 --> C4[blackboard: explore_result<br/>output_key 自動生成]
+    C4 --> C5[synthesis_log: step_complete]
+    C5 --> D[Plan Step<br/>agent_profile=plan<br/>色: 橙]
 
-    D --> D1[worker bundle 作成]
+    D --> D1[bundle 生成 + Memory 注入]
     D1 --> D2[local_worker 実行<br/>read-only 制約]
-    D2 --> D3[completion_service.py<br/>結果保存]
-    D3 --> D4[blackboard_data に設計結果を書き込み]
-    D4 --> D5[handoff_summary 更新<br/>from_profile=plan]
-    D5 --> E[Implement Step<br/>agent_profile=implement]
+    D2 --> D3[completion_service + メモリ更新]
+    D3 --> D4[blackboard: plan_result]
+    D4 --> D5[synthesis_log: step_complete]
+    D5 --> E[Implement Step<br/>agent_profile=implement<br/>色: 緑]
 
-    E --> E1[worker bundle 作成]
-    E1 --> E2[local_worker 実行<br/>通常実行]
-    E2 --> E3[completion_service.py<br/>結果保存]
-    E3 --> E4[blackboard_data に成果物と実装結果を書き込み]
-    E4 --> E5[handoff_summary 更新<br/>from_profile=implement]
-    E5 --> F[Verification Step<br/>agent_profile=verification]
+    E --> E1[bundle 生成 + Memory 注入]
+    E1 --> E2[local_worker 実行]
+    E2 --> E3[completion_service + メモリ更新]
+    E3 --> E4[blackboard: implement_result]
+    E4 --> E5[synthesis_log: step_complete]
+    E5 --> F[Verification Step<br/>agent_profile=verification<br/>色: 桃]
 
-    F --> F1[worker bundle 作成<br/>VERDICT 必須 contract 付与]
+    F --> F1[bundle 生成<br/>証跡フォーマット + Adversarial Probe 必須]
     F1 --> F2[local_worker 実行<br/>break-it mindset]
-    F2 --> F3[completion_service.py]
-    F3 --> F4[verdict 正規化<br/>JSON verdict -> VERDICT 行 -> regex fallback]
-    F4 --> F5[WorkflowExecution.final_verdict 保存<br/>PASS / FAIL / PARTIAL]
-    F5 --> G[Workflow Complete]
+    F2 --> F3[品質ゲート<br/>regex: VERDICT 行チェック]
+    F3 -->|PASS| F4[verdict 正規化 → final_verdict 保存]
+    F3 -->|FAIL| F3R[Reflection: critique 付き再実行<br/>_ppt_continuation メタデータ]
+    F3R --> F1
+    F4 --> F5[synthesis_log: step_complete + group_complete]
+    F5 --> G[synthesis_log: leader_start]
 
-    subgraph Metadata
-        M1[current_stage<br/>今の stage]
-        M2[handoff_summary<br/>軽量な派生サマリ]
-        M3[final_verdict<br/>verification 最終判定]
+    G --> L[Leader 統合<br/>agent_profile=default<br/>色: 紫<br/>プロンプト自動生成]
+    L --> L1[all_step_results + blackboard 統合]
+    L1 --> L2[synthesis_log: leader_complete]
+    L2 --> H[Workflow Complete<br/>coordinator_view: completed]
+
+    subgraph Coordinator View
+        CV1[current_stage<br/>リアルタイム更新]
+        CV2[latest_summary + why<br/>判断理由付き]
+        CV3[synthesis_events<br/>DB保存タイムライン]
+        CV4[final_verdict<br/>PASS / FAIL / PARTIAL]
     end
 
-    C --> M1
-    D --> M1
-    E --> M1
-    F --> M1
+    subgraph Persistent Memory
+        PM1[workflow_memories<br/>workflow × profile]
+        PM2[starter_seed<br/>初回のみ適用]
+    end
 
-    C5 --> M2
-    D5 --> M2
-    E5 --> M2
+    C --> CV1
+    D --> CV1
+    E --> CV1
+    F --> CV1
+    L --> CV1
 
-    F5 --> M3
+    C5 --> CV3
+    D5 --> CV3
+    E5 --> CV3
+    F5 --> CV3
+    L2 --> CV3
+
+    F4 --> CV4
+
+    C3 --> PM1
+    D3 --> PM1
+    E3 --> PM1
