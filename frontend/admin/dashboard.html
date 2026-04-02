@@ -3,92 +3,107 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>管理者ダッシュボード - Prompt Provision Tool</title>
+    <title>ワークフロー / スキル管理 - Prompt Provision Tool</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body class="admin-theme">
     <div class="container">
-        <div class="header">
-            <span class="tool-name">Prompt Provision Tool</span>
-            <div class="user-info">
-                <span id="username-display">-</span>
-                <button class="btn-logout" onclick="logout()">ログアウト</button>
-            </div>
-            <button class="hamburger-menu" onclick="toggleMobileMenu()">
-                <span></span>
-                <span></span>
-                <span></span>
-            </button>
-        </div>
-
-        <!-- モバイルメニュー -->
-        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
-        <div class="mobile-menu" id="mobile-menu">
-            <div class="mobile-menu-header">
-                <span class="tool-name">Prompt Provision Tool</span>
-                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                </button>
-            </div>
-            <div class="mobile-menu-content">
-                <div class="nav">
-                    <button class="nav-item active" onclick="location.href='dashboard.html'">ダッシュボード</button>
-                    <button class="nav-item" onclick="location.href='prompts.html'">プロンプト管理</button>
-                    <button class="nav-item" onclick="location.href='accounts.html'">アカウント管理</button>
-                    <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
-                </div>
-                <div class="user-info">
-                    <span id="mobile-username-display">-</span>
-                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
-                </div>
-            </div>
-        </div>
-
             <div class="content">
-            <h1 class="page-title">管理者ダッシュボード</h1>
-            <div class="nav">
-                <button class="nav-item active" onclick="location.href='dashboard.html'">ダッシュボード</button>
-                <button class="nav-item" onclick="location.href='prompts.html'">プロンプト管理</button>
-                <button class="nav-item" onclick="location.href='accounts.html'">アカウント管理</button>
-                <button class="nav-item" onclick="location.href='executions.html'">実行ログ</button>
+            <h1 class="page-title">ワークフロー / スキル管理</h1>
+            <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
+                <div id="desktop-nav" style="display: flex; gap: 10px;"></div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <button type="button" class="btn btn-workflow" onclick="showCreateWorkflowFromSkills()" style="white-space: nowrap; display: inline-flex; align-items: center; gap: 8px;">
+                        <img src="../img/iconmonstr-apps-filled.svg" alt="" width="18" height="18" class="btn-workflow-icon" aria-hidden="true">
+                        ワークフロー作成
+                    </button>
+                    <button class="btn btn-purple" onclick="showCreateModal()" style="white-space: nowrap; display: inline-flex; align-items: center; gap: 8px;">
+                        <img src="../img/iconmonstr-text-plus-lined.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">
+                        スキル作成
+                    </button>
+                </div>
             </div>
-
 
             <div class="dashboard-stats" id="stats-container">
                 <div class="stat-card">
                     <h3>総アカウント数</h3>
-                    <div class="value" id="total-accounts">-</div>
+                    <div style="display: flex; align-items: center; justify-content: center; min-height: 50px;">
+                        <div class="value" id="total-accounts">-</div>
+                    </div>
                 </div>
                 <div class="stat-card">
-                    <h3>総プロンプト数</h3>
-                    <div class="value" id="total-prompts">-</div>
+                    <h3>総利用可能数</h3>
+                    <div style="display: flex; align-items: center; gap: 0;">
+                        <div style="flex: 1; text-align: center;">
+                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">ワークフロー</div>
+                            <div class="value" id="total-workflows">-</div>
+                        </div>
+                        <div style="width: 1px; height: 36px; background: rgba(255,255,255,0.15); flex-shrink: 0;"></div>
+                        <div style="flex: 1; text-align: center;">
+                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">スキル</div>
+                            <div class="value" id="total-skills">-</div>
+                        </div>
+                    </div>
                 </div>
                 <div class="stat-card">
                     <h3>総実行回数</h3>
-                    <div class="value" id="total-executions">-</div>
+                    <div style="display: flex; align-items: center; justify-content: center; min-height: 50px;">
+                        <div class="value" id="total-executions">-</div>
+                    </div>
                 </div>
             </div>
 
-            <div class="actions">
-                <button class="btn btn-purple" onclick="location.href='prompts.html'" style="display: inline-flex; align-items: center; gap: 8px;">
-                    <img src="../img/iconmonstr-text-plus-lined.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">
-                    プロンプト管理
-                </button>
-                <button class="btn btn-success" onclick="location.href='accounts.html'" style="display: inline-flex; align-items: center; gap: 8px;">
-                    <img src="../img/iconmonstr-id-card-17.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">
-                    アカウント管理
-                </button>
-                <button class="btn btn-secondary" onclick="location.href='executions.html'" style="display: inline-flex; align-items: center; gap: 8px;">
-                    実行ログ
-                </button>
+            <div class="card">
+                <h2 style="font-size: 16px; margin: 0 0 8px; font-weight: bold;">ワークフロー一覧</h2>
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>ワークフロー名</th>
+                            <th>説明</th>
+                            <th>モデル</th>
+                            <th>ステータス</th>
+                            <th>アクション</th>
+                        </tr>
+                    </thead>
+                    <tbody id="workflows-tbody">
+                        <tr>
+                            <td colspan="6" style="text-align: center;">読み込み中...</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div id="workflows-pagination-container" class="pagination" style="display: none; margin-top: 8px;"></div>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
+                <h2 style="font-size: 16px; margin: 0 0 8px; font-weight: bold;">スキル一覧</h2>
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>スキル名</th>
+                            <th>説明</th>
+                            <th>モデル</th>
+                            <th>ステータス</th>
+                            <th>出力/ツール</th>
+                            <th>アクション</th>
+                        </tr>
+                    </thead>
+                    <tbody id="skills-tbody">
+                        <tr>
+                            <td colspan="7" style="text-align: center;">読み込み中...</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div id="pagination-container" class="pagination" style="display: none; margin-top: 8px;"></div>
             </div>
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <script src="../js/model-display.js"></script>
     <script src="js/admin-common.js"></script>
-    <script src="js/dashboard.js"></script>
+    <script src="js/skills.js"></script>
 </body>
 </html>

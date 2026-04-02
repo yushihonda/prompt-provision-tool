@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # AI API Keys
     OPENAI_API_KEY: str
     GEMINI_API_KEY: str
+    ANTHROPIC_API_KEY: str = ""
 
     # Application
     APP_HOST: str = "0.0.0.0"
@@ -46,19 +47,8 @@ class Settings(BaseSettings):
     SANITIZE_MIN_MATCH_LEN: int = 60
     SANITIZE_SIMILARITY_THRESHOLD: float = 0.6
 
-    # Celery
-    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
-    CELERY_TASK_SERIALIZER: str = "json"
-    CELERY_RESULT_SERIALIZER: str = "json"
-    CELERY_ACCEPT_CONTENT: List[str] = ["json"]
-    CELERY_TIMEZONE: str = "Asia/Tokyo"
-    CELERY_TASK_TIME_LIMIT: int = 3900  # 65分（ハードリミット）
-    CELERY_TASK_SOFT_TIME_LIMIT: int = 3600  # 60分（ソフトリミット）
-    CELERY_WORKER_MAX_MEMORY_PER_CHILD: int = 500000  # 500MB
-    CELERY_WORKER_MAX_TASKS_PER_CHILD: int = 50
-    CELERY_TASK_MAX_RETRIES: int = 3
-    CELERY_TASK_DEFAULT_RETRY_DELAY: int = 60  # 60秒
+    # Redis (SSE ストリーミング用)
+    REDIS_URL: str = "redis://localhost:6379/0"
 
     # Redis Stream
     REDIS_STREAM_TTL: int = 7200  # 2時間（秒）
@@ -68,10 +58,20 @@ class Settings(BaseSettings):
     SSE_CONNECTION_TIMEOUT: int = 5400  # 90分
     SSE_HEARTBEAT_INTERVAL: int = 30  # 30秒
 
-    # Workflow / Leader Agent
-    # 全てのワークフロー実行の最後に必ず呼び出される「リーダー用プロンプト」のID
-    # 未設定の場合はワークフロー完了時にエラーとして扱う
+    # Workflow / Parent Skill
+    # 親スキルIDの設定（後方互換用、通常はワークフローに直接埋め込み）
     WORKFLOW_LEADER_PROMPT_ID: Optional[int] = None
+
+    # Local Worker
+    WORKER_BUNDLE_SIGNING_KEY: str = ""  # HMAC-SHA256 署名鍵（空の場合は SECRET_KEY を流用）
+    WORKER_JOB_TOKEN_EXPIRE_MINUTES: int = 60  # job_token 有効期限（分）
+    WORKER_LEASE_TTL_SECONDS: int = 3600  # リース TTL（秒、デフォルト 1 時間）
+    WORKER_MAX_CONCURRENT: int = 8  # ローカルワーカー推奨同時実行数
+
+    @property
+    def bundle_signing_key(self) -> str:
+        """バンドル署名鍵（未設定時は SECRET_KEY を流用）"""
+        return self.WORKER_BUNDLE_SIGNING_KEY or self.SECRET_KEY
 
     @property
     def database_url(self) -> str:

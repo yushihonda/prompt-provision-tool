@@ -111,12 +111,9 @@ sudo chown www-data:www-data /var/log/prompt-tool
 # systemdサービスの設定
 echo "systemdサービスを設定中..."
 sudo cp $APP_DIR/deployment/prompt-tool.service /etc/systemd/system/
-sudo cp $APP_DIR/deployment/prompt-tool-celery.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable prompt-tool
-sudo systemctl enable prompt-tool-celery
 sudo systemctl start prompt-tool
-sudo systemctl start prompt-tool-celery
 
 # Nginx設定
 echo "Nginxを設定中..."
@@ -140,18 +137,15 @@ echo "3. SSL証明書の取得:"
 echo "   sudo certbot --nginx -d your-domain.com"
 echo "4. サービスの再起動:"
 echo "   sudo systemctl restart prompt-tool"
-echo "   sudo systemctl restart prompt-tool-celery"
 echo "   sudo systemctl restart nginx"
 echo ""
 echo "サービス状態の確認:"
 echo "   sudo systemctl status prompt-tool"
-echo "   sudo systemctl status prompt-tool-celery"
 echo "   sudo systemctl status redis-server"
 echo "   sudo systemctl status nginx"
 echo ""
 echo "ログの確認:"
 echo "   sudo tail -f /var/log/prompt-tool/app.log"
-echo "   sudo tail -f /var/log/prompt-tool/celery.log"
 echo "   sudo tail -f /var/log/nginx/prompt-tool-error.log"
 echo ""
 

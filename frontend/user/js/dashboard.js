@@ -1,6 +1,6 @@
 // ユーザー ダッシュボード画面 JavaScript
 
-let prompts = [];
+let skills = [];
 let currentPage = 1;
 const itemsPerPage = 9;
 let totalItems = 0;
@@ -11,11 +11,13 @@ async function loadDashboardStats() {
     try {
         const stats = await apiRequest('/api/user/dashboard');
 
-        document.getElementById('available-prompts').textContent = stats.available_prompts;
-        document.getElementById('executions-month').textContent = stats.executions_this_month;
+        document.getElementById('available-skills').textContent = stats.available_skills;
+        document.getElementById('available-workflows').textContent = stats.available_workflows || 0;
+        document.getElementById('total-executions').textContent = (stats.total_executions || 0).toLocaleString();
+        document.getElementById('executions-month').textContent = (stats.executions_this_month || 0).toLocaleString();
 
-        const tokens = stats.total_tokens_this_month || 0;
-        document.getElementById('total-tokens-month').textContent = tokens.toLocaleString();
+        document.getElementById('total-tokens').textContent = (stats.total_tokens || 0).toLocaleString();
+        document.getElementById('total-tokens-month').textContent = (stats.total_tokens_this_month || 0).toLocaleString();
 
         const cost = stats.total_cost_this_month || 0;
         document.getElementById('total-cost-month').textContent = `$${cost.toFixed(2)}`;
@@ -25,20 +27,20 @@ async function loadDashboardStats() {
     }
 }
 
-async function loadPrompts(page = 1) {
+async function loadSkills(page = 1) {
     try {
         const skip = (page - 1) * itemsPerPage;
-        const response = await apiRequest(`/api/user/prompts?skip=${skip}&limit=${itemsPerPage}`);
+        const response = await apiRequest(`/api/user/skills?skip=${skip}&limit=${itemsPerPage}`);
 
-        prompts = response.items || response;
-        totalItems = response.total !== undefined ? response.total : (prompts.length === itemsPerPage ? page * itemsPerPage + 1 : page * itemsPerPage);
+        skills = response.items || response;
+        totalItems = response.total !== undefined ? response.total : (skills.length === itemsPerPage ? page * itemsPerPage + 1 : page * itemsPerPage);
 
         currentPage = page;
-        renderPrompts();
+        renderSkills();
         renderPagination();
     } catch (error) {
-        showAlert('プロンプトの読み込みに失敗しました', 'error');
-        console.error('Load prompts error:', error);
+        showAlert('スキルの読み込みに失敗しました', 'error');
+        console.error('Load skills error:', error);
     }
 }
 
@@ -71,23 +73,34 @@ function renderUserWorkflows() {
         .map((item) => {
             const wf = item.workflow;
             const skillCount = (item.skills || []).length;
+            const modelDisplay = typeof formatModelDisplay === 'function'
+                ? formatModelDisplay(wf.parent_model_type || '', null, {})
+                : (wf.parent_model_type || '-');
+            // profile フロー表示
+            const profiles = item.step_profiles || [];
+            const profileColors = { default: '#ce93d8', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
+            const profileLabels = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
+            const flowHtml = profiles.length > 0
+                ? profiles.map((p, i) => {
+                    const c = profileColors[p] || '#9e9e9e';
+                    const l = profileLabels[p] || p;
+                    return `${i > 0 ? '<span style="color:rgba(255,255,255,0.2); margin:0 2px;">→</span>' : ''}<span style="font-size:10px; padding:1px 6px; background:${c}22; border-radius:8px; color:${c};">${l}</span>`;
+                }).join('')
+                : '';
             return `
                 <div class="card" data-workflow-id="${wf.id}">
                     <div class="card-content">
                         <h3>${wf.name}</h3>
                         <p>${wf.description || '説明なし'}</p>
-                        <p><strong>ステップ数:</strong> ${skillCount}</p>
-                        <p>
-                            <strong>ステータス:</strong>
-                            <span style="color: ${wf.is_active ? '#28a745' : '#dc3545'}; font-weight: ${
-                                wf.is_active ? 'bold' : 'normal'
-                            };">
-                                ${wf.is_active ? '有効' : '無効'}
-                            </span>
-                        </p>
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+                            <span style="font-size:12px; color:rgba(255,255,255,0.6);"><strong>${skillCount}</strong> steps</span>
+                            <span style="color:rgba(255,255,255,0.15);">|</span>
+                            <span>${modelDisplay}</span>
+                        </div>
+                        ${flowHtml ? `<div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px;">${flowHtml}</div>` : ''}
                     </div>
                     <div class="card-corner">
-                        <button class="btn btn-primary"
+                        <button class="btn btn-primary card-execute-btn"
                                 onclick="location.href='workflow-execute.html?id=${wf.id}'">
                             実行
                         </button>
@@ -98,72 +111,30 @@ function renderUserWorkflows() {
         .join('');
 }
 
-function renderPrompts() {
-    const container = document.getElementById('prompts-container');
+function renderSkills() {
+    const container = document.getElementById('skills-container');
 
-    if (prompts.length === 0) {
-        container.innerHTML = '<p style="text-align: center; color: rgba(255, 255, 255, 0.6);">利用可能なプロンプトがありません</p>';
+    if (skills.length === 0) {
+        container.innerHTML = '<p style="text-align: center; color: rgba(255, 255, 255, 0.6);">利用可能なスキルがありません</p>';
         return;
     }
 
-    // 実行中のプロンプトIDを取得
-    const executingPromptId = PersistentStatusBar?.promptId ? parseInt(PersistentStatusBar.promptId) : null;
+    // 実行中のスキルIDを取得
+    const executingSkillId = PersistentStatusBar?.skillId ? parseInt(PersistentStatusBar.skillId) : null;
 
-    container.innerHTML = prompts.map(prompt => {
-        const isExecuting = executingPromptId && prompt.id === executingPromptId;
-        let modelDisplay = prompt.model_type;
-
-        // Deep Thinkモデルの場合はサフィックスを削除して表示
-        let isDeepThinkModel = false;
-        if (modelDisplay && modelDisplay.includes('deep-think')) {
-            modelDisplay = modelDisplay.replace('-deep-think', '');
-            isDeepThinkModel = true;
-        }
-
-        // Thinkingモデルの場合はサフィックスを削除して表示
-        let isThinkingModel = false;
-        if (modelDisplay && modelDisplay.includes('thinking')) {
-            modelDisplay = modelDisplay.replace('-thinking', '');
-            isThinkingModel = true;
-        }
-
-        // Proモデルの場合は「-pro」を削除してProバッジを追加
-        const isProModel = prompt.model_type && (prompt.model_type.includes('-pro') || prompt.model_type.endsWith('-pro'));
-        if (isProModel) {
-            // 「-pro」を削除（「-pro-」の場合は「-pro」のみ削除、「-pro」で終わる場合は「-pro」を削除）
-            modelDisplay = modelDisplay.replace(/-pro(?=-|$)/g, '');
-            modelDisplay += `<span class="pro-badge">Pro</span>`;
-        }
-
-        // 「-preview」を削除
-        modelDisplay = modelDisplay.replace(/-preview/g, '');
-
-        // Deep Thinkバッジを追加（Geminiモデルで有効な場合）
-        const isDeepThinkEnabled = isDeepThinkModel || (prompt.enable_deep_think === true || prompt.enable_deep_think === 1 || prompt.enable_deep_think === 'true');
-
-        if (isDeepThinkEnabled && prompt.model_type && prompt.model_type.startsWith('gemini-')) {
-            modelDisplay += `<span class="deep-think-badge">Deep Think</span>`;
-        }
-
-        // Thinkingバッジを追加（GPT-5.1 Thinkingの場合）
-        if (isThinkingModel || prompt.model_type === 'gpt-5.1-thinking') {
-            modelDisplay += `<span class="thinking-badge">Thinking</span>`;
-        }
-
-        // NEWバッジを追加（gpt-5.2系のみ）
-        if (prompt.model_type === 'gpt-5.2' || prompt.model_type === 'gpt-5.2-pro' || prompt.model_type === 'gpt-5.2-thinking') {
-            modelDisplay += `<span class="new-badge">NEW</span>`;
-        }
+    container.innerHTML = skills.map(skill => {
+        const isExecuting = executingSkillId && skill.id === executingSkillId;
+        const modelDisplay = formatModelDisplay(skill.model_type, null, skill);
         return `
-        <div class="card ${isExecuting ? 'card-executing' : ''}" data-prompt-id="${prompt.id}">
+        <div class="card ${isExecuting ? 'card-executing' : ''}" data-skill-id="${skill.id}">
             <div class="card-content">
-                <h3>${prompt.name}${isExecuting ? '<span class="executing-badge">実行中</span>' : ''}</h3>
-                <p>${prompt.description || '説明なし'}</p>
+                <h3>${skill.name}${isExecuting ? '<span class="executing-badge">実行中</span>' : ''}</h3>
+                <p>${skill.description || '説明なし'}</p>
                 <p><strong>モデル:</strong> ${modelDisplay}</p>
             </div>
             <div class="card-corner">
                 <button class="btn btn-primary card-execute-btn"
-                        onclick="location.href='execute.html?id=${prompt.id}'">
+                        onclick="location.href='execute.html?id=${skill.id}'">
                     ${isExecuting ? '実行中' : '実行'}
                 </button>
             </div>
@@ -173,57 +144,31 @@ function renderPrompts() {
 }
 
 function renderPagination() {
-    const container = document.getElementById('pagination-container');
-    const totalPages = Math.ceil(totalItems / itemsPerPage);
-
-    if (totalPages <= 1) {
-        container.style.display = 'none';
-        return;
-    }
-
-    container.style.display = 'flex';
-
-    let html = `
-        <button onclick="loadPrompts(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>前へ</button>
-    `;
-
-    const startPage = Math.max(1, currentPage - 2);
-    const endPage = Math.min(totalPages, startPage + 4);
-
-    for (let i = startPage; i <= endPage; i++) {
-        html += `<button class="page-number ${i === currentPage ? 'active' : ''}" onclick="loadPrompts(${i})">${i}</button>`;
-    }
-
-    html += `
-        <span class="page-info">${currentPage} / ${totalPages}</span>
-        <button onclick="loadPrompts(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>次へ</button>
-    `;
-
-    container.innerHTML = html;
+    renderUserPagination('pagination-container', currentPage, totalItems, itemsPerPage, 'loadSkills');
 }
 
-// 実行中プロンプトの状態を更新する関数
-function updateExecutingPrompts() {
-    // プロンプトが表示されている場合のみ更新
-    if (prompts.length > 0) {
-        renderPrompts();
+// 実行中スキルの状態を更新する関数
+function updateExecutingSkills() {
+    // スキルが表示されている場合のみ更新
+    if (skills.length > 0) {
+        renderSkills();
     }
 }
 
 // PersistentStatusBarの状態変更を監視
 if (typeof PersistentStatusBar !== 'undefined') {
-    // 定期的に実行中プロンプトの状態をチェック（1秒ごと）
+    // 定期的に実行中スキルの状態をチェック（1秒ごと）
     setInterval(() => {
-        updateExecutingPrompts();
+        updateExecutingSkills();
     }, 1000);
 
     // カスタムイベントで即座に更新
     window.addEventListener('executionStarted', () => {
-        updateExecutingPrompts();
+        updateExecutingSkills();
     });
 
     window.addEventListener('executionCompleted', () => {
-        updateExecutingPrompts();
+        updateExecutingSkills();
     });
 }
 
@@ -431,9 +376,10 @@ function renderContributionGraph(data, year) {
 
 // ページ読み込み時に実行
 (async () => {
+    initUserLayout('dashboard.html');
     await checkAuth();
     loadDashboardStats();
-    loadPrompts(1);
+    loadSkills(1);
     loadUserWorkflows();
     initializeYearSelect();
     loadContributionGraph();

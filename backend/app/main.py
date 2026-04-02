@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 from app.config import settings
-from app.api import auth, admin, user, execute
+from app.api import auth, admin, user, execute, worker
 import logging
 
 # ログ設定（環境に応じてログレベルを変更）
@@ -24,18 +24,18 @@ if settings.is_production:
 # FastAPIアプリケーションの作成（本番はドキュメント無効化）
 if settings.ENVIRONMENT == "production":
     app = FastAPI(
-        title="Prompt Provision Tool",
-        description="GPT及びGeminiのプロンプトを外部に漏らさず、実行機能のみを提供するツール",
-        version="1.0.0",
+        title="Skill Provision Tool",
+        description="GPT及びGeminiのスキルを外部に漏らさず、実行機能のみを提供するツール",
+        version="2.0.0",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
     )
 else:
     app = FastAPI(
-        title="Prompt Provision Tool",
-        description="GPT及びGeminiのプロンプトを外部に漏らさず、実行機能のみを提供するツール",
-        version="1.0.0"
+        title="Skill Provision Tool",
+        description="GPT及びGeminiのスキルを外部に漏らさず、実行機能のみを提供するツール",
+        version="2.0.0"
     )
 
 # CORS設定
@@ -52,6 +52,7 @@ app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(user.router)
 app.include_router(execute.router)
+app.include_router(worker.router)
 
 # 静的ファイルの提供（フロントエンド）
 frontend_path = Path(__file__).parent.parent.parent / "frontend"
@@ -68,7 +69,7 @@ async def root():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Prompt Provision Tool</title>
+        <title>Skill Provision Tool</title>
         <style>
             body {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -122,9 +123,9 @@ async def root():
     </head>
     <body>
         <div class="container">
-            <h1>🔐 Prompt Provision Tool</h1>
+            <h1>🔐 Skill Provision Tool</h1>
             <p style="text-align: center; color: #666;">
-                プロンプトを保護しながらAI機能を提供するツール
+                スキルを保護しながらAI機能を提供するツール
             </p>
             <div class="links">
                 <a href="/static/admin/login.html" class="link-button admin">管理者ログイン</a>

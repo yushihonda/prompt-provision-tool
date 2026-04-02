@@ -10,7 +10,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.config import settings
 from app.database import Base
-from app.models import Account, Prompt, AccountPrompt, Execution, APIConfig, Workflow, WorkflowSkill, WorkflowExecution
+from app.models import (
+    Account, Skill, AccountSkill, Execution, APIConfig,
+    Workflow, WorkflowGroup, WorkflowSkill, WorkflowExecution,
+    DailyExecutionCount, WorkerAPIKey,
+)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

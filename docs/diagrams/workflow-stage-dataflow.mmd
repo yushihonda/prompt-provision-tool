@@ -1,0 +1,70 @@
+flowchart LR
+  subgraph UI[Browser UI]
+    EXE_UI[workflow-execute.js<br/>ステータスバー + フロービュー]
+    MODAL_UI[exec-detail-modal.js<br/>coordinator view + synthesis events]
+    DASH_UI[dashboard.js<br/>profile フロー表示]
+    ADMIN_UI[skills.js / accounts.js<br/>WF管理 + スキル有効化]
+  end
+
+  subgraph API[FastAPI v2.0.0]
+    EXEC_API[execute.py<br/>WF実行 + synthesis_log: workflow_start]
+    USER_API[user.py<br/>coordinator_view + synthesis_events<br/>step_profiles]
+    WORKER_API[worker.py<br/>bundle + Memory注入 + Leader/Judge自動生成]
+    ADMIN_API[admin.py<br/>WF status + assign-workflow<br/>workflow_count]
+  end
+
+  subgraph ORCH[Orchestration / Services]
+    TASKS[execution_tasks.py<br/>continue_workflow_execution<br/>auto overrides + group_complete events]
+    COMPLETE[completion_service.py<br/>append_synthesis_event<br/>memory update + envelope抽出]
+    AUTO[auto_orchestration.py<br/>output_key / retry / quality_gate / judge<br/>自動推論]
+    MEMORY[memory_service.py<br/>永続メモリ get/update]
+    PROFILE[agent_profiles.py<br/>5 profiles + 証跡フォーマット]
+    WORKER[local_worker<br/>LLM実行]
+  end
+
+  subgraph DB[MySQL]
+    WF_EXEC[(workflow_executions<br/>synthesis_log<br/>coordinator metadata)]
+    EXEC[(executions<br/>agent_profile<br/>_ppt_continuation)]
+    WF_SKILL[(workflow_skills)]
+    SKILL[(skills)]
+    WF_MEM[(workflow_memories<br/>永続メモリ + starter_seed)]
+  end
+
+  ADMIN_UI -->|WF/スキル管理 + 一括有効化| ADMIN_API
+  ADMIN_API -->|WRITE| SKILL
+  ADMIN_API -->|WRITE| WF_SKILL
+  ADMIN_API -->|READ coordinator_view| USER_API
+
+  DASH_UI -->|step_profiles フロー表示| USER_API
+  EXE_UI -->|WF実行開始| EXEC_API
+  EXEC_API -->|CREATE + synthesis_log: workflow_start| WF_EXEC
+  EXEC_API -->|CREATE execution| EXEC
+
+  TASKS -->|compute_orchestration_overrides| AUTO
+  AUTO -->|output_key / retry / quality_gate / judge| TASKS
+  TASKS -->|READ/WRITE blackboard + stage| WF_EXEC
+  TASKS -->|synthesis_log: group_complete + leader_start| WF_EXEC
+  TASKS -->|CREATE execution + _ppt_continuation| EXEC
+
+  WORKER_API -->|READ profile + Memory| WF_MEM
+  WORKER_API -->|compose prompt| PROFILE
+  WORKER_API -->|bundle配信| WORKER
+
+  WORKER -->|結果| COMPLETE
+  COMPLETE -->|synthesis_log: step_complete| WF_EXEC
+  COMPLETE -->|memory update| WF_MEM
+  COMPLETE -->|handoff_summary + envelope| WF_EXEC
+  COMPLETE -->|final_verdict| WF_EXEC
+
+  USER_API -->|coordinator_view + synthesis_events| EXE_UI
+  USER_API -->|coordinator_view + synthesis_events| MODAL_UI
+
+  classDef db fill:#1f2937,stroke:#94a3b8,color:#fff;
+  classDef api fill:#0f766e,stroke:#99f6e4,color:#fff;
+  classDef ui fill:#1d4ed8,stroke:#93c5fd,color:#fff;
+  classDef svc fill:#6d28d9,stroke:#c4b5fd,color:#fff;
+
+  class WF_EXEC,EXEC,WF_SKILL,SKILL,WF_MEM db;
+  class EXEC_API,USER_API,WORKER_API,ADMIN_API api;
+  class EXE_UI,MODAL_UI,DASH_UI,ADMIN_UI ui;
+  class TASKS,COMPLETE,AUTO,MEMORY,PROFILE,WORKER svc;
