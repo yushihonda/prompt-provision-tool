@@ -55,8 +55,8 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
             sessionStorage.setItem('token', data.access_token);
             sessionStorage.setItem('username', username);
 
-            // スキル管理へリダイレクト
-            window.location.href = 'skills.html';
+            // ダッシュボードへリダイレクト
+            window.location.href = 'dashboard.html';
         } else {
             showAlert(data.detail || 'ログインに失敗しました', 'error');
         }

@@ -1,0 +1,48 @@
+flowchart TD
+    A[Workflow Start<br/>POST execute] --> B[Server Orchestration<br/>execution_tasks.py]
+
+    B --> C[Explore Step<br/>agent_profile=explore]
+    C --> C1[worker bundle 作成<br/>AgentProfile Prompt + Parent Skill + Skill Prompt + Handoff + Constraints + Input]
+    C1 --> C2[local_worker 実行<br/>read-only 制約]
+    C2 --> C3[completion_service.py<br/>結果保存]
+    C3 --> C4[blackboard_data に探索結果を書き込み<br/>output_key と input_mapping が正本]
+    C4 --> C5[handoff_summary 更新<br/>from_profile=explore]
+    C5 --> D[Plan Step<br/>agent_profile=plan]
+
+    D --> D1[worker bundle 作成]
+    D1 --> D2[local_worker 実行<br/>read-only 制約]
+    D2 --> D3[completion_service.py<br/>結果保存]
+    D3 --> D4[blackboard_data に設計結果を書き込み]
+    D4 --> D5[handoff_summary 更新<br/>from_profile=plan]
+    D5 --> E[Implement Step<br/>agent_profile=implement]
+
+    E --> E1[worker bundle 作成]
+    E1 --> E2[local_worker 実行<br/>通常実行]
+    E2 --> E3[completion_service.py<br/>結果保存]
+    E3 --> E4[blackboard_data に成果物と実装結果を書き込み]
+    E4 --> E5[handoff_summary 更新<br/>from_profile=implement]
+    E5 --> F[Verification Step<br/>agent_profile=verification]
+
+    F --> F1[worker bundle 作成<br/>VERDICT 必須 contract 付与]
+    F1 --> F2[local_worker 実行<br/>break-it mindset]
+    F2 --> F3[completion_service.py]
+    F3 --> F4[verdict 正規化<br/>JSON verdict -> VERDICT 行 -> regex fallback]
+    F4 --> F5[WorkflowExecution.final_verdict 保存<br/>PASS / FAIL / PARTIAL]
+    F5 --> G[Workflow Complete]
+
+    subgraph Metadata
+        M1[current_stage<br/>今の stage]
+        M2[handoff_summary<br/>軽量な派生サマリ]
+        M3[final_verdict<br/>verification 最終判定]
+    end
+
+    C --> M1
+    D --> M1
+    E --> M1
+    F --> M1
+
+    C5 --> M2
+    D5 --> M2
+    E5 --> M2
+
+    F5 --> M3

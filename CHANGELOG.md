@@ -1,0 +1,73 @@
+# Changelog
+
+## [2.0.0] - 2026-04-02
+
+### Added
+- **自動オーケストレーション** — ワークフロー構造から品質ゲート・エラーリトライ・出力キー・ジャッジを自動推論（手動設定不要）
+- **リーダー自動生成** — 親スキル内容をワークフロー名・説明から自動生成
+- **永続メモリ** — workflow × profile 単位の長期記憶（`workflow_memories` テーブル）、実行をまたいで蓄積
+- **Starter Seed** — ワークフロー初回実行時のみ適用される初期記憶
+- **Coordinator View** — リアルタイム進捗表示（waiting_on, next_expected_action, latest_summary, why）
+- **Synthesis Events** — 各ステップ完了・エラー・ジャッジ・品質ゲートのタイムラインをDB保存
+- **Follow-up Continuation** — retry/reflection 時の継続メタデータ（_ppt_continuation）
+- **Structured Result Envelope** — 出力から summary/key_points/next_action_hint を抽出
+- **Profile 固定色** — Explore=青, Plan=橙, Implement=緑, Verification=桃, Leader=紫
+- **Override 可視化** — profile 解決元（skill_default/workflow_override）を詳細モーダルに表示
+- **Verification 証跡フォーマット** — コード検証用（Command run/Output observed）+ コンテンツ検証用（根拠）
+- **Adversarial Probe** — PASS 前に最低1つの壊しテストを必須化
+- **ワークフロー一括有効化/無効化** — アカウント管理でWF単位でスキルを一括操作
+- **管理者用 WF 実行ステータス API** — `/api/admin/workflow-executions/{id}/status`
+- **ダッシュボード統計** — ワークフロー数・スキル数の分割表示
+- **ワークフロー実行履歴にモデル表示** — 親スキルのモデルを全画面で統一表示
+- **Profile フロー表示** — ユーザーダッシュボードのWFカードに Explore → Plan → Implement → Verification を表示
+
+### Changed
+- **管理画面URL** — `admin/skills.html` → `admin/dashboard.html` にリネーム
+- **親スキルモード** — `required` 固定に簡素化（optional/disabled 廃止）
+- **Agent Profile 選択** — スキル作成時は「未指定」がデフォルト、Leader はWF専用で選択不可
+- **ステージ表示** — 「Default」→「Leader」に変更（紫色）
+- **実行履歴フィルタ** — 特殊ロール（ジャッジ等）を totalTime/totalTokens から適切に除外/包含
+- **マイグレーション** — 001-006 を 001 に統合（新規セットアップは1ファイルで完了）
+- **coordinator_view 文言** — 「empty dict」廃止、日本語を自然化
+- **入力フォーム** — ワークフロー共通入力と重複するフィールドを自動除外
+
+### Removed
+- `enable_web_search` / `enable_code_interpreter` / `enable_file_search` — 全59箇所から完全削除
+- 管理画面のオーケストレーション手動設定UI（品質ゲート・出力キー・エラー時・ジャッジ・SV）
+- リーダースキル内容の手動入力欄
+- スキル編集ポップアップの「新しいワークフローを作成」セクション
+- OpenAI/Gemini サービスの tools 死んだコード
+
+### Fixed
+- `worker.py`: Workflow ローカルインポートによる UnboundLocalError
+- `worker.py`: 自動ジャッジのバンドル生成時 404 エラー
+- `worker.py`: wf_j 変数スコープ問題
+- `execution_tasks.py`: ジャッジ/SVエラー時の無限retryループ防止
+- `admin/skills.html`: WFテーブル colspan 修正
+- `style.css`: execute-output-panel の display:flex 復元
+- フロントエンド全体: `getModelDisplayName` → `formatModelDisplay` 統一
+- HTML: 3ファイルの `</body>` 閉じタグ欠落修正
+- Gemini サービス: 空 tools 配列が API に渡される問題
+
+### Testing
+- テスト数: 14 → 28 に倍増
+- extract_verdict edge case（mixed case, whitespace, 複数VERDICT）
+- _extract_structured_envelope（JSON/```json/malformed）
+- append_synthesis_event（追記/100件制限/破損ログ復旧）
+- handoff_summary 必須フィールド検証
+- verdict fallback to FAIL
+- verification 以外は verdict 未設定を確認
+
+## [1.0.0] - 2026-03-31
+
+### Added
+- 初期リリース
+- ワークフローオーケストレーション（グループ・並列・直列）
+- Agent Profile（explore/plan/implement/verification/default）
+- Blackboard（共有メモリ）
+- 品質ゲート・Reflection
+- Supervisor・Judge・Dynamic Decomposition
+- ローカルワーカー実行
+- SSE ストリーミング
+- JWT 認証（PARENT/CHILD）
+- スキル暗号化保存

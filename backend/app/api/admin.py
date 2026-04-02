@@ -159,6 +159,14 @@ async def list_accounts(
             AccountSkill.account_id == acc.id
         ).scalar() or 0
 
+        # 割り当て済みスキルIDから有効ワークフロー数を計算
+        assigned_ids = {row[0] for row in db.query(AccountSkill.skill_id).filter(AccountSkill.account_id == acc.id).all()}
+        wf_count = 0
+        for wf in db.query(Workflow).filter(Workflow.is_active == True, Workflow.deleted_at.is_(None)).all():
+            wf_skill_ids = {ws.skill_id for ws in db.query(WorkflowSkill).filter(WorkflowSkill.workflow_id == wf.id).all() if ws.skill_id}
+            if wf_skill_ids and wf_skill_ids.issubset(assigned_ids):
+                wf_count += 1
+
         # 月が変わっていたら月次カウンターをリセット
         check_and_reset_monthly_stats(acc, db)
         executions_this_month = acc.executions_this_month or 0
@@ -218,6 +226,7 @@ async def list_accounts(
             "account_type": acc.account_type,
             "is_active": acc.is_active,
             "skill_count": skill_count,
+            "workflow_count": wf_count,
             "execution_count": total_executions,
             "executions_this_month": executions_this_month,
             "total_tokens": total_tokens,
@@ -356,9 +365,6 @@ async def create_skill(
         is_active=True,
         allows_file_output=skill.allows_file_output,
         enable_deep_think=skill.enable_deep_think,
-        enable_web_search=skill.enable_web_search,
-        enable_code_interpreter=skill.enable_code_interpreter,
-        enable_file_search=skill.enable_file_search,
         default_agent_profile=getattr(skill, "default_agent_profile", None),
         created_by=current_user.id
     )
@@ -383,9 +389,6 @@ async def create_skill(
         input_schema=input_schema,
         allows_file_output=db_skill.allows_file_output,
         enable_deep_think=db_skill.enable_deep_think,
-        enable_web_search=db_skill.enable_web_search,
-        enable_code_interpreter=db_skill.enable_code_interpreter,
-        enable_file_search=db_skill.enable_file_search,
         default_agent_profile=getattr(db_skill, "default_agent_profile", None),
         is_active=db_skill.is_active,
         created_by=db_skill.created_by,
@@ -428,9 +431,6 @@ async def list_skills(
                 input_schema=input_schema,
                 allows_file_output=skill.allows_file_output,
                 enable_deep_think=skill.enable_deep_think,
-                enable_web_search=skill.enable_web_search,
-                enable_code_interpreter=skill.enable_code_interpreter,
-                enable_file_search=skill.enable_file_search,
                 default_agent_profile=getattr(skill, "default_agent_profile", None),
                 is_active=skill.is_active,
                 created_by=skill.created_by,
@@ -444,6 +444,65 @@ async def list_skills(
         "total": total,
         "skip": skip,
         "limit": limit
+    }
+
+
+# ==================== ワークフロー実行ステータス ====================
+
+
+@router.get("/workflow-executions/{wf_execution_id}/status")
+async def get_admin_workflow_execution_status(
+    wf_execution_id: int,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """管理者用: ワークフロー実行のステータスを取得（coordinator view 付き）"""
+    wf_exec = db.query(WorkflowExecution).filter(
+        WorkflowExecution.id == wf_execution_id,
+    ).first()
+    if not wf_exec:
+        raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
+
+    import json as _json
+    blackboard_keys = []
+    if wf_exec.blackboard_data:
+        try:
+            bb = _json.loads(wf_exec.blackboard_data)
+            blackboard_keys = list(bb.keys())
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    handoff_summary = None
+    if getattr(wf_exec, "handoff_summary", None):
+        try:
+            handoff_summary = _json.loads(wf_exec.handoff_summary) if isinstance(wf_exec.handoff_summary, str) else wf_exec.handoff_summary
+        except (_json.JSONDecodeError, TypeError):
+            handoff_summary = None
+
+    # coordinator view + synthesis events
+    from app.api.user import _build_coordinator_view
+    coordinator_view, computed_events = _build_coordinator_view(db, wf_exec)
+    synthesis_events = computed_events
+    if getattr(wf_exec, "synthesis_log", None):
+        try:
+            db_events = _json.loads(wf_exec.synthesis_log)
+            if isinstance(db_events, list) and len(db_events) > 0:
+                synthesis_events = db_events
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+    return {
+        "id": wf_exec.id,
+        "status": wf_exec.status,
+        "error_message": wf_exec.error_message,
+        "current_step": wf_exec.current_step,
+        "total_steps": wf_exec.total_steps,
+        "current_stage": getattr(wf_exec, "current_stage", None),
+        "final_verdict": getattr(wf_exec, "final_verdict", None),
+        "handoff_summary": handoff_summary,
+        "blackboard_keys": blackboard_keys,
+        "coordinator_view": coordinator_view,
+        "synthesis_events": synthesis_events,
     }
 
 
@@ -479,6 +538,33 @@ async def list_workflows(
             except Exception:
                 workflow_input_schema = None
 
+        # グループ構造を構築
+        from app.models import WorkflowGroup as WG_list
+        from app.schemas import WorkflowGroupItem, WorkflowGroupSkillItem
+        groups_data = []
+        wf_groups = db.query(WG_list).filter(
+            WG_list.workflow_id == wf.id
+        ).order_by(WG_list.group_order.asc()).all()
+        for g in wf_groups:
+            g_skills = db.query(WorkflowSkill).filter(
+                WorkflowSkill.group_id == g.id
+            ).order_by(WorkflowSkill.order_in_group.asc()).all()
+            groups_data.append(WorkflowGroupItem(
+                id=g.id,
+                group_order=g.group_order,
+                group_name=g.group_name,
+                execution_type=g.execution_type or "serial",
+                skills=[WorkflowGroupSkillItem(
+                    id=ws.id,
+                    workflow_skill_id=ws.id,
+                    skill_id=ws.skill_id,
+                    skill_order=ws.skill_order,
+                    skill_name=ws.skill_name,
+                    model_type=ws.skill.model_type if ws.skill else None,
+                    agent_profile=ws.agent_profile,
+                ) for ws in g_skills],
+            ))
+
         items.append(
             WorkflowListItem(
                 id=wf.id,
@@ -488,6 +574,7 @@ async def list_workflows(
                 parent_model_type=wf.parent_model_type,
                 created_at=wf.created_at,
                 updated_at=wf.updated_at,
+                groups=groups_data,
             )
         )
 
@@ -528,9 +615,6 @@ async def create_workflow_with_parent_skill(
         encrypted_parent_content=encrypted_parent_content,
         parent_model_type=request.parent_skill.model_type,
         parent_enable_deep_think=request.parent_skill.enable_deep_think,
-        parent_enable_web_search=request.parent_skill.enable_web_search,
-        parent_enable_code_interpreter=request.parent_skill.enable_code_interpreter,
-        parent_enable_file_search=request.parent_skill.enable_file_search,
         parent_skill_mode="required",
         supervisor_mode=getattr(request, 'supervisor_mode', 'disabled') or 'disabled',
     )
@@ -713,9 +797,6 @@ async def create_workflow(
         encrypted_parent_content=encrypted_parent_content,
         parent_model_type=workflow.parent_model_type,
         parent_enable_deep_think=workflow.parent_enable_deep_think,
-        parent_enable_web_search=workflow.parent_enable_web_search,
-        parent_enable_code_interpreter=workflow.parent_enable_code_interpreter,
-        parent_enable_file_search=workflow.parent_enable_file_search,
         parent_skill_mode="required",
         supervisor_mode=getattr(workflow, 'supervisor_mode', 'disabled') or 'disabled',
     )
@@ -860,9 +941,6 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
         parent_skill_content=parent_content,
         parent_model_type=db_wf.parent_model_type,
         parent_enable_deep_think=db_wf.parent_enable_deep_think,
-        parent_enable_web_search=db_wf.parent_enable_web_search,
-        parent_enable_code_interpreter=db_wf.parent_enable_code_interpreter,
-        parent_enable_file_search=db_wf.parent_enable_file_search,
         supervisor_mode=getattr(db_wf, 'supervisor_mode', 'disabled') or 'disabled',
         created_by=db_wf.created_by,
         created_at=db_wf.created_at,
@@ -931,13 +1009,6 @@ async def update_workflow(
         wf.parent_model_type = workflow_update.parent_model_type
     if workflow_update.parent_enable_deep_think is not None:
         wf.parent_enable_deep_think = workflow_update.parent_enable_deep_think
-    if workflow_update.parent_enable_web_search is not None:
-        wf.parent_enable_web_search = workflow_update.parent_enable_web_search
-    if workflow_update.parent_enable_code_interpreter is not None:
-        wf.parent_enable_code_interpreter = workflow_update.parent_enable_code_interpreter
-    if workflow_update.parent_enable_file_search is not None:
-        wf.parent_enable_file_search = workflow_update.parent_enable_file_search
-    if getattr(workflow_update, 'supervisor_mode', None) is not None:
         wf.supervisor_mode = workflow_update.supervisor_mode
 
     # グループ構造更新（全置換）
@@ -1136,9 +1207,6 @@ async def get_skill(
         input_schema=input_schema,
         allows_file_output=skill.allows_file_output,
         enable_deep_think=skill.enable_deep_think,
-        enable_web_search=skill.enable_web_search,
-        enable_code_interpreter=skill.enable_code_interpreter,
-        enable_file_search=skill.enable_file_search,
         default_agent_profile=getattr(skill, "default_agent_profile", None),
         is_active=skill.is_active,
         created_by=skill.created_by,
@@ -1206,13 +1274,6 @@ async def update_skill(
         skill.allows_file_output = skill_update.allows_file_output
     if skill_update.enable_deep_think is not None:
         skill.enable_deep_think = skill_update.enable_deep_think
-    if skill_update.enable_web_search is not None:
-        skill.enable_web_search = skill_update.enable_web_search
-    if skill_update.enable_code_interpreter is not None:
-        skill.enable_code_interpreter = skill_update.enable_code_interpreter
-    if skill_update.enable_file_search is not None:
-        skill.enable_file_search = skill_update.enable_file_search
-    if getattr(skill_update, "default_agent_profile", None) is not None:
         skill.default_agent_profile = skill_update.default_agent_profile
 
     db.commit()
@@ -1235,9 +1296,6 @@ async def update_skill(
         input_schema=input_schema,
         allows_file_output=skill.allows_file_output,
         enable_deep_think=skill.enable_deep_think,
-        enable_web_search=skill.enable_web_search,
-        enable_code_interpreter=skill.enable_code_interpreter,
-        enable_file_search=skill.enable_file_search,
         is_active=skill.is_active,
         created_by=skill.created_by,
         created_at=skill.created_at,
@@ -1312,6 +1370,61 @@ async def assign_skill_to_account(
     db.refresh(account_skill)
 
     return account_skill
+
+
+@router.post("/assign-workflow")
+async def assign_workflow_to_account(
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """ワークフローをアカウントに割り当て（関連スキルもまとめて割り当て）"""
+    account_id = body.get("account_id")
+    workflow_id = body.get("workflow_id")
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="アカウントが見つかりません")
+    wf = db.query(Workflow).filter(Workflow.id == workflow_id, Workflow.deleted_at.is_(None)).first()
+    if not wf:
+        raise HTTPException(status_code=404, detail="ワークフローが見つかりません")
+
+    # ワークフローに含まれる全スキルを取得
+    wf_skills = db.query(WorkflowSkill).filter(WorkflowSkill.workflow_id == workflow_id).all()
+    skill_ids = {ws.skill_id for ws in wf_skills if ws.skill_id}
+    assigned_count = 0
+    for sid in skill_ids:
+        existing = db.query(AccountSkill).filter(
+            AccountSkill.account_id == account_id,
+            AccountSkill.skill_id == sid,
+        ).first()
+        if not existing:
+            db.add(AccountSkill(account_id=account_id, skill_id=sid))
+            assigned_count += 1
+    db.commit()
+    return {"assigned_skills": assigned_count, "workflow_id": workflow_id}
+
+
+@router.delete("/assign-workflow/{workflow_id}/account/{account_id}")
+async def unassign_workflow_from_account(
+    workflow_id: int,
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_active_parent),
+):
+    """ワークフローの関連スキルをアカウントからまとめて解除"""
+    wf_skills = db.query(WorkflowSkill).filter(WorkflowSkill.workflow_id == workflow_id).all()
+    skill_ids = {ws.skill_id for ws in wf_skills if ws.skill_id}
+    removed = 0
+    for sid in skill_ids:
+        assignment = db.query(AccountSkill).filter(
+            AccountSkill.account_id == account_id,
+            AccountSkill.skill_id == sid,
+        ).first()
+        if assignment:
+            db.delete(assignment)
+            removed += 1
+    db.commit()
+    return {"removed_skills": removed, "workflow_id": workflow_id}
 
 
 @router.delete("/assign-skill/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)

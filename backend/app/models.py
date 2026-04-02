@@ -77,9 +77,6 @@ class Skill(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     allows_file_output = Column(Boolean, default=False, nullable=False)
     enable_deep_think = Column(Boolean, default=True, nullable=False)
-    enable_web_search = Column(Boolean, default=False, nullable=False)
-    enable_code_interpreter = Column(Boolean, default=False, nullable=False)
-    enable_file_search = Column(Boolean, default=False, nullable=False)
     default_agent_profile = Column(String(30), nullable=True)
     created_by = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -115,9 +112,6 @@ class Workflow(Base):
     encrypted_parent_content = Column(Text, nullable=True)
     parent_model_type = Column(String(100), nullable=True, default="gpt-4o")
     parent_enable_deep_think = Column(Boolean, default=True, nullable=False)
-    parent_enable_web_search = Column(Boolean, default=False, nullable=False)
-    parent_enable_code_interpreter = Column(Boolean, default=False, nullable=False)
-    parent_enable_file_search = Column(Boolean, default=False, nullable=False)
 
     # リレーション
     creator = relationship("Account")

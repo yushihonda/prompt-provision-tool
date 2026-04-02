@@ -1,6 +1,8 @@
-# Prompt Provision Tool
+# Prompt Provision Tool v2.0.0
 
 スキル本文を外部に出さず、AI実行機能を提供するWebアプリケーション。
+
+> 変更履歴は [CHANGELOG.md](/CHANGELOG.md) を参照してください。
 
 ## 📋 要件定義書 / 動作確認レポート
 
@@ -13,6 +15,11 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 - ガードレール注入・出力サニタイズ・ログ抑止（漏洩対策）
 - スキルの論理削除（物理削除なし、データ保持）
 - 実行中のスキルのキャンセル機能
+- 自動オーケストレーション（エラーリトライ・品質ゲート・ジャッジ・出力キー・リーダー統合）
+- 永続メモリ（ワークフロー × profile 単位の長期記憶、実行をまたいで蓄積）
+- Coordinator View（リアルタイム進捗・synthesis events タイムライン）
+- Profile 固定色（Explore=青 / Plan=橙 / Implement=緑 / Verification=桃 / Leader=紫）
+- ワークフロー単位のスキル一括有効化・無効化
 
 ## 対応モデル
 - **OpenAI**:
@@ -44,27 +51,60 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 
 ### オーケストレーション機能
 
-| 機能 | 設定場所 | 概要 |
-|------|----------|------|
-| **エラーリカバリ** | スキル単位 | stop / skip / retry ポリシー（最大N回リトライ） |
+| 機能 | 設定 | 概要 |
+|------|------|------|
+| **エラーリカバリ** | 自動 | retry(1回) を全ステップに自動適用。失敗時はスキップ |
 | **条件分岐** | グループ単位 | 条件式（equals, contains, regex等）でグループスキップ |
-| **Reflection (自己修正)** | スキル単位 | 品質ゲート（正規表現/JSON検証/LLM判定）→ 不合格なら critique 付き再実行 |
-| **Blackboard (共有メモリ)** | ワークフロー全体 | output_key を持つスキルの出力を自動保存。全スキルから参照可能 |
-| **Supervisor (中間監視)** | グループ単位 | グループ完了後にLLMが判断: continue / repeat / stop |
+| **Reflection (自己修正)** | 自動 | verification プロファイルのみ regex で VERDICT 行チェック（反省ループ1回） |
+| **Blackboard (共有メモリ)** | 自動 | agent_profile から output_key を自動生成（explore_result, plan_result 等） |
+| **Debate/Judge (合議)** | 自動 | 並列グループ完了後にジャッジプロンプトを自動生成 |
 | **Dynamic (動的分解)** | グループ単位 | プランナースキルがタスクを動的に生成・起動 |
-| **Debate/Judge (合議)** | グループ単位 | 並列グループ完了後にジャッジが全結果を比較・統合 |
-| **明示的データマッピング** | スキル単位 | input_mapping でステップ間のデータ参照をドット記法で指定 |
-| **親スキルモード** | ワークフロー | required（必須）/ optional（任意）/ disabled（無効） |
+| **リーダー (結果統合)** | 自動 | 全ステップ完了後にワークフロー名・説明からプロンプトを自動生成 |
+| **永続メモリ** | ワークフロー | 実行をまたいで蓄積される長期記憶。bundle 時にプロンプト前段に注入 |
+
+### 自動オーケストレーション
+
+`auto_orchestration.py` がワークフロー構造（agent_profile、グループ構成）から以下を自動推論:
+
+- **出力キー**: `explore_result`, `plan_result`, `implement_result`, `verification_result`
+- **エラー時**: 全ステップで retry(1回)
+- **品質ゲート**: verification のみ regex で `VERDICT: PASS|FAIL|PARTIAL` チェック
+- **ジャッジ**: 並列グループで自動プロンプト生成
+- **リーダー**: ワークフロー名・説明から統合プロンプトを自動生成
+
+手動設定は不要。UIから設定項目は非表示化済み。
+
+### Agent Profile
+
+| Profile | 色 | 役割 | 選択可能 |
+|---------|:---:|------|:---:|
+| `explore` | 🔵 | 調査・情報収集（READ-ONLY） | スキル・WF |
+| `plan` | 🟠 | 設計・計画立案（READ-ONLY） | スキル・WF |
+| `implement` | 🟢 | 実装・成果物生成 | スキル・WF |
+| `verification` | 🔴 | 品質検証（証跡フォーマット必須、adversarial probe 必須） | スキル・WF |
+| `default` (Leader) | 🟣 | リーダー統合（WF親スキル専用、自動適用） | WFのみ |
+
+スキル作成時の Agent Profile は「未指定」がデフォルト。ワークフロー側で上書き可能。
+
+### Coordinator View / Synthesis Events
+
+ワークフロー実行中の可観測性:
+
+- **coordinator_view**: 現在のステージ、待機中のステップ、次のアクション、最新サマリー
+- **synthesis_events**: 各ステップ完了・エラー・ジャッジ・品質ゲートのタイムライン（DB保存）
+- **follow-up continuation**: retry/reflection 時の継続メタデータ
+- **structured result envelope**: 出力から summary/key_points を抽出して handoff_summary に保存
 
 ### DB モデル
 
 | テーブル | 主要カラム |
 |----------|-----------|
-| `workflows` | name, parent_skill_mode, supervisor_mode, encrypted_parent_content |
-| `workflow_groups` | group_order, execution_type, condition_expression, supervisor_prompt, judge_prompt, dynamic_mode |
-| `workflow_skills` | skill_id, on_error, max_retries, input_mapping, output_key, quality_gate_type, quality_gate_prompt, max_reflection_loops |
-| `workflow_executions` | status, blackboard_data, dynamic_plan_data, continuation_lock_version |
-| `executions` | status, execution_role, reflection_loop, retry_count, execution_group_id |
+| `workflows` | name, supervisor_mode, encrypted_parent_content, parent_model_type |
+| `workflow_groups` | group_order, execution_type, condition_expression, dynamic_mode |
+| `workflow_skills` | skill_id, on_error, max_retries, input_mapping, output_key, quality_gate_type, agent_profile |
+| `workflow_executions` | status, blackboard_data, synthesis_log, handoff_summary, current_stage, final_verdict |
+| `workflow_memories` | workflow_id, profile, memory_data, starter_seed |
+| `executions` | status, execution_role, reflection_loop, retry_count, agent_profile |
 
 ## リポジトリ構成（ディレクトリ一覧）
 
@@ -76,17 +116,17 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 
 | パス | 役割 |
 |------|------|
-| `backend/app/` | FastAPI 本体。`main.py`、`api/`（`auth` / `admin` / `user` / `execute` / `worker`）、`services/`（Redis・暗号化・完了処理・ワーカー認証）、`tasks/`（ワークフロー継続ロジック）、`utils/`（スキル・出力ファイル等）、`models.py`・`schemas.py`・`config.py`・`encryption.py`・`auth.py`・`database.py` など |
-| `backend/alembic/` | DB マイグレーション（`alembic upgrade head`、001-003） |
+| `backend/app/` | FastAPI 本体。`main.py`、`api/`（`auth` / `admin` / `user` / `execute` / `worker`）、`services/`（Redis・暗号化・完了処理・ワーカー認証・自動オーケストレーション・永続メモリ・agent_profiles）、`tasks/`（ワークフロー継続ロジック）、`utils/`（スキル・出力ファイル等）、`models.py`・`schemas.py`・`config.py`・`encryption.py`・`auth.py`・`database.py` など |
+| `backend/alembic/` | DB マイグレーション（`alembic upgrade head`、001（統合済み）） |
 | `backend/requirements.txt` , `Dockerfile` , `alembic.ini` | Python 依存・コンテナ・Alembic 設定 |
 
 ### 管理画面（親アカウント / `frontend/admin/`）
 
 | パス | 役割 |
 |------|------|
-| `frontend/admin/*.html` | ログイン、ワークフロー/スキル管理、アカウント管理、実行ログ |
+| `frontend/admin/*.html` | ログイン、ダッシュボード（ワークフロー/スキル管理）、アカウント管理、実行ログ |
 | `frontend/admin/js/admin-common.js` | 認証・`apiRequest` 等の共通処理・ナビゲーション |
-| `frontend/admin/js/*.js` | 画面別（`skills.js`（スキル+ワークフロー管理）、`accounts.js`、`executions.js`、`login.js`） |
+| `frontend/admin/js/*.js` | 画面別（`skills.js`（ダッシュボード: WF/スキルCRUD）、`accounts.js`（アカウント管理・WF/スキル有効化）、`executions.js`、`login.js`） |
 
 **API の目安**: `POST /api/auth/login`（親）および `/api/admin/*`（スキル・ワークフロー・アカウント等）。
 
@@ -124,14 +164,14 @@ prompt-provision-tool/
 ├── backend/                         # 【バックエンド】
 │   ├── app/
 │   │   ├── api/                     # auth, admin, user, execute, worker
-│   │   ├── services/                # Redis, 暗号化, 完了処理, ワーカー認証
+│   │   ├── services/                # Redis, 暗号化, 完了処理, ワーカー認証, 自動オーケストレーション, 永続メモリ, agent_profiles
 │   │   ├── tasks/                   # ワークフロー継続ロジック (オーケストレーション)
 │   │   ├── utils/                   # スキル・出力ファイル等
 │   │   ├── main.py, config.py, models.py, schemas.py, ...
-│   ├── alembic/versions/            # 001-003 マイグレーション
+│   ├── alembic/versions/            # 001（統合済み） マイグレーション
 │   ├── requirements.txt, Dockerfile, alembic.ini
 ├── frontend/
-│   ├── admin/                       # 【管理画面】ワークフロー/スキル管理, アカウント, 実行ログ
+│   ├── admin/                       # 【管理画面】ダッシュボード(WF/スキル管理), アカウント, 実行ログ
 │   ├── user/                        # 【ユーザー画面】実行, 履歴, ダウンロード
 │   ├── css/, img/                   # 【フロント共通】
 ├── local_worker/                    # 【ローカル実行 CLI】
@@ -195,7 +235,7 @@ bash deployment/setup.sh
 - 環境変数ファイルの作成
 - セキュリティキーの生成
 - データベースマイグレーション
-- systemdサービスの設定（FastAPI、Celery Worker）
+- systemdサービスの設定（FastAPI）
 - Nginx設定
 
 ### 手動セットアップ

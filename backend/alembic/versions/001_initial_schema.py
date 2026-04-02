@@ -1,7 +1,8 @@
 """
 統合マイグレーション: 全テーブルを最終スキーマで作成
 
-旧マイグレーション 000〜007 を統合し、用語リネーム（Prompt→Skill）を反映。
+旧マイグレーション 001〜006 を統合。
+新規セットアップ時はこの1ファイルのみで全テーブルが作成される。
 
 Revision ID: 001
 Down revision: None (初期マイグレーション)
@@ -36,7 +37,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), onupdate=sa.func.now()),
     )
 
-    # ==================== skills (旧 prompts) ====================
+    # ==================== skills ====================
     op.create_table(
         "skills",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -48,16 +49,14 @@ def upgrade() -> None:
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
         sa.Column("allows_file_output", sa.Boolean(), nullable=False, server_default=sa.text("0")),
         sa.Column("enable_deep_think", sa.Boolean(), nullable=False, server_default=sa.text("1")),
-        sa.Column("enable_web_search", sa.Boolean(), nullable=False, server_default=sa.text("0")),
-        sa.Column("enable_code_interpreter", sa.Boolean(), nullable=False, server_default=sa.text("0")),
-        sa.Column("enable_file_search", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("default_agent_profile", sa.String(30), nullable=True),
         sa.Column("created_by", sa.Integer(), sa.ForeignKey("accounts.id"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), onupdate=sa.func.now()),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
     )
 
-    # ==================== account_skills (旧 account_prompts) ====================
+    # ==================== account_skills ====================
     op.create_table(
         "account_skills",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -78,13 +77,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), onupdate=sa.func.now()),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        # 親スキル (Parent Skill) — ワークフローに直接埋め込み
+        # 親スキル
         sa.Column("encrypted_parent_content", sa.Text(), nullable=True),
         sa.Column("parent_model_type", sa.String(100), nullable=True, server_default="gpt-5.1"),
         sa.Column("parent_enable_deep_think", sa.Boolean(), nullable=False, server_default=sa.text("1")),
-        sa.Column("parent_enable_web_search", sa.Boolean(), nullable=False, server_default=sa.text("0")),
-        sa.Column("parent_enable_code_interpreter", sa.Boolean(), nullable=False, server_default=sa.text("0")),
-        sa.Column("parent_enable_file_search", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("parent_skill_mode", sa.String(20), nullable=False, server_default="required"),
+        sa.Column("supervisor_mode", sa.String(20), nullable=False, server_default="disabled"),
     )
 
     # ==================== workflow_groups ====================
@@ -95,6 +93,13 @@ def upgrade() -> None:
         sa.Column("group_order", sa.Integer(), nullable=False),
         sa.Column("group_name", sa.String(255), nullable=True),
         sa.Column("execution_type", sa.String(20), nullable=False, server_default="serial"),
+        sa.Column("condition_expression", sa.Text(), nullable=True),
+        sa.Column("skip_on_condition_fail", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("supervisor_prompt", sa.Text(), nullable=True),
+        sa.Column("supervisor_model", sa.String(100), nullable=True),
+        sa.Column("dynamic_mode", sa.String(20), nullable=False, server_default="static"),
+        sa.Column("judge_prompt", sa.Text(), nullable=True),
+        sa.Column("judge_model", sa.String(100), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 
@@ -110,6 +115,17 @@ def upgrade() -> None:
         sa.Column("depends_on", sa.Text(), nullable=True),
         sa.Column("group_id", sa.Integer(), sa.ForeignKey("workflow_groups.id", ondelete="CASCADE"), nullable=True, index=True),
         sa.Column("order_in_group", sa.Integer(), nullable=True),
+        sa.Column("on_error", sa.String(20), nullable=False, server_default="stop"),
+        sa.Column("max_retries", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("retry_delay_seconds", sa.Integer(), nullable=False, server_default=sa.text("5")),
+        sa.Column("input_mapping", sa.Text(), nullable=True),
+        sa.Column("output_key", sa.String(100), nullable=True),
+        sa.Column("quality_gate_type", sa.String(20), nullable=False, server_default="disabled"),
+        sa.Column("quality_gate_prompt", sa.Text(), nullable=True),
+        sa.Column("quality_gate_model", sa.String(100), nullable=True),
+        sa.Column("max_reflection_loops", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("handoff_rules", sa.Text(), nullable=True),
+        sa.Column("agent_profile", sa.String(30), nullable=True),
     )
 
     # ==================== workflow_executions ====================
@@ -122,6 +138,14 @@ def upgrade() -> None:
         sa.Column("current_step", sa.Integer(), nullable=True),
         sa.Column("total_steps", sa.Integer(), nullable=False),
         sa.Column("global_input_data", sa.Text(), nullable=True),
+        sa.Column("per_skill_input_data", sa.Text(), nullable=True),
+        sa.Column("continuation_lock_version", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("blackboard_data", sa.Text(length=16777215), nullable=True),
+        sa.Column("dynamic_plan_data", sa.Text(), nullable=True),
+        sa.Column("current_stage", sa.String(30), nullable=True),
+        sa.Column("final_verdict", sa.String(10), nullable=True),
+        sa.Column("handoff_summary", sa.Text(), nullable=True),
+        sa.Column("synthesis_log", sa.Text(), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("started_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
@@ -149,6 +173,11 @@ def upgrade() -> None:
         sa.Column("dispatch_mode", sa.String(30), nullable=False, server_default="server"),
         sa.Column("lease_token_hash", sa.String(128), nullable=True),
         sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("retry_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("reflection_loop", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("execution_role", sa.String(30), nullable=True),
+        sa.Column("execution_group_id", sa.Integer(), nullable=True),
+        sa.Column("agent_profile", sa.String(30), nullable=True),
         sa.Column("executed_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 
@@ -159,6 +188,7 @@ def upgrade() -> None:
         sa.Column("account_id", sa.Integer(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), unique=True, nullable=False),
         sa.Column("openai_api_key", sa.Text(), nullable=True),
         sa.Column("gemini_api_key", sa.Text(), nullable=True),
+        sa.Column("anthropic_api_key", sa.Text(), nullable=True),
         sa.Column("rate_limit_per_hour", sa.Integer(), server_default=sa.text("100")),
         sa.Column("rate_limit_per_day", sa.Integer(), server_default=sa.text("1000")),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default=sa.text("1")),
@@ -187,8 +217,23 @@ def upgrade() -> None:
         sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
     )
 
+    # ==================== workflow_memories ====================
+    op.create_table(
+        "workflow_memories",
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+        sa.Column("workflow_id", sa.Integer(), sa.ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True),
+        sa.Column("profile", sa.String(30), nullable=False, server_default="default"),
+        sa.Column("memory_data", sa.Text(length=16777215), nullable=True),
+        sa.Column("starter_seed", sa.Text(), nullable=True),
+        sa.Column("seed_version", sa.Integer(), nullable=False, server_default=sa.text("1")),
+        sa.Column("updated_at", sa.DateTime(timezone=True), onupdate=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.UniqueConstraint("workflow_id", "profile", name="uq_workflow_profile_memory"),
+    )
+
 
 def downgrade() -> None:
+    op.drop_table("workflow_memories")
     op.drop_table("worker_api_keys")
     op.drop_table("daily_execution_counts")
     op.drop_table("api_configs")

@@ -26,7 +26,7 @@ if settings.ENVIRONMENT == "production":
     app = FastAPI(
         title="Skill Provision Tool",
         description="GPT及びGeminiのスキルを外部に漏らさず、実行機能のみを提供するツール",
-        version="1.0.0",
+        version="2.0.0",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -35,7 +35,7 @@ else:
     app = FastAPI(
         title="Skill Provision Tool",
         description="GPT及びGeminiのスキルを外部に漏らさず、実行機能のみを提供するツール",
-        version="1.0.0"
+        version="2.0.0"
     )
 
 # CORS設定

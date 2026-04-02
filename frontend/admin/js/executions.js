@@ -126,6 +126,9 @@ function renderWorkflowRow(group) {
     const totalTokens = normalExecs.reduce((s, e) => s + (e.tokens_used || 0), 0);
     const overallStatus = getOverallStatus(execs);
     const stepExecs = normalExecs.filter(e => e.skill_order && e.workflow_skill_id);
+    const leaderExec = normalExecs.find(e => !e.workflow_skill_id);
+    const parentModel = leaderExec?.model_used || normalExecs[0]?.model_used || '-';
+    const modelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModel, null, {}) : parentModel;
     const weId = group.workflowExecutionId;
 
     // 各スキルの小さなバー
@@ -147,7 +150,7 @@ function renderWorkflowRow(group) {
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
         </td>
-        <td style="font-size:11px;color:rgba(255,255,255,0.5);">-</td>
+        <td>${modelDisplay}</td>
         <td>${totalTime ? totalTime + 'ms' : '-'}</td>
         <td>${totalTokens || '-'}</td>
         <td>${executionStatusHtml(overallStatus)}</td>
@@ -249,8 +252,20 @@ async function showWorkflowDetail(weId) {
         agentProfile: exec.agent_profile || null,
     }));
     const finalOutput = leaderExec?.output_data || '';
+    // coordinator view / synthesis events を取得
+    let wfStatus = null;
+    try {
+        wfStatus = await apiRequest(`/api/admin/workflow-executions/${weId}/status`);
+    } catch (e) { /* ignore */ }
     const resultHtml = execDetailModal.buildWorkflowFlowHTML({
         finalOutput, allStepResults, workflowName, groups,
+        stageMeta: {
+            currentStage: wfStatus?.current_stage || null,
+            finalVerdict: wfStatus?.final_verdict || null,
+            handoffSummary: wfStatus?.handoff_summary || null,
+            coordinatorView: wfStatus?.coordinator_view || null,
+            synthesisEvents: wfStatus?.synthesis_events || [],
+        },
     });
 
     const detailHTML = `
@@ -260,6 +275,7 @@ async function showWorkflowDetail(weId) {
                 <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
                     <span>Account: ${esc(String(accountId))}</span>
                     <span>${stepExecs.length} ステップ</span>
+                    <span>${typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderExec?.model_used || '', null, {}) : (leaderExec?.model_used || '-')}</span>
                     <span>合計 ${totalTime}ms</span>
                     <span>${totalTokens} tokens</span>
                 </div>

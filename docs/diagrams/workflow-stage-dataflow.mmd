@@ -1,0 +1,81 @@
+flowchart LR
+  %% Explore -> Plan -> Implement -> Verification retrofit data flow
+
+  subgraph UI[Browser UI]
+    EXE_UI[frontend/user/js/workflow-execute.js]
+    MODAL_UI[frontend/js/exec-detail-modal.js]
+    ADMIN_UI[frontend/admin/js/skills.js]
+  end
+
+  subgraph API[FastAPI]
+    EXEC_API[backend/app/api/execute.py]
+    USER_API[backend/app/api/user.py]
+    WORKER_API[backend/app/api/worker.py]
+    ADMIN_API[backend/app/api/admin.py]
+  end
+
+  subgraph ORCH[Orchestration / Services]
+    TASKS[backend/app/tasks/execution_tasks.py]
+    COMPLETE[backend/app/services/completion_service.py]
+    PROFILE[backend/app/services/agent_profiles.py]
+    WORKER[local_worker]
+  end
+
+  subgraph DB[MySQL]
+    WF_EXEC[(workflow_executions)]
+    EXEC[(executions)]
+    WF_SKILL[(workflow_skills)]
+    SKILL[(skills)]
+  end
+
+  ADMIN_UI -->|workflow step に agent_profile 設定| ADMIN_API
+  ADMIN_API -->|WRITE default_agent_profile| SKILL
+  ADMIN_API -->|WRITE agent_profile| WF_SKILL
+
+  EXE_UI -->|workflow 実行開始| EXEC_API
+  EXEC_API -->|CREATE stage metadata rows| WF_EXEC
+  EXEC_API -->|CREATE first execution.agent_profile| EXEC
+  EXEC_API -->|初回 stage をセット| WF_EXEC
+
+  TASKS -->|READ workflow step profile| WF_SKILL
+  TASKS -->|READ default profile fallback| SKILL
+  TASKS -->|READ handoff_summary as handoff context| WF_EXEC
+  TASKS -->|READ blackboard_data for input mapping| WF_EXEC
+  TASKS -->|WRITE blackboard_data as canonical handoff store| WF_EXEC
+  TASKS -->|WRITE current_stage on launch and retry| WF_EXEC
+  TASKS -->|WRITE to_profile when next step launches| WF_EXEC
+  TASKS -->|CREATE or UPDATE execution.agent_profile| EXEC
+
+  WORKER_API -->|READ execution.agent_profile| EXEC
+  WORKER_API -->|READ workflow context / prompts| WF_EXEC
+  WORKER_API --> PROFILE
+  PROFILE -->|compose prompt and profile policy| WORKER_API
+  WORKER_API -->|bundle 配信| WORKER
+
+  WORKER -->|execution result| COMPLETE
+  COMPLETE -->|READ execution profile status output| EXEC
+  COMPLETE -->|WRITE current_stage = profile| WF_EXEC
+  COMPLETE -->|WRITE handoff_summary with schema version and refs| WF_EXEC
+  COMPLETE -->|WRITE final_verdict for verification only| WF_EXEC
+
+  USER_API -->|READ current_stage final_verdict handoff_summary| WF_EXEC
+  USER_API -->|READ blackboard_data keys| WF_EXEC
+  USER_API -->|status API response| EXE_UI
+  USER_API -->|status/detail API response| MODAL_UI
+
+  EXE_UI -->|READ current_stage| EXE_UI
+  EXE_UI -->|READ final_verdict| EXE_UI
+  EXE_UI -->|READ handoff_summary summary and refs| EXE_UI
+  MODAL_UI -->|READ current_stage| MODAL_UI
+  MODAL_UI -->|READ final_verdict| MODAL_UI
+  MODAL_UI -->|READ handoff_summary summary and refs| MODAL_UI
+
+  classDef db fill:#1f2937,stroke:#94a3b8,color:#fff;
+  classDef api fill:#0f766e,stroke:#99f6e4,color:#fff;
+  classDef ui fill:#1d4ed8,stroke:#93c5fd,color:#fff;
+  classDef svc fill:#6d28d9,stroke:#c4b5fd,color:#fff;
+
+  class WF_EXEC,EXEC,WF_SKILL,SKILL db;
+  class EXEC_API,USER_API,WORKER_API,ADMIN_API api;
+  class EXE_UI,MODAL_UI,ADMIN_UI ui;
+  class TASKS,COMPLETE,PROFILE,WORKER svc;

@@ -11,10 +11,11 @@ let wfCurrentPage = 1;
 const wfItemsPerPage = 10;
 let wfTotalItems = 0;
 
-const AGENT_PROFILE_OPTIONS = ['default', 'explore', 'plan', 'implement', 'verification'];
+const AGENT_PROFILE_OPTIONS = ['explore', 'plan', 'implement', 'verification'];
 
 function renderAgentProfileOptions(selected) {
-    return AGENT_PROFILE_OPTIONS.map(v => `<option value="${v}" ${selected === v ? 'selected' : ''}>${v}</option>`).join('');
+    const none = `<option value="" ${!selected || selected === 'default' ? 'selected' : ''}>未指定</option>`;
+    return none + AGENT_PROFILE_OPTIONS.map(v => `<option value="${v}" ${selected === v ? 'selected' : ''}>${v}</option>`).join('');
 }
 
 function validateParallelGroupProfiles(groups) {
@@ -80,9 +81,6 @@ function renderSkills() {
                         <span style="color: ${skill.allows_file_output ? '#28a745' : '#dc3545'}; font-weight: ${skill.allows_file_output ? 'bold' : 'normal'};">ファイル出力: ${skill.allows_file_output ? '許可' : '不可'}</span>
                     </div>
                     <div style="display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 11px; color: rgba(255,255,255,0.8);">
-                        <span>web_search: ${skill.enable_web_search ? 'ON' : 'OFF'}</span>
-                        <span>code_interpreter: ${skill.enable_code_interpreter ? 'ON' : 'OFF'}</span>
-                        <span>file_search: ${skill.enable_file_search ? 'ON' : 'OFF'}</span>
                     </div>
                 </div>
             </td>
@@ -156,6 +154,13 @@ async function showCreateModal() {
                 </select>
             </div>
             <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">Agent Profile</label>
+                <select id="swal-default-agent-profile" class="swal2-select" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    ${renderAgentProfileOptions('default')}
+                </select>
+                <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">Explore=調査 / Plan=設計 / Implement=実装 / Verification=検証</small>
+            </div>
+            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
                 <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">スキル内容 <span style="color: #ff6b6b;">*</span></label>
                 <textarea id="swal-skill-content" class="swal2-textarea" placeholder="スキル内容を入力してください。&#10;変数は {{variable_name}} の形式で記述できます。&#10;例: {{article_text}} を要約してください。" required style="min-height: 200px; width: 100%; margin-top: 0; box-sizing: border-box; resize: vertical; max-width: 100%;"></textarea>
                 <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">変数の例: {{article_text}}, {{input}}, {{query}} など</small>
@@ -178,27 +183,6 @@ async function showCreateModal() {
                     <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">ファイル出力を許可する</span>
                 </label>
                 <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このスキルの実行結果をCSV、PDF、DOCXなどの形式で出力できます</small>
-            </div>
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">デフォルト Agent Profile</label>
-                <select id="swal-default-agent-profile" class="swal2-select" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    ${renderAgentProfileOptions('default')}
-                </select>
-                <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">workflow 側で agent_profile 未指定時のフォールバックです</small>
-            </div>
-            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="swal-enable-web-search" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;">
-                    <span style="font-size: 13px; color: rgba(255, 255, 255, 0.9);">web_search を許可</span>
-                </label>
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="swal-enable-code-interpreter" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;">
-                    <span style="font-size: 13px; color: rgba(255, 255, 255, 0.9);">code_interpreter を許可</span>
-                </label>
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="swal-enable-file-search" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;">
-                    <span style="font-size: 13px; color: rgba(255, 255, 255, 0.9);">file_search を許可</span>
-                </label>
             </div>
         `,
         focusConfirm: false,
@@ -223,9 +207,6 @@ async function showCreateModal() {
             const schemaText = document.getElementById('swal-skill-schema').value.trim();
             const isActive = document.getElementById('swal-skill-is-active').checked;
             const allowsFileOutput = document.getElementById('swal-skill-allows-file-output').checked;
-            const enableWebSearch = document.getElementById('swal-enable-web-search').checked;
-            const enableCodeInterpreter = document.getElementById('swal-enable-code-interpreter').checked;
-            const enableFileSearch = document.getElementById('swal-enable-file-search').checked;
             const defaultAgentProfile = document.getElementById('swal-default-agent-profile').value;
 
             // モデル名からDeep Think設定を判定
@@ -259,9 +240,6 @@ async function showCreateModal() {
                 isActive,
                 allowsFileOutput,
                 enableDeepThink,
-                enableWebSearch,
-                enableCodeInterpreter,
-                enableFileSearch,
                 defaultAgentProfile
             };
         }
@@ -328,6 +306,13 @@ async function editSkill(id) {
                 </select>
             </div>
             <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
+                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">Agent Profile</label>
+                <select id="swal-default-agent-profile" class="swal2-select" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
+                    ${renderAgentProfileOptions(skill.default_agent_profile || 'default')}
+                </select>
+                <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">Explore=調査 / Plan=設計 / Implement=実装 / Verification=検証</small>
+            </div>
+            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
                 <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">スキル内容 <span style="color: #ff6b6b;">*</span></label>
                 <textarea id="swal-skill-content" class="swal2-textarea" placeholder="スキル内容を入力してください。&#10;変数は {{variable_name}} の形式で記述できます。&#10;例: {{article_text}} を要約してください。" required style="min-height: 200px; width: 100%; margin-top: 0; box-sizing: border-box; resize: vertical; max-width: 100%;">${skillContent.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
                 <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">変数の例: {{article_text}}, {{input}}, {{query}} など</small>
@@ -350,27 +335,6 @@ async function editSkill(id) {
                     <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">ファイル出力を許可する</span>
                 </label>
                 <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このスキルの実行結果をCSV、PDF、DOCXなどの形式で出力できます</small>
-            </div>
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">デフォルト Agent Profile</label>
-                <select id="swal-default-agent-profile" class="swal2-select" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    ${renderAgentProfileOptions(skill.default_agent_profile || 'default')}
-                </select>
-                <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">workflow 側で agent_profile 未指定時のフォールバックです</small>
-            </div>
-            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="swal-enable-web-search" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;" ${skill.enable_web_search ? 'checked' : ''}>
-                    <span style="font-size: 13px; color: rgba(255, 255, 255, 0.9);">web_search を許可</span>
-                </label>
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="swal-enable-code-interpreter" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;" ${skill.enable_code_interpreter ? 'checked' : ''}>
-                    <span style="font-size: 13px; color: rgba(255, 255, 255, 0.9);">code_interpreter を許可</span>
-                </label>
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="swal-enable-file-search" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;" ${skill.enable_file_search ? 'checked' : ''}>
-                    <span style="font-size: 13px; color: rgba(255, 255, 255, 0.9);">file_search を許可</span>
-                </label>
             </div>
         `,
         focusConfirm: false,
@@ -395,9 +359,6 @@ async function editSkill(id) {
             const schemaText = document.getElementById('swal-skill-schema').value.trim();
             const isActive = document.getElementById('swal-skill-is-active').checked;
             const allowsFileOutput = document.getElementById('swal-skill-allows-file-output').checked;
-            const enableWebSearch = document.getElementById('swal-enable-web-search').checked;
-            const enableCodeInterpreter = document.getElementById('swal-enable-code-interpreter').checked;
-            const enableFileSearch = document.getElementById('swal-enable-file-search').checked;
             const defaultAgentProfile = document.getElementById('swal-default-agent-profile').value;
 
             // モデル名からDeep Think設定を判定
@@ -431,9 +392,6 @@ async function editSkill(id) {
                 isActive,
                 allowsFileOutput,
                 enableDeepThink,
-                enableWebSearch,
-                enableCodeInterpreter,
-                enableFileSearch,
                 defaultAgentProfile
             };
         }
@@ -454,9 +412,6 @@ async function saveSkill(id, formValues) {
         is_active: formValues.isActive,
         allows_file_output: formValues.allowsFileOutput,
         enable_deep_think: formValues.enableDeepThink,
-        enable_web_search: formValues.enableWebSearch,
-        enable_code_interpreter: formValues.enableCodeInterpreter,
-        enable_file_search: formValues.enableFileSearch,
         default_agent_profile: formValues.defaultAgentProfile
     };
 
@@ -610,26 +565,6 @@ async function manageWorkflowsForSkill(skillId) {
                         <div style="text-align:center; padding:14px; color:rgba(255,255,255,0.55); font-size:13px;">読み込み中...</div>
                     </div>
                 </div>
-
-                <div ${WF_SWAL.leaderCard}>
-                    <span ${WF_SWAL.secTitle}>新しいワークフローを作成</span>
-                    <small ${WF_SWAL.hint}>このスキルを Step 1 とするワークフローをまとめて作成します。ワークフロー名を空のままにすると作成しません。他の Skill はワークフロー管理画面から追加できます。</small>
-                    <div ${WF_SWAL.fld}>
-                        <label ${WF_SWAL.lbl}>ワークフロー名</label>
-                        <input id="swal-new-wf-name" type="text" ${WF_SWAL.inp} placeholder="例: 記事作成ワークフロー">
-                    </div>
-                    <div ${WF_SWAL.fld}>
-                        <label ${WF_SWAL.lbl}>説明</label>
-                        <textarea id="swal-new-wf-description" rows="4" ${WF_SWAL.txa(100)} placeholder="このワークフローの用途や流れを説明してください"></textarea>
-                    </div>
-                    <div ${WF_SWAL.fld}>
-                        <label style="display:flex; align-items:center; cursor:pointer;">
-                            <input type="checkbox" id="swal-new-wf-is-active" checked>
-                            <span style="font-weight:bold; color:rgba(255,255,255,0.9); font-size:13px;">有効なワークフローとして作成する</span>
-                        </label>
-                        <small ${WF_SWAL.hint}>チェックすると一覧で有効として表示されます。</small>
-                    </div>
-                </div>
             </div>
         `,
         focusConfirm: false,
@@ -722,20 +657,9 @@ async function manageWorkflowsForSkill(skillId) {
                 });
             }
 
-            const newWfName = document.getElementById('swal-new-wf-name').value.trim();
-            const newWfDescription = document.getElementById('swal-new-wf-description').value.trim();
-            const newWfIsActive = document.getElementById('swal-new-wf-is-active').checked;
-
             return {
                 membershipChanges,
-                newWorkflow:
-                    newWfName
-                        ? {
-                              name: newWfName,
-                              description: newWfDescription,
-                              is_active: newWfIsActive
-                          }
-                        : null
+                newWorkflow: null
             };
         }
     });
@@ -875,18 +799,10 @@ async function showCreateWorkflowFromSkills() {
                     </div>
                     <input type="hidden" id="swal-leader-content" value="(自動生成)">
                     <small style="color: rgba(255,255,255,0.5); display:block; margin: 0 0 8px; font-size:11px;">リーダースキル内容はワークフロー名・説明から自動生成されます</small>
-                    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; text-align: left; margin-bottom: 0; width: 100%; box-sizing: border-box;">
+                    <div style="display: flex; gap: 8px; text-align: left; margin-bottom: 0;">
                         <label style="display: flex; align-items: center; cursor: pointer;">
                             <input type="checkbox" id="swal-leader-deep-think" checked style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;">
                             <span style="font-size: 13px; color: rgba(255, 255, 255, 0.9);">Deep Think</span>
-                        </label>
-                        <label style="display: flex; align-items: center; cursor: pointer;">
-                            <input type="checkbox" id="swal-leader-web-search" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;">
-                            <span style="font-size: 13px; color: rgba(255, 255, 255, 0.9);">web_search</span>
-                        </label>
-                        <label style="display: flex; align-items: center; cursor: pointer;">
-                            <input type="checkbox" id="swal-leader-code-interpreter" style="margin-right: 6px; width: 16px; height: 16px; cursor: pointer;">
-                            <span style="font-size: 13px; color: rgba(255, 255, 255, 0.9);">code_interpreter</span>
                         </label>
                     </div>
                 </div>
@@ -950,8 +866,6 @@ async function showCreateWorkflowFromSkills() {
             const leaderModel = document.getElementById('swal-leader-model').value;
             const leaderContent = document.getElementById('swal-leader-content').value.trim();
             const leaderDeepThink = document.getElementById('swal-leader-deep-think').checked;
-            const leaderWebSearch = document.getElementById('swal-leader-web-search').checked;
-            const leaderCodeInterpreter = document.getElementById('swal-leader-code-interpreter').checked;
 
             if (!name) {
                 Swal.showValidationMessage('ワークフロー名は必須です');
@@ -1015,9 +929,6 @@ async function showCreateWorkflowFromSkills() {
                     model_type: leaderModel,
                     content: leaderContent,
                     enable_deep_think: leaderDeepThink,
-                    enable_web_search: leaderWebSearch,
-                    enable_code_interpreter: leaderCodeInterpreter,
-                    enable_file_search: false
                 }
             };
         }
@@ -1954,7 +1865,7 @@ async function _wfbSave() {
 
 // ページ読み込み時に実行
 (async () => {
-    initAdminLayout('skills.html');
+    initAdminLayout('dashboard.html');
     await checkAuth();
     loadDashboardStats();
     loadSkills(1);

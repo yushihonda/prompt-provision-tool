@@ -160,14 +160,14 @@
         const si = (s) => s === 'success' ? '&#10003;' : s === 'processing' ? '&#9679;' : s === 'error' ? '&#10007;' : '&#9711;';
         const wfName = workflowName || 'ワークフロー';
         const formatProfile = (profile) => ({
-            default: 'Default',
+            default: 'Leader',
             explore: 'Explore',
             plan: 'Plan',
             implement: 'Implement',
             verification: 'Verification',
         }[profile] || profile || '-');
         const profileColor = (profile) => ({
-            default: '#9e9e9e', explore: '#2196f3', plan: '#ff9800',
+            default: '#ce93d8', explore: '#2196f3', plan: '#ff9800',
             implement: '#4caf50', verification: '#e91e63',
         }[(profile || '').toLowerCase()] || '#9e9e9e');
 
@@ -218,7 +218,7 @@
                 } catch {}
             }
             // profileSource → 入力 → 出力 の順で表示
-            return `${profileSourceHtml}${inputHtml}<details style="margin-top:6px;"><summary style="font-size:10px; color:rgba(255,255,255,0.5); cursor:pointer; user-select:none;">▶ 出力を表示</summary><div style="margin-top:4px;">${step.model ? `<div style="font-size:10px; color:#888; margin-bottom:4px;">${step.time ? step.time + 'ms' : '-'} | ${step.tokens || '-'} tokens</div>` : ''}${bodyHtml || '<div style="color:rgba(255,255,255,0.4); font-size:11px;">出力なし</div>'}</div></details>`;
+            return `${profileSourceHtml}${inputHtml}<details style="margin-top:6px;"><summary style="font-size:10px; color:rgba(255,255,255,0.5); cursor:pointer; user-select:none;">出力を表示</summary><div style="margin-top:4px;">${step.model ? `<div style="font-size:10px; color:#888; margin-bottom:4px;">${step.time ? step.time + 'ms' : '-'} | ${step.tokens || '-'} tokens</div>` : ''}${bodyHtml || '<div style="color:rgba(255,255,255,0.4); font-size:11px;">出力なし</div>'}</div></details>`;
         }
 
         const cv = stageMeta?.coordinatorView;

@@ -2,6 +2,7 @@
 
 let accounts = [];
 let allSkills = [];
+let allWorkflows = [];
 let currentPage = 1;
 const itemsPerPage = 10;
 let totalItems = 0;
@@ -36,6 +37,15 @@ async function loadAllSkills() {
     }
 }
 
+async function loadAllWorkflows() {
+    try {
+        const response = await apiRequest('/api/admin/workflows?skip=0&limit=1000');
+        allWorkflows = response.items || response;
+    } catch (error) {
+        console.error('Load workflows error:', error);
+    }
+}
+
 function renderAccounts() {
     const tbody = document.getElementById('accounts-tbody');
 
@@ -56,7 +66,18 @@ function renderAccounts() {
             </td>
             <td>${statusBadgeHtml(account.is_active)}</td>
             <td>
-                ${account.account_type === 'CHILD' ? account.skill_count : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
+                ${account.account_type === 'CHILD' ? `
+                    <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <span style="color: rgba(255, 255, 255, 0.7);">WF:</span>
+                            <span style="color: rgba(255, 255, 255, 0.9);">${account.workflow_count || 0}</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <span style="color: rgba(255, 255, 255, 0.7);">スキル:</span>
+                            <span style="color: rgba(255, 255, 255, 0.9);">${account.skill_count}</span>
+                        </div>
+                    </div>
+                ` : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
             </td>
             <td>
                 ${account.account_type === 'CHILD' ? `
@@ -578,63 +599,110 @@ async function showAssignModal(accountId) {
         const assignedSkills = await apiRequest(`/api/admin/accounts/${accountId}/skills`);
         const assignedIds = assignedSkills.map(p => p.id);
 
-        // 割り当て可能なスキル（有効なスキルのみ）
-        const availableSkills = allSkills.filter(p => !assignedIds.includes(p.id) && p.is_active);
+        // ワークフロー親子構造を構築
+        // 各ワークフローに含まれるスキルIDを収集
+        const wfSkillMap = {}; // skillId → [wfName, ...]
+        const wfList = [];
+        for (const wf of allWorkflows) {
+            if (!wf.is_active) continue;
+            const wfSkillIds = (wf.groups || []).flatMap(g => (g.skills || []).map(s => s.skill_id));
+            const allAssigned = wfSkillIds.length > 0 && wfSkillIds.every(sid => assignedIds.includes(sid));
+            wfList.push({ ...wf, wfSkillIds, allAssigned });
+            for (const sid of wfSkillIds) {
+                if (!wfSkillMap[sid]) wfSkillMap[sid] = [];
+                wfSkillMap[sid].push(wf.name);
+            }
+        }
 
-        // 割り当て可能なスキルのHTML
-        const availableSkillsHTML = availableSkills.length > 0
-            ? availableSkills.map(p => `
-                <div class="card" style="padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px;">
-                    <div style="flex: 1;">
-                        <strong style="color: rgba(255, 255, 255, 0.9);">${p.name}</strong>
-                        ${p.description ? `<div style="color: rgba(255, 255, 255, 0.6); font-size: 0.9em; margin-top: 4px;">${p.description}</div>` : ''}
-                    </div>
-                    <button class="btn btn-sm btn-success" onclick="Swal.close(); assignSkill(${accountId}, ${p.id})" style="margin-left: 10px; white-space: nowrap;">割り当て</button>
-                </div>
-            `).join('')
-            : '<p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">割り当て可能なスキルがありません</p>';
+        // スキル割り当てバッジ生成
+        function skillBadge(skillId) {
+            const assigned = assignedIds.includes(skillId);
+            const asg = assignedSkills.find(s => s.id === skillId);
+            if (assigned) {
+                return `<span style="color:#28a745; font-size:10px; padding:1px 6px; background:rgba(40,167,69,0.15); border-radius:8px;">有効</span>
+                    <button onclick="Swal.close(); unassignSkill(${asg?.assignment_id}, ${accountId})" style="font-size:10px; padding:1px 6px; background:none; border:1px solid rgba(220,53,69,0.3); border-radius:8px; color:#dc3545; cursor:pointer; margin-left:4px;">無効</button>`;
+            }
+            return `<button onclick="Swal.close(); assignSkill(${accountId}, ${skillId})" style="font-size:10px; padding:1px 8px; background:rgba(40,167,69,0.15); border:1px solid rgba(40,167,69,0.3); border-radius:8px; color:#28a745; cursor:pointer;">有効にする</button>`;
+        }
 
-        // 割り当て済みスキルのHTML
-        const assignedSkillsHTML = assignedSkills.length > 0
-            ? assignedSkills.map(p => `
-                <div class="card" style="padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; ${!p.is_active ? 'opacity: 0.7;' : ''}">
-                    <div style="flex: 1;">
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <strong style="color: rgba(255, 255, 255, 0.9);">${p.name}</strong>
-                            ${!p.is_active ? `
-                                <span style="display: flex; align-items: center; gap: 4px; color: #dc3545; font-size: 0.85em;">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="#dc3545">
-                                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-                                    </svg>
-                                    無効
-                                </span>
-                            ` : ''}
-                        </div>
-                        ${p.description ? `<div style="color: rgba(255, 255, 255, 0.6); font-size: 0.9em; margin-top: 4px;">${p.description}</div>` : ''}
+        // ワークフロー親子HTML
+        let wfSectionHTML = '';
+        for (const wf of wfList) {
+            const skillsInWf = wf.wfSkillIds.map(sid => {
+                const sk = allSkills.find(s => s.id === sid);
+                return sk ? sk : { id: sid, name: `Skill #${sid}` };
+            });
+            const assignedCount = wf.wfSkillIds.filter(sid => assignedIds.includes(sid)).length;
+            const totalCount = wf.wfSkillIds.length;
+            const statusLabel = wf.allAssigned ? '<span style="color:#28a745; font-size:10px;">全て有効</span>' : `<span style="color:rgba(255,255,255,0.4); font-size:10px;">${assignedCount}/${totalCount}</span>`;
+
+            wfSectionHTML += `
+                <div style="margin-bottom:10px; border:1px solid rgba(124,58,237,0.25); border-radius:8px; overflow:hidden;">
+                    <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; background:rgba(124,58,237,0.1);">
+                        <strong style="color:#c4b5fd; flex:1;">${wf.name}</strong>
+                        ${statusLabel}
+                        ${wf.allAssigned
+                            ? `<button onclick="Swal.close(); unassignWorkflow(${wf.id}, ${accountId})" style="font-size:10px; padding:2px 8px; background:none; border:1px solid rgba(220,53,69,0.3); border-radius:8px; color:#dc3545; cursor:pointer;">一括無効</button>`
+                            : `<button onclick="Swal.close(); assignWorkflow(${accountId}, ${wf.id})" style="font-size:10px; padding:2px 8px; background:rgba(124,58,237,0.2); border:1px solid rgba(124,58,237,0.3); border-radius:8px; color:#c4b5fd; cursor:pointer;">一括有効</button>`
+                        }
                     </div>
-                    <button class="btn btn-sm btn-danger" onclick="Swal.close(); unassignSkill(${p.assignment_id}, ${accountId})" style="margin-left: 10px; white-space: nowrap;">解除</button>
+                    <div style="padding:8px 14px;">
+                        ${skillsInWf.map(sk => `
+                            <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.04);">
+                                <span style="color:rgba(255,255,255,0.3); font-size:10px; width:14px; text-align:center;">└</span>
+                                <span style="font-size:12px; color:rgba(255,255,255,0.8); flex:1;">${sk.name}</span>
+                                ${skillBadge(sk.id)}
+                            </div>
+                        `).join('')}
+                    </div>
                 </div>
-            `).join('')
-            : '<p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">割り当てられているスキルがありません</p>';
+            `;
+        }
+        if (!wfSectionHTML) {
+            wfSectionHTML = '<p style="text-align:center; color:rgba(255,255,255,0.5); padding:10px; font-size:12px;">ワークフローがありません</p>';
+        }
+
+        // ワークフローに属さないスキル
+        const wfSkillIdSet = new Set(Object.keys(wfSkillMap).map(Number));
+        const standaloneAssigned = assignedSkills.filter(s => !wfSkillIdSet.has(s.id));
+        const standaloneAvailable = allSkills.filter(s => !assignedIds.includes(s.id) && s.is_active && !wfSkillIdSet.has(s.id));
+
+        let standaloneSectionHTML = '';
+        if (standaloneAssigned.length > 0 || standaloneAvailable.length > 0) {
+            standaloneSectionHTML = [...standaloneAvailable.map(s => `
+                <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; margin-bottom:4px; background:rgba(255,255,255,0.03); border-radius:6px;">
+                    <span style="font-size:12px; color:rgba(255,255,255,0.8); flex:1;">${s.name}</span>
+                    <button onclick="Swal.close(); assignSkill(${accountId}, ${s.id})" style="font-size:10px; padding:1px 8px; background:rgba(40,167,69,0.15); border:1px solid rgba(40,167,69,0.3); border-radius:8px; color:#28a745; cursor:pointer;">有効にする</button>
+                </div>
+            `), ...standaloneAssigned.map(s => `
+                <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; margin-bottom:4px; background:rgba(255,255,255,0.03); border-radius:6px;">
+                    <span style="font-size:12px; color:rgba(255,255,255,0.8); flex:1;">${s.name}</span>
+                    <span style="color:#28a745; font-size:10px; padding:1px 6px; background:rgba(40,167,69,0.15); border-radius:8px;">有効</span>
+                    <button onclick="Swal.close(); unassignSkill(${s.assignment_id}, ${accountId})" style="font-size:10px; padding:1px 6px; background:none; border:1px solid rgba(220,53,69,0.3); border-radius:8px; color:#dc3545; cursor:pointer;">無効</button>
+                </div>
+            `)].join('');
+        }
 
         await Swal.fire({
-            title: 'スキル割り当て',
+            title: 'ワークフロー / スキル管理',
             html: `
-                <div style="text-align: left; margin-bottom: 20px;">
+                <div style="text-align: left; margin-bottom: 16px;">
                     <strong style="color: rgba(255, 255, 255, 0.9);">${account.username} (${account.email})</strong>
                 </div>
-                <div style="margin-bottom: 20px;">
-                    <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 10px; font-size: 16px;">割り当て可能なスキル</h4>
-                    <div style="max-height: 300px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); border-radius: 8px;">
-                        ${availableSkillsHTML}
+                <div style="margin-bottom: 16px;">
+                    <h4 style="color: #c4b5fd; margin-bottom: 10px; font-size: 14px;">ワークフロー（関連スキル付き）</h4>
+                    <div style="max-height: 400px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); border-radius: 8px;">
+                        ${wfSectionHTML}
                     </div>
                 </div>
+                ${standaloneSectionHTML ? `
                 <div>
-                    <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 10px; font-size: 16px;">割り当て済みスキル</h4>
-                    <div style="max-height: 300px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); border-radius: 8px;">
-                        ${assignedSkillsHTML}
+                    <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 10px; font-size: 14px;">その他のスキル</h4>
+                    <div style="max-height: 200px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); border-radius: 8px;">
+                        ${standaloneSectionHTML}
                     </div>
                 </div>
+                ` : ''}
             `,
             width: '900px',
             confirmButtonText: ADMIN_SWAL.btnClose,
@@ -667,8 +735,8 @@ async function assignSkill(accountId, skillId) {
             })
         });
         await Swal.fire({
-            title: '割り当て完了',
-            text: 'スキルを割り当てました',
+            title: '有効化完了',
+            text: 'スキルを有効にしました',
             icon: 'success',
             confirmButtonText: ADMIN_SWAL.btnClose,
             confirmButtonColor: ADMIN_SWAL.primary
@@ -678,7 +746,7 @@ async function assignSkill(accountId, skillId) {
     } catch (error) {
         await Swal.fire({
             title: 'エラー',
-            text: 'スキルの割り当てに失敗しました',
+            text: 'スキルの有効化に失敗しました',
             icon: 'error',
             confirmButtonText: ADMIN_SWAL.btnClose,
             confirmButtonColor: ADMIN_SWAL.primary
@@ -689,13 +757,13 @@ async function assignSkill(accountId, skillId) {
 
 async function unassignSkill(assignmentId, accountId) {
     const result = await Swal.fire({
-        title: '解除の確認',
-        text: 'このスキルの割り当てを解除しますか？',
+        title: '無効化の確認',
+        text: 'このスキルを無効にしますか？',
         icon: 'warning',
         showCancelButton: true,
         confirmButtonColor: ADMIN_SWAL.danger,
         cancelButtonColor: ADMIN_SWAL.secondary,
-        confirmButtonText: '解除',
+        confirmButtonText: '無効',
         cancelButtonText: ADMIN_SWAL.btnClose
     });
 
@@ -705,8 +773,8 @@ async function unassignSkill(assignmentId, accountId) {
                 method: 'DELETE'
             });
             await Swal.fire({
-                title: '解除完了',
-                text: 'スキルの割り当てを解除しました',
+                title: '無効化完了',
+                text: 'スキルを無効にしました',
                 icon: 'success',
                 confirmButtonText: ADMIN_SWAL.btnClose,
                 confirmButtonColor: ADMIN_SWAL.primary
@@ -716,7 +784,7 @@ async function unassignSkill(assignmentId, accountId) {
         } catch (error) {
             await Swal.fire({
                 title: 'エラー',
-                text: '割り当て解除に失敗しました',
+                text: '無効化に失敗しました',
                 icon: 'error',
                 confirmButtonText: ADMIN_SWAL.btnClose,
                 confirmButtonColor: ADMIN_SWAL.primary
@@ -726,6 +794,57 @@ async function unassignSkill(assignmentId, accountId) {
     }
 }
 
+
+async function assignWorkflow(accountId, workflowId) {
+    try {
+        const resp = await apiRequest('/api/admin/assign-workflow', {
+            method: 'POST',
+            body: JSON.stringify({ account_id: accountId, workflow_id: workflowId })
+        });
+        await Swal.fire({
+            title: '有効化完了',
+            text: `ワークフローの関連スキル ${resp.assigned_skills}件 を有効にしました`,
+            icon: 'success',
+            confirmButtonText: ADMIN_SWAL.btnClose,
+            confirmButtonColor: ADMIN_SWAL.primary
+        });
+        showAssignModal(accountId);
+        loadAccounts(currentPage);
+    } catch (error) {
+        await Swal.fire({ title: 'エラー', text: 'ワークフローの有効化に失敗しました', icon: 'error', confirmButtonText: ADMIN_SWAL.btnClose, confirmButtonColor: ADMIN_SWAL.primary });
+        console.error('Assign workflow error:', error);
+    }
+}
+
+async function unassignWorkflow(workflowId, accountId) {
+    const result = await Swal.fire({
+        title: '一括無効化の確認',
+        text: 'このワークフローの関連スキルをまとめて無効にしますか？',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: ADMIN_SWAL.danger,
+        cancelButtonColor: ADMIN_SWAL.secondary,
+        confirmButtonText: '一括無効',
+        cancelButtonText: ADMIN_SWAL.btnClose
+    });
+    if (result.isConfirmed) {
+        try {
+            const resp = await apiRequest(`/api/admin/assign-workflow/${workflowId}/account/${accountId}`, { method: 'DELETE' });
+            await Swal.fire({
+                title: '無効化完了',
+                text: `関連スキル ${resp.removed_skills}件 を無効にしました`,
+                icon: 'success',
+                confirmButtonText: ADMIN_SWAL.btnClose,
+                confirmButtonColor: ADMIN_SWAL.primary
+            });
+            showAssignModal(accountId);
+            loadAccounts(currentPage);
+        } catch (error) {
+            await Swal.fire({ title: 'エラー', text: '無効に失敗しました', icon: 'error', confirmButtonText: ADMIN_SWAL.btnClose, confirmButtonColor: ADMIN_SWAL.primary });
+            console.error('Unassign workflow error:', error);
+        }
+    }
+}
 
 // API設定セクションの表示/非表示を切り替える
 function toggleApiConfigSection() {
@@ -746,4 +865,5 @@ function toggleApiConfigSection() {
     await checkAuth();
     loadAccounts(1);
     loadAllSkills();
+    loadAllWorkflows();
 })();

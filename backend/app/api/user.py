@@ -323,15 +323,6 @@ async def list_available_skills(
         if enable_deep_think is None:
             enable_deep_think = True
 
-        # 外部ツールフラグはNoneの場合はFalseとして扱う（後方互換）
-        enable_web_search = bool(getattr(skill, "enable_web_search", False) or False)
-        enable_code_interpreter = bool(
-            getattr(skill, "enable_code_interpreter", False) or False
-        )
-        enable_file_search = bool(
-            getattr(skill, "enable_file_search", False) or False
-        )
-
         skill_dict = {
             "id": skill.id,
             "name": skill.name,
@@ -339,9 +330,6 @@ async def list_available_skills(
             "model_type": skill.model_type,
             "allows_file_output": skill.allows_file_output,
             "enable_deep_think": bool(enable_deep_think),  # 明示的にboolに変換
-            "enable_web_search": enable_web_search,
-            "enable_code_interpreter": enable_code_interpreter,
-            "enable_file_search": enable_file_search,
         }
         items.append(skill_dict)
 
@@ -405,14 +393,7 @@ async def get_skill_detail(
         "model_type": skill.model_type,
         "input_schema": input_schema,
         "allows_file_output": skill.allows_file_output,
-        "enable_deep_think": bool(enable_deep_think),  # 明示的にboolに変換
-        "enable_web_search": bool(getattr(skill, "enable_web_search", False) or False),
-        "enable_code_interpreter": bool(
-            getattr(skill, "enable_code_interpreter", False) or False
-        ),
-        "enable_file_search": bool(
-            getattr(skill, "enable_file_search", False) or False
-        ),
+        "enable_deep_think": bool(enable_deep_think),
     }
 
 
@@ -480,15 +461,6 @@ async def list_user_workflows(
                     model_type=s.model_type,
                     allows_file_output=s.allows_file_output,
                     enable_deep_think=bool(enable_deep_think),
-                    enable_web_search=bool(
-                        getattr(s, "enable_web_search", False) or False
-                    ),
-                    enable_code_interpreter=bool(
-                        getattr(s, "enable_code_interpreter", False) or False
-                    ),
-                    enable_file_search=bool(
-                        getattr(s, "enable_file_search", False) or False
-                    ),
                 )
             )
 
@@ -499,6 +471,12 @@ async def list_user_workflows(
                 workflow_input_schema = json.loads(wf.input_schema) if isinstance(wf.input_schema, str) else wf.input_schema
             except (json.JSONDecodeError, TypeError):
                 workflow_input_schema = None
+
+        # ステップ順の agent_profile 一覧
+        step_profiles = []
+        for ws in wf_skills:
+            p = ws.agent_profile or (ws.skill.default_agent_profile if ws.skill else None) or "default"
+            step_profiles.append(p)
 
         result.append(
             UserWorkflowSummary(
@@ -512,6 +490,7 @@ async def list_user_workflows(
                     updated_at=wf.updated_at,
                 ),
                 skills=skill_list,
+                step_profiles=step_profiles,
             )
         )
 

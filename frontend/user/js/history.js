@@ -112,6 +112,9 @@ function renderWorkflowRow(group) {
     const overallStatus = getOverallStatus(execs);
     const statusColor = getStatusColor(overallStatus);
     const stepExecs = normalExecs.filter(e => e.skill_order && e.workflow_skill_id);
+    const leaderExec = normalExecs.find(e => !e.workflow_skill_id);
+    const parentModel = leaderExec?.model_used || normalExecs[0]?.model_used || '-';
+    const modelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModel, null, {}) : parentModel;
     const weId = group.workflowExecutionId;
 
     // 各スキルの小さなバー
@@ -131,7 +134,7 @@ function renderWorkflowRow(group) {
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
         </td>
-        <td style="font-size:11px;color:rgba(255,255,255,0.5);">-</td>
+        <td>${modelDisplay}</td>
         <td>-</td>
         <td>${totalTime ? totalTime + 'ms' : '-'}</td>
         <td>${totalTokens || '-'}</td>
@@ -272,6 +275,7 @@ async function showWorkflowDetail(weId) {
                     <div style="color: #c4b5fd; font-weight: 600; font-size: 16px; margin-bottom: 6px;">${esc(workflowName)}</div>
                     <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
                         <span>${stepExecs.length} ステップ</span>
+                        <span>${typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderExec?.model_used || '', null, {}) : (leaderExec?.model_used || '-')}</span>
                         <span>合計 ${totalTime}ms</span>
                         <span>${totalTokens} tokens</span>
                     </div>

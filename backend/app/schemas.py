@@ -71,11 +71,7 @@ class SkillBase(BaseModel):
     model_type: str
     input_schema: Optional[Dict[str, Any]] = None
     allows_file_output: bool = False  # ファイル出力を許可するか
-    enable_deep_think: bool = True  # Deep Think機能を有効にするか（Gemini 2.5/3系のみ、デフォルト: True）
-    # 外部ツール利用可否フラグ（エージェント側のオーケストレーション用メタデータ）
-    enable_web_search: bool = False
-    enable_code_interpreter: bool = False
-    enable_file_search: bool = False
+    enable_deep_think: bool = True  # Deep Think機能を有効にするか
     default_agent_profile: Optional[AgentProfile] = None
 
 
@@ -93,9 +89,6 @@ class SkillUpdate(BaseModel):
     allows_file_output: Optional[bool] = None  # ファイル出力を許可するか
     enable_deep_think: Optional[bool] = None  # Deep Think機能を有効にするか（Gemini 2.5/3系のみ）
     # 外部ツール利用可否フラグ（エージェント側のオーケストレーション用メタデータ）
-    enable_web_search: Optional[bool] = None
-    enable_code_interpreter: Optional[bool] = None
-    enable_file_search: Optional[bool] = None
     default_agent_profile: Optional[AgentProfile] = None
 
 
@@ -118,9 +111,6 @@ class SkillListResponse(BaseModel):
     model_type: str
     allows_file_output: bool = False  # ファイル出力を許可するか
     enable_deep_think: bool = True  # Deep Think機能を有効にするか
-    enable_web_search: bool = False
-    enable_code_interpreter: bool = False
-    enable_file_search: bool = False
 
     class Config:
         from_attributes = True
@@ -378,9 +368,6 @@ class WorkflowCreate(BaseModel):
     parent_skill_content: str = ""  # 暗号化前のスキル本文
     parent_model_type: str = "gpt-4o"
     parent_enable_deep_think: bool = True
-    parent_enable_web_search: bool = False
-    parent_enable_code_interpreter: bool = False
-    parent_enable_file_search: bool = False
     supervisor_mode: str = "disabled"  # "disabled" | "after_each_group" | "after_marked_groups"
     # グループ構造
     groups: List[WorkflowGroupItem] = []
@@ -395,9 +382,6 @@ class WorkflowUpdate(BaseModel):
     parent_skill_content: Optional[str] = None
     parent_model_type: Optional[str] = None
     parent_enable_deep_think: Optional[bool] = None
-    parent_enable_web_search: Optional[bool] = None
-    parent_enable_code_interpreter: Optional[bool] = None
-    parent_enable_file_search: Optional[bool] = None
     supervisor_mode: Optional[str] = None
     groups: Optional[List[WorkflowGroupItem]] = None
 
@@ -413,9 +397,6 @@ class WorkflowResponse(BaseModel):
     parent_skill_content: Optional[str] = None  # 管理者のみ復号済みで返す
     parent_model_type: Optional[str] = None
     parent_enable_deep_think: bool = True
-    parent_enable_web_search: bool = False
-    parent_enable_code_interpreter: bool = False
-    parent_enable_file_search: bool = False
     supervisor_mode: str = "disabled"
     # メタ
     created_by: int
@@ -472,9 +453,6 @@ class ParentSkillData(BaseModel):
     model_type: str = "gpt-4o"
     input_schema: Optional[Dict[str, Any]] = None
     enable_deep_think: bool = True
-    enable_web_search: bool = False
-    enable_code_interpreter: bool = False
-    enable_file_search: bool = False
 
 
 class WorkflowCreateWithParentSkill(BaseModel):
@@ -494,6 +472,7 @@ class UserWorkflowSummary(BaseModel):
 
     workflow: WorkflowListItem
     skills: List[SkillListResponse]
+    step_profiles: List[str] = []  # ステップ順の agent_profile 一覧
 
 
 class UserWorkflowDetailSkill(BaseModel):

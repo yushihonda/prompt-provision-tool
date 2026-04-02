@@ -186,6 +186,7 @@ async function restoreActiveWorkflowExecution() {
                     coordinatorView: wfStatusRestore?.coordinator_view || null,
                     synthesisEvents: wfStatusRestore?.synthesis_events || [],
                 };
+                updateStatusBar();
             } catch (e) {}
 
             // ワークフロー結果を表示（統合結果 + 各ステップ）
@@ -543,39 +544,9 @@ function renderInputFieldsForSchema(step, inputSchema) {
     return fieldsHTML;
 }
 
-// 常時ステータスバーを更新
+// ステータスバー更新（フロービュー内のサマリーバーで代替）
 function updateStatusBar() {
-    const bar = document.getElementById('wf-status-bar');
-    if (!bar) return;
-    const cv = _wfStageMeta.coordinatorView;
-    const esc = typeof escapeHtml === 'function' ? escapeHtml : (t => t);
-    if (!cv && !_wfStageMeta.currentStage) {
-        bar.style.display = 'none';
-        return;
-    }
-    bar.style.display = 'block';
-    const stage = _wfStageMeta.currentStage || '-';
-    const verdict = _wfStageMeta.finalVerdict;
-    const summary = cv?.latest_summary || '';
-    const completedCount = cv?.completed_count || 0;
-    const totalExecs = cv?.total_executions || 0;
-    const nextAction = cv?.next_expected_action || '';
-    const stageColor = _profileColor(stage);
-    const verdictColor = verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : null;
-
-    let html = `<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">`;
-    html += `<span style="font-size:12px; font-weight:bold; color:${stageColor}; background:${stageColor}22; padding:2px 10px; border-radius:10px;">${esc(formatStageLabel(stage))}</span>`;
-    if (verdict) {
-        html += `<span style="font-size:11px; font-weight:bold; color:${verdictColor};">${esc(verdict)}</span>`;
-    }
-    if (totalExecs > 0) {
-        html += `<span style="font-size:10px; color:rgba(255,255,255,0.4);">${completedCount}/${totalExecs}</span>`;
-    }
-    if (summary) {
-        html += `<span style="font-size:11px; color:rgba(255,255,255,0.7); flex:1;">${esc(summary)}</span>`;
-    }
-    html += `</div>`;
-    bar.innerHTML = html;
+    if (_flowViewDetail) renderFlowView(_flowViewDetail, _flowStepStatuses);
 }
 
 // ステップの実行進捗を表示（フロービューが全て担当、下の出力パネルは非表示）
@@ -597,14 +568,14 @@ function renderStepExecutions() {
 
 function formatStageLabel(stage) {
     if (!stage) return '-';
-    const map = { default: 'Default', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
+    const map = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
     return map[stage] || stage;
 }
 
 // profile / stage の固定色（全画面で統一）
 function _profileColor(profile) {
     const colors = {
-        default: '#9e9e9e',
+        default: '#ce93d8',
         explore: '#2196f3',
         plan: '#ff9800',
         implement: '#4caf50',
@@ -642,7 +613,7 @@ function renderWorkflowStageSummary(esc) {
     // 1行目: Stage + Verdict + 進捗
     html += `<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:${latestSummary || events.length ? '8px' : '0'};">`;
     html += `<span style="font-size:11px; color:rgba(255,255,255,0.55);">Stage</span>`;
-    html += `<span style="font-size:12px; font-weight:bold; color:#fff;">${esc(stage)}</span>`;
+    html += `<span style="font-size:12px; font-weight:bold; color:${_profileColor(_wfStageMeta.currentStage || 'default')};">${esc(stage)}</span>`;
     if (verdict !== '-') {
         html += `<span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Verdict</span>`;
         html += `<span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : 'rgba(255,255,255,0.7)'};">${esc(verdict)}</span>`;
@@ -1332,7 +1303,22 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
             outputContent.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
-        // 完了ポップアップを表示（スキル実行と同様）
+        // 完了時: 最新ステータスを取得してステータスバーを確定
+        try {
+            const finalWfStatus = await apiRequest(`/api/user/workflow-executions/${workflowExecutionId}/status`);
+            _wfStageMeta = {
+                currentStage: finalWfStatus?.current_stage || null,
+                finalVerdict: finalWfStatus?.final_verdict || null,
+                handoffSummary: finalWfStatus?.handoff_summary || null,
+                coordinatorView: finalWfStatus?.coordinator_view || null,
+                synthesisEvents: finalWfStatus?.synthesis_events || [],
+            };
+            if (finalWfStatus?.blackboard_keys) _blackboardKeys = finalWfStatus.blackboard_keys;
+        } catch (e) {}
+        updateStatusBar();
+        if (_flowViewDetail) renderFlowView(_flowViewDetail, _flowStepStatuses);
+
+        // 完了ポップアップを表示
         const allSuccess = allStepResults.every(s => s.status === 'success');
         await Swal.fire({
             title: 'ワークフロー実行完了',
@@ -1363,6 +1349,7 @@ function displayWorkflowResult(finalOutput, allStepResults, leaderExecution) {
     if (_flowViewDetail) {
         renderFlowView(_flowViewDetail, _flowStepStatuses);
     }
+    updateStatusBar();
 
     // 結果統合セクションまで自動スクロール
     setTimeout(() => {
@@ -1521,6 +1508,7 @@ async function checkAndStartNextStep(wfExecId, completedStepOrder) {
             coordinatorView: wfStatus?.coordinator_view || null,
             synthesisEvents: wfStatus?.synthesis_events || [],
         };
+        updateStatusBar();
 
         // 最新の通常スキルのステータスをフロービューに反映
         // (SVのrepeat後はcancelledの古いものではなく最新のExecution を使う)
@@ -1659,13 +1647,10 @@ async function loadHistory() {
         const response = await apiRequest(`/api/user/executions?skip=0&limit=500`);
         const responseExecutions = response.items || response;
 
-        // このワークフローに関連する実行をフィルタリング
-        const workflowPromptIds = workflowDetail?.skills?.map(s => s.skill_id) || [];
+        // このワークフローに関連する実行をフィルタリング（ワークフロー実行のみ、スキル単体実行は除外）
+        const thisWorkflowId = workflowDetail?.workflow?.id ? parseInt(workflowDetail.workflow.id) : null;
         const relevantExecs = responseExecutions.filter(exec =>
-            exec.workflow_execution_id && (
-                (workflowExecutionId && exec.workflow_execution_id === workflowExecutionId) ||
-                workflowPromptIds.includes(exec.skill_id)
-            )
+            exec.workflow_execution_id && exec.workflow_id === thisWorkflowId
         );
 
         // ワークフロー実行ID単位でグルーピング
@@ -1724,7 +1709,7 @@ function renderHistory() {
     if (!tbody) return;
 
     if (allExecutions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: rgba(255, 255, 255, 0.6);">このワークフローの実行履歴がありません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: rgba(255, 255, 255, 0.6);">このワークフローの実行履歴がありません</td></tr>';
         return;
     }
 
@@ -1738,11 +1723,14 @@ function renderHistory() {
             return !min || e.executed_at < min ? e.executed_at : min;
         }, null);
         const normalExecsHist = execs.filter(e => !e.execution_role);
-        const totalTime = normalExecsHist.reduce((sum, e) => sum + (e.execution_time || 0), 0);
-        const totalTokens = normalExecsHist.reduce((sum, e) => sum + (e.tokens_used || 0), 0);
+        const totalTime = execs.reduce((sum, e) => sum + (e.execution_time || 0), 0);
+        const totalTokens = execs.reduce((sum, e) => sum + (e.tokens_used || 0), 0);
         const overallStatus = _wfOverallStatus(execs);
         const statusColor = _wfStatusColor(overallStatus);
         const stepExecs = normalExecsHist.filter(e => e.skill_order && e.workflow_skill_id);
+        const leaderExecHist = normalExecsHist.find(e => !e.workflow_skill_id);
+        const parentModelHist = leaderExecHist?.model_used || normalExecsHist[0]?.model_used || '-';
+        const modelDisplayHist = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModelHist, null, {}) : parentModelHist;
 
         // 各スキルの小さなバー（history.html と同じ形式）
         const skillBars = stepExecs.map(e => {
@@ -1760,6 +1748,7 @@ function renderHistory() {
                 </div>
                 <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
             </td>
+            <td>${modelDisplayHist}</td>
             <td>${totalTime ? totalTime + 'ms' : '-'}</td>
             <td>${totalTokens || '-'}</td>
             <td><span style="color: ${statusColor}">${overallStatus}</span></td>
@@ -1774,7 +1763,7 @@ function renderHistory() {
         </tr>
         `;
     }).join('') + (hasMore ? `
-        <tr><td colspan="6" style="text-align: center; padding: 15px;">
+        <tr><td colspan="7" style="text-align: center; padding: 15px;">
             <button class="btn btn-secondary" onclick="loadMoreHistory()">もっと見る</button>
         </td></tr>
     ` : '');
@@ -1872,6 +1861,7 @@ async function showWorkflowHistoryDetail(weId) {
                     <div style="color: #c4b5fd; font-weight: 600; font-size: 16px; margin-bottom: 6px;">${esc(workflowName)}</div>
                     <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
                         <span>${stepExecs.length} ステップ</span>
+                        <span>${typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderExec?.model_used || '', null, {}) : (leaderExec?.model_used || '-')}</span>
                         <span>合計 ${totalTime}ms</span>
                         <span>${totalTokens} tokens</span>
                     </div>

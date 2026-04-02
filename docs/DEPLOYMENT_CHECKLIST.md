@@ -14,7 +14,7 @@
 - [ ] `GEMINI_API_KEY` が設定されている
 - [ ] `ENVIRONMENT=production` が設定されている
 - [ ] `CORS_ORIGINS` が本番ドメインに設定されている
-- [ ] `CELERY_BROKER_URL` と `CELERY_RESULT_BACKEND` が設定されている（`redis://localhost:6379/0`）
+- [ ] `REDIS_URL` が設定されている（`redis://localhost:6379/0`）（SSEストリーミング用）
 
 ### 2. セキュリティキーの生成
 
@@ -46,8 +46,8 @@ python3 -c "import secrets; print('ENCRYPTION_KEY=' + secrets.token_urlsafe(32)[
 ### 5. systemdサービスの設定
 
 - [ ] `prompt-tool.service` が `/etc/systemd/system/` に配置されている
-- [ ] `prompt-tool-celery.service` が `/etc/systemd/system/` に配置されている
-- [ ] サービスが有効化されている（`sudo systemctl enable prompt-tool prompt-tool-celery`）
+- [ ] `prompt-tool-worker.service` が `/etc/systemd/system/` に配置されている
+- [ ] サービスが有効化されている（`sudo systemctl enable prompt-tool prompt-tool-worker`）
 
 ### 6. Nginx設定
 
@@ -91,7 +91,7 @@ python -m app.init_admin
 
 ```bash
 sudo systemctl start prompt-tool
-sudo systemctl start prompt-tool-celery
+sudo systemctl start prompt-tool-worker
 sudo systemctl start nginx
 ```
 
@@ -120,7 +120,7 @@ alembic upgrade head
 
 # サービスの再起動
 sudo systemctl restart prompt-tool
-sudo systemctl restart prompt-tool-celery
+sudo systemctl restart prompt-tool-worker
 ```
 
 ## デプロイ後の確認事項
@@ -130,7 +130,7 @@ sudo systemctl restart prompt-tool-celery
 ```bash
 # すべてのサービスが起動していることを確認
 sudo systemctl status prompt-tool
-sudo systemctl status prompt-tool-celery
+sudo systemctl status prompt-tool-worker
 sudo systemctl status redis-server
 sudo systemctl status nginx
 ```
@@ -148,12 +148,12 @@ curl http://127.0.0.1:8000/health
 # アプリケーションログ
 sudo tail -f /var/log/prompt-tool/app.log
 
-# Celery Workerログ
-sudo tail -f /var/log/prompt-tool/celery.log
+# ローカルワーカーログ
+sudo tail -f /var/log/prompt-tool/worker.log
 
 # エラーログ
 sudo tail -f /var/log/prompt-tool/error.log
-sudo tail -f /var/log/prompt-tool/celery-error.log
+sudo tail -f /var/log/prompt-tool/worker-error.log
 
 # Nginxログ
 sudo tail -f /var/log/nginx/prompt-tool-error.log
@@ -169,17 +169,17 @@ sudo tail -f /var/log/nginx/prompt-tool-error.log
 
 ## トラブルシューティング
 
-### Celery Workerが起動しない
+### ローカルワーカーが起動しない
 
 ```bash
 # ログを確認
-sudo tail -f /var/log/prompt-tool/celery-error.log
+sudo tail -f /var/log/prompt-tool/worker-error.log
 
 # Redis接続を確認
 redis-cli ping
 
 # サービスを再起動
-sudo systemctl restart prompt-tool-celery
+sudo systemctl restart prompt-tool-worker
 ```
 
 ### Redis接続エラー
@@ -207,7 +207,7 @@ cat /opt/prompt-provision-tool/backend/.env | grep DB_
 
 ### ストリーミングが動作しない
 
-- Celery Workerが起動しているか確認
+- ローカルワーカーが起動しているか確認
 - Redisが起動しているか確認
 - ログでエラーがないか確認
 

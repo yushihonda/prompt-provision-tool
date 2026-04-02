@@ -76,13 +76,28 @@ function renderUserWorkflows() {
             const modelDisplay = typeof formatModelDisplay === 'function'
                 ? formatModelDisplay(wf.parent_model_type || '', null, {})
                 : (wf.parent_model_type || '-');
+            // profile フロー表示
+            const profiles = item.step_profiles || [];
+            const profileColors = { default: '#ce93d8', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
+            const profileLabels = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
+            const flowHtml = profiles.length > 0
+                ? profiles.map((p, i) => {
+                    const c = profileColors[p] || '#9e9e9e';
+                    const l = profileLabels[p] || p;
+                    return `${i > 0 ? '<span style="color:rgba(255,255,255,0.2); margin:0 2px;">→</span>' : ''}<span style="font-size:10px; padding:1px 6px; background:${c}22; border-radius:8px; color:${c};">${l}</span>`;
+                }).join('')
+                : '';
             return `
                 <div class="card" data-workflow-id="${wf.id}">
                     <div class="card-content">
                         <h3>${wf.name}</h3>
                         <p>${wf.description || '説明なし'}</p>
-                        <p><strong>ステップ数:</strong> ${skillCount}</p>
-                        <p><strong>モデル:</strong> ${modelDisplay}</p>
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+                            <span style="font-size:12px; color:rgba(255,255,255,0.6);"><strong>${skillCount}</strong> steps</span>
+                            <span style="color:rgba(255,255,255,0.15);">|</span>
+                            <span>${modelDisplay}</span>
+                        </div>
+                        ${flowHtml ? `<div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px;">${flowHtml}</div>` : ''}
                     </div>
                     <div class="card-corner">
                         <button class="btn btn-primary card-execute-btn"

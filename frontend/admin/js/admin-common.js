@@ -267,7 +267,7 @@ function formatJSON(json) {
 // 共通レイアウト（ヘッダー＋ナビゲーション）
 // ---------------------------------------------------------------------------
 const ADMIN_NAV_ITEMS = [
-    { href: 'skills.html',   label: 'ワークフロー / スキル管理' },
+    { href: 'dashboard.html', label: 'ワークフロー / スキル管理' },
     { href: 'accounts.html',  label: 'アカウント管理' },
     { href: 'executions.html', label: '実行ログ' },
 ];
@@ -276,7 +276,7 @@ const ADMIN_NAV_ITEMS = [
  * ヘッダー + モバイルメニュー + ナビを自動挿入する。
  * 各 HTML の <div class="content"> の直前に呼び出す。
  *
- * @param {string} activePage - 現在のページ href (例: 'skills.html')
+ * @param {string} activePage - 現在のページ href (例: 'dashboard.html')
  */
 function initAdminLayout(activePage) {
     const container = document.querySelector('.container');
