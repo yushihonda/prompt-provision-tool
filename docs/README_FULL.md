@@ -329,23 +329,37 @@ verification mode の設計意図:
 
 Completion gate:
 
+internal-distribution-ready:
+
 - `.github/workflows/desktop-clean-machine-verify.yml` の `packaged-health` を macOS / Windows 両方で green にし、その中の `verify:packaged:storage` で `tokenFoundInDb=false` を維持すること
 - `packaged-real-skill` は optional gate とし、fixture 未設定時は skip、設定時のみ追加 E2E として扱うこと
+- 社内向け package を `npm --prefix desktop run tauri:build` で再現的に生成できること
+- 社内ユーザー向けに macOS / Windows 初回起動手順を説明できること
+
+commercial-release-ready:
+
 - `.github/workflows/desktop-release.yml` で `release preflight -> signed build -> verify:packaged:storage:strict -> artifact sanity -> updater manifest publish -> GitHub Release upload` が通ること
 - signed release run で desktop auth session の `authSessionRoundTripOk=true` を確認し、token を SQLite に保存しないこと
 
-初回 hosted signed release で見る順序:
+社内配布 runbook:
 
-- `Validate release prerequisites`
-- `Build signed desktop release`
-- `Verify signed packaged secure storage round-trip`
-- `Verify collected release artifacts`
-- `Verify downloaded release artifacts`
-- `Build updater manifest`
-- `Upload release assets and latest manifest`
+- build:
+  `npm --prefix desktop ci`
+  `python3 -m pip install -r local_worker/requirements-build.txt`
+  `CARGO_TARGET_DIR="$PWD/desktop/.cargo-target" npm --prefix desktop run tauri:build`
+- macOS package:
+  `.app` または `.dmg` を社内共有し、初回起動は `右クリック -> 開く` を案内する
+- macOS quarantine 除去が必要な場合:
+  `xattr -dr com.apple.quarantine "Prompt Provision Tool Desktop.app"`
+- Windows package:
+  `.exe` または installer を社内共有し、unsigned 警告が出る前提で案内する
+- 補足:
+  社内配布 ready は runtime truth と secure storage non-SQLite proof を required にし、Apple notarization / Windows code signing / updater publish は commercial-release-ready に残す
 
-release-ready 後に残る運用領域:
+commercial-release-ready 後に残る運用領域:
 
+- Apple Developer Program / Developer ID / notarization secrets の準備
+- Windows code signing certificate の準備
 - updater endpoint / public key の本番値確定
 - 配布チャネル運用（draft / promote / rollback）
 

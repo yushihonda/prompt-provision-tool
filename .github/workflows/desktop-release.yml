@@ -1,4 +1,4 @@
-name: Desktop Release
+name: Commercial Desktop Release
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ on:
 
 jobs:
   build-release:
-    name: Build signed desktop release (${{ matrix.os }})
+    name: Build commercial desktop release (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -46,6 +46,8 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
 
       - name: Validate release prerequisites
+        # This workflow is for commercial distribution only.
+        # Internal-distribution-ready is gated by desktop-clean-machine-verify.yml instead.
         env:
           PPT_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
           PPT_UPDATER_ENDPOINTS_JSON: ${{ format('["https://github.com/{0}/releases/latest/download/latest.json"]', github.repository) }}
