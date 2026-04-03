@@ -14,7 +14,7 @@ function _loginEsc(s) {
 
 // 前回の認証エラーを確認
 window.addEventListener('DOMContentLoaded', () => {
-    const authError = localStorage.getItem('auth_error');
+    const authError = sessionStorage.getItem('auth_error');
     if (authError) {
         try {
             const error = JSON.parse(authError);
@@ -41,7 +41,7 @@ window.addEventListener('DOMContentLoaded', () => {
                 customClass: { popup: 'swal-wide' }
             });
             // エラー情報をクリア
-            localStorage.removeItem('auth_error');
+            sessionStorage.removeItem('auth_error');
         } catch (e) {
             // エラー情報のパースに失敗した場合は無視
         }

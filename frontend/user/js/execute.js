@@ -561,6 +561,10 @@ function createWorkerMessageHandler(executionId) {
 
 // ストリーミング接続を開始する関数
 function startStreaming(executionId, outputFormat = 'txt') {
+    // デスクトップローカル実行ではSSEストリーミング不要
+    if (window.PPTRuntime?.shouldUseDesktopLocalExecution?.()) {
+        return;
+    }
     // 以前のストリーミング接続を確実に終了
     if (executionWorker) {
         stopStreaming();
@@ -1376,6 +1380,8 @@ async function executeWithDesktopLocalEngine({ skillId, inputData, outputFormat 
 
     await loadHistory();
     showOutputPanel();
+    // 呼び出し元で実際のステータスを参照できるよう付加
+    result._executionStatus = execution.status;
     return result;
 }
 
@@ -1496,10 +1502,38 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
 
         if (window.PPTRuntime?.shouldUseDesktopLocalExecution?.()) {
             showProcessingMessage();
-            await executeWithDesktopLocalEngine({
+
+            // バックグラウンドパネルを開始
+            const skillName = document.getElementById('skill-name')?.textContent || `Skill ${skillId}`;
+            if (typeof PersistentStatusBar !== 'undefined') {
+                PersistentStatusBar.start(null, parseInt(skillId), skillName);
+            }
+
+            // fire-and-forget でsidecar実行
+            executeWithDesktopLocalEngine({
                 skillId,
                 inputData,
                 outputFormat,
+            }).then((result) => {
+                // sidecar完了 → executionIdをPersistentStatusBarに設定
+                if (typeof PersistentStatusBar !== 'undefined') {
+                    if (result?.executionId) {
+                        PersistentStatusBar.executionId = result.executionId;
+                    }
+                    // 実際のステータスを確認して反映
+                    const actualStatus = result?._executionStatus || result?.status || 'success';
+                    const finalStatus = (actualStatus === 'success' || actualStatus === 'completed') ? 'success' : 'error';
+                    if (PersistentStatusBar.startTime) {
+                        PersistentStatusBar.markAsCompleted(finalStatus);
+                    }
+                }
+            }).catch((desktopError) => {
+                if (typeof PersistentStatusBar !== 'undefined' && PersistentStatusBar.startTime) {
+                    PersistentStatusBar.markAsCompleted('error');
+                }
+                setExecutionButtonState(false);
+                showAlert('スキル実行に失敗しました: ' + (desktopError?.message || desktopError), 'error');
+                console.error('Desktop skill execution failed:', desktopError);
             });
             return;
         }

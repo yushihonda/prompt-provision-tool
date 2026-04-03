@@ -121,12 +121,9 @@
                 backendStatus = `unreachable: ${error instanceof Error ? error.message : String(error)}`;
             }
 
-            try {
-                const sidecar = await safeInvoke('sidecar_health');
-                sidecarStatus = `${sidecar.status} pid=${sidecar.pid || '-'}`;
-            } catch (error) {
-                sidecarStatus = `unreachable: ${error instanceof Error ? error.message : String(error)}`;
-            }
+            // sidecar health は重い可能性があるため、ここでは既知の状態のみ表示
+            // 詳細は「起動 / Health」ボタンで取得する
+            sidecarStatus = 'click "起動 / Health" to check';
         }
 
         setRuntimeDiagnosticsInfo(
@@ -268,24 +265,28 @@
     async function bootstrap() {
         try {
             await runtime.ensureRuntimeConfig().catch(() => runtime.getRuntimeConfig());
-            await loadAppInfo();
-            await refreshRuntimeDiagnostics();
-
-            if (!invoke) {
-                setStorageInfo('Tauri 上で開くと SQLite 初期化結果を表示します。');
-                setSidecarInfo('Tauri 上で開くと sidecar を起動できます。');
-                return;
-            }
-
-            await initializeStorage();
-            await refreshEngineMode();
-            await refreshRuns();
-            await refreshSidecarHealth();
-            await refreshRuntimeDiagnostics();
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            setSidecarOutput(message);
+        } catch (e) {
+            // fallback config is fine
         }
+
+        if (!invoke) {
+            setAppInfo('ブラウザ表示です。Tauri 上で開くと app info を取得できます。');
+            setStorageInfo('Tauri 上で開くと SQLite 初期化結果を表示します。');
+            setSidecarInfo('Tauri 上で開くと sidecar を起動できます。');
+            return;
+        }
+
+        // 各セクションを独立して非同期ロード（1つが遅くてもUIは操作可能）
+        loadAppInfo().catch((err) => setAppInfo(`error: ${err}`));
+        initializeStorage()
+            .then(() => refreshEngineMode())
+            .then(() => refreshRuns())
+            .catch((err) => setStorageInfo(`error: ${err}`));
+        refreshRuntimeDiagnostics().catch((err) => {
+            setRuntimeDiagnosticsInfo(`error: ${err}`);
+        });
+        // sidecar は「起動 / Health」ボタンで手動起動（自動起動するとゾンビ化リスクあり）
+        setSidecarInfo('「起動 / Health」ボタンで起動してください');
     }
 
     document.getElementById('init-storage-btn')?.addEventListener('click', async () => {

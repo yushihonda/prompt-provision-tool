@@ -140,7 +140,20 @@
                 }, 1000);
             }
         } catch (e) {
-            if (typeof showAlert === 'function') showAlert('コピーに失敗しました', 'error');
+            // clipboard API 失敗時のフォールバック
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                if (typeof showAlert === 'function') showAlert('クリップボードにコピーしました', 'success');
+            } catch (fallbackErr) {
+                if (typeof showAlert === 'function') showAlert('コピーに失敗しました', 'error');
+            }
         }
     }
 
@@ -397,7 +410,19 @@
             await navigator.clipboard.writeText(text);
             if (typeof showAlert === 'function') showAlert('クリップボードにコピーしました', 'success');
         } catch (e) {
-            if (typeof showAlert === 'function') showAlert('コピーに失敗しました', 'error');
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                if (typeof showAlert === 'function') showAlert('クリップボードにコピーしました', 'success');
+            } catch (fallbackErr) {
+                if (typeof showAlert === 'function') showAlert('コピーに失敗しました', 'error');
+            }
         }
     }
 

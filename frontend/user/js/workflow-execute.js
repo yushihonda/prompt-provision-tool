@@ -1155,7 +1155,20 @@ async function copyLeaderOutput() {
         await navigator.clipboard.writeText(text);
         showAlert('クリップボードにコピーしました', 'success');
     } catch (e) {
-        showAlert('コピーに失敗しました', 'error');
+        // clipboard API 失敗時のフォールバック
+        try {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            showAlert('クリップボードにコピーしました', 'success');
+        } catch (fallbackErr) {
+            showAlert('コピーに失敗しました', 'error');
+        }
     }
 }
 
@@ -1181,6 +1194,10 @@ let _blackboardKeys = [];  // Blackboardのキー一覧
 
 // ステップのストリーミングを開始
 function startStepStreaming(executionId, stepOrder, stepName, skillName) {
+    // デスクトップローカル実行ではSSEストリーミング不要
+    if (window.PPTRuntime?.shouldUseDesktopLocalExecution?.()) {
+        return;
+    }
     // 既にストリーミング中の場合はスキップ
     if (streamingWorkers.has(executionId)) {
         return;
@@ -1476,9 +1493,15 @@ async function handleStepComplete(executionId, stepOrder, status, errorMessage =
 }
 
 // ワークフロー全体の完了処理（スキル実行と同様の挙動）
+let _workflowCompleteHandled = false;
 async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
+    if (_workflowCompleteHandled) {
+        console.log('handleWorkflowComplete already handled, skipping');
+        return;
+    }
+    _workflowCompleteHandled = true;
     console.log('handleWorkflowComplete called:', { workflowExecutionId, leaderExecutionId: leaderExecution?.id });
-    
+
     try {
         // ワークフロー実行の全実行を取得して統合結果を表示
         const response = await apiRequest(`/api/user/executions?limit=100`);
@@ -1507,12 +1530,22 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
             .map(exec => {
                 const stepInfo = workflowDetail?.skills?.find(s => s.skill_order == exec.skill_order);
                 const stepData = stepExecutions.get(exec.skill_order);
+                // stepExecutions をAPI最新データで上書き（ポーリング中の古いエラー情報をクリア）
+                stepExecutions.set(exec.skill_order, {
+                    executionId: exec.id,
+                    workflowSkillId: exec.workflow_skill_id,
+                    status: exec.status,
+                    output: exec.output_data || stepData?.output || '',
+                    stepName: exec.skill_name || stepInfo?.skill_name || `Step ${exec.skill_order}`,
+                    skillName: exec.skill_name,
+                    errorMessage: exec.status === 'success' ? null : (exec.error_message || null),
+                });
                 return {
                     stepOrder: exec.skill_order,
                     stepName: exec.skill_name || stepInfo?.skill_name || `Step ${exec.skill_order}`,
                     status: exec.status,
-                    output: stepData?.output || exec.output_data || '',
-                    errorMessage: exec.error_message,
+                    output: exec.output_data || stepData?.output || '',
+                    errorMessage: exec.status === 'success' ? null : exec.error_message,
                     model: exec.model_used,
                     time: exec.execution_time,
                     tokens: exec.tokens_used
@@ -2246,11 +2279,34 @@ async function executeWorkflowWithDesktopLocalEngine({ workflowId, globalInputDa
     });
 
     workflowExecutionId = result.workflowExecutionId;
+
+    // PersistentStatusBar のワークフロー実行IDを確定（handleWorkflowComplete での一致チェック用）
+    if (typeof PersistentStatusBar !== 'undefined' && result.workflowExecutionId) {
+        PersistentStatusBar.workflowExecutionId = result.workflowExecutionId;
+    }
+
+    // フロービューのステップステータスを実際の結果で更新
+    if (result.executionIds && workflowDetail?.skills) {
+        const allSkills = workflowDetail.skills;
+        const finalStatus = result.status === 'success' ? 'success' : 'error';
+        for (const skill of allSkills) {
+            if (skill.workflow_skill_id) {
+                _flowStepStatuses['ws_' + skill.workflow_skill_id] = finalStatus;
+            }
+            if (skill.skill_id) {
+                _flowStepStatuses[skill.skill_id] = finalStatus;
+            }
+        }
+        if (_flowViewDetail) {
+            renderFlowView(_flowViewDetail, _flowStepStatuses);
+        }
+    }
+
     await loadHistory();
 
     let leaderExecution = null;
     if (result.leaderExecutionId) {
-        leaderExecution = await apiRequest(`/api/user/executions/${result.leaderExecutionId}`);
+        leaderExecution = await apiRequest(`/api/user/executions/${result.leaderExecutionId}`).catch(() => null);
     } else {
         leaderExecution = {
             id: null,
@@ -2259,7 +2315,10 @@ async function executeWorkflowWithDesktopLocalEngine({ workflowId, globalInputDa
         };
     }
 
-    await handleWorkflowComplete(result.workflowExecutionId, leaderExecution);
+    // ポーリングループが先に handleWorkflowComplete を呼んでいなければ実行
+    if (!_workflowCompleteHandled) {
+        await handleWorkflowComplete(result.workflowExecutionId, leaderExecution);
+    }
     return result;
 }
 
@@ -2318,7 +2377,30 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
         if (executeBtnSpinner) executeBtnSpinner.style.display = 'inline';
         inputs.forEach((el) => { if (el !== executeBtn) el.disabled = true; });
 
-        if (window.PPTRuntime?.shouldUseDesktopLocalExecution?.()) {
+        const isDesktopLocal = window.PPTRuntime?.shouldUseDesktopLocalExecution?.();
+
+        let resp;
+        if (isDesktopLocal) {
+            // デスクトップローカル実行: sidecar経由でバックエンドAPIを呼ぶ。
+            // spawn_blockingで実行されるためUIはフリーズしない。
+
+            // sidecar実行を開始（Promiseを保持、awaitは後で）
+            const desktopPromise = executeWorkflowWithDesktopLocalEngine({
+                workflowId,
+                globalInputData,
+                perSkillInput,
+                outputFormat,
+            });
+
+            // sidecar完了前に、バックエンドの最新execution IDを記録
+            let prevMaxExecId = 0;
+            try {
+                const prevResp = await apiRequest('/api/user/executions?limit=1');
+                const prevExecs = prevResp.items || prevResp;
+                if (prevExecs.length > 0) prevMaxExecId = prevExecs[0].id || 0;
+            } catch (e) { /* ignore */ }
+
+            // フロービューを初期化して全ステップをprocessingで表示
             const resultContainer = document.getElementById('workflow-result-container');
             if (resultContainer) resultContainer.style.display = '';
             _flowStepStatuses = {};
@@ -2326,22 +2408,144 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
             _orchestrationStatuses = [];
             _blackboardKeys = [];
             _flowViewDetail = workflowDetail;
-            if (workflowDetail) {
-                renderFlowView(workflowDetail, _flowStepStatuses);
+            const allSkillsInit = workflowDetail?.skills || [];
+            for (const skill of allSkillsInit) {
+                if (skill.workflow_skill_id) _flowStepStatuses['ws_' + skill.workflow_skill_id] = 'processing';
+                if (skill.skill_id) _flowStepStatuses[skill.skill_id] = 'processing';
             }
-            await executeWorkflowWithDesktopLocalEngine({
-                workflowId,
-                globalInputData,
-                perSkillInput,
-                outputFormat,
-            });
-            return;
-        }
+            if (workflowDetail) renderFlowView(workflowDetail, _flowStepStatuses);
 
-        const resp = await apiRequest('/api/execute/workflow', {
-            method: 'POST',
-            body: JSON.stringify(body)
-        });
+            // バックグラウンドパネルを開始
+            const wfNameInit = workflowDetail?.workflow?.name || 'ワークフロー';
+            const firstSkillInit = allSkillsInit[0];
+            if (typeof PersistentStatusBar !== 'undefined') {
+                PersistentStatusBar.start(
+                    null, null,
+                    firstSkillInit?.skill_name || 'Step 1',
+                    null, wfNameInit,
+                    firstSkillInit?.skill_order || 1,
+                    firstSkillInit?.skill_name || 'Step 1',
+                    parseInt(workflowId)
+                );
+            }
+
+            // 進捗ポーリング（sidecar完了まで2秒間隔で更新）
+            let desktopDone = false;
+            let progressPollWfExecId = null;
+            const progressPoll = setInterval(async () => {
+                if (desktopDone) { clearInterval(progressPoll); return; }
+                try {
+                    const execsResp = await apiRequest('/api/user/executions?limit=30');
+                    const allExecs = execsResp.items || execsResp;
+
+                    // 今回の実行を特定（prevMaxExecIdより新しいもの）
+                    if (!progressPollWfExecId) {
+                        const candidate = allExecs.find(e => e.id > prevMaxExecId && e.workflow_execution_id);
+                        if (candidate) progressPollWfExecId = candidate.workflow_execution_id;
+                    }
+                    if (!progressPollWfExecId) return;
+
+                    const wfExecs = allExecs.filter(e => e.workflow_execution_id === progressPollWfExecId);
+                    if (wfExecs.length === 0) return;
+
+                    if (typeof PersistentStatusBar !== 'undefined' && !PersistentStatusBar.workflowExecutionId) {
+                        PersistentStatusBar.workflowExecutionId = progressPollWfExecId;
+                    }
+
+                    // 各ステップのステータスを更新
+                    let hasChanged = false;
+                    for (const exec of wfExecs) {
+                        const st = exec.status;
+                        const mapped = (st === 'success') ? 'success'
+                            : (st === 'error') ? 'error'
+                            : (st === 'processing' || st === 'pending' || st === 'pending_local') ? 'processing'
+                            : null;
+                        if (!mapped) continue;
+
+                        if (exec.execution_role) {
+                            if (_flowStepStatuses['leader'] !== mapped) {
+                                _flowStepStatuses['leader'] = mapped;
+                                hasChanged = true;
+                            }
+                            if (mapped === 'success') _flowLeaderOutput = exec.output_data || _flowLeaderOutput;
+                        } else if (exec.workflow_skill_id) {
+                            const key = 'ws_' + exec.workflow_skill_id;
+                            if (_flowStepStatuses[key] !== mapped) {
+                                _flowStepStatuses[key] = mapped;
+                                hasChanged = true;
+                            }
+                            if (exec.skill_id) _flowStepStatuses[exec.skill_id] = mapped;
+                        }
+
+                        // stepExecutions に保持（handleWorkflowComplete用）
+                        if (exec.skill_order && !exec.execution_role) {
+                            const existing = stepExecutions.get(exec.skill_order);
+                            if (!existing) {
+                                stepExecutions.set(exec.skill_order, {
+                                    executionId: exec.id,
+                                    workflowSkillId: exec.workflow_skill_id,
+                                    status: exec.status,
+                                    output: exec.output_data || '',
+                                    stepName: exec.skill_name || `Step ${exec.skill_order}`,
+                                    skillName: exec.skill_name,
+                                    errorMessage: exec.status === 'success' ? null : (exec.error_message || null),
+                                });
+                            } else {
+                                existing.status = exec.status;
+                                existing.output = exec.output_data || existing.output;
+                                existing.errorMessage = exec.status === 'success' ? null : (exec.error_message || existing.errorMessage);
+                            }
+                        }
+                    }
+
+                    if (hasChanged && _flowViewDetail) renderFlowView(_flowViewDetail, _flowStepStatuses);
+
+                    // Stage メタ更新
+                    try {
+                        const wfStatus = await apiRequest(`/api/user/workflow-executions/${progressPollWfExecId}/status`).catch(() => null);
+                        if (wfStatus) {
+                            _wfStageMeta = {
+                                currentStage: wfStatus.current_stage || null,
+                                finalVerdict: wfStatus.final_verdict || null,
+                                handoffSummary: wfStatus.handoff_summary || null,
+                                coordinatorView: wfStatus.coordinator_view || null,
+                                synthesisEvents: wfStatus.synthesis_events || [],
+                            };
+                            if (wfStatus.blackboard_keys) _blackboardKeys = wfStatus.blackboard_keys;
+                            if (_flowViewDetail) renderFlowView(_flowViewDetail, _flowStepStatuses);
+                        }
+                    } catch (e) { /* ignore */ }
+
+                    // PersistentStatusBar ステップ名更新
+                    if (typeof PersistentStatusBar !== 'undefined') {
+                        const proc = wfExecs.find(e => (e.status === 'processing' || e.status === 'pending_local') && !e.execution_role);
+                        if (proc) {
+                            const sk = allSkillsInit.find(s => s.workflow_skill_id == proc.workflow_skill_id);
+                            if (sk) {
+                                PersistentStatusBar.currentStepName = sk.skill_name || `Step ${sk.skill_order}`;
+                                PersistentStatusBar.currentStepOrder = sk.skill_order;
+                            }
+                        }
+                    }
+                } catch (e) { /* ignore poll errors */ }
+            }, 2000);
+
+            // sidecar完了を待つ（UIはフリーズしない: spawn_blocking）
+            const desktopResult = await desktopPromise;
+            desktopDone = true;
+            clearInterval(progressPoll);
+
+            // sidecarの結果から正確なworkflow_execution_idを使用
+            resp = {
+                workflow_execution_id: desktopResult.workflowExecutionId,
+                execution_ids: desktopResult.executionIds || [],
+            };
+        } else {
+            resp = await apiRequest('/api/execute/workflow', {
+                method: 'POST',
+                body: JSON.stringify(body)
+            });
+        }
 
         // workflow_execution_idを保存
         workflowExecutionId = resp.workflow_execution_id;
@@ -2350,8 +2554,47 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
         } catch (error) {
             console.error('Failed to create desktop workflow run:', error);
         }
+
+        if (isDesktopLocal) {
+            // デスクトップパス: sidecar完了済み → handleWorkflowComplete で結果表示
+            // 進捗ポーリングで設定したステータスを保持（再初期化しない）
+            _checkNextStepRetryCount = 0;
+
+            // PersistentStatusBar のIDを確定
+            if (typeof PersistentStatusBar !== 'undefined') {
+                PersistentStatusBar.workflowExecutionId = workflowExecutionId;
+                if (resp.execution_ids?.length > 0) {
+                    PersistentStatusBar.executionId = resp.execution_ids[0];
+                }
+            }
+
+            // handleWorkflowComplete を呼んで最終結果を表示
+            // （executeWorkflowWithDesktopLocalEngine 内で既に呼ばれた可能性あり → ガードで重複防止）
+            if (!_workflowCompleteHandled) {
+                // リーダー実行を取得
+                let leaderExecution = null;
+                const desktopResult = window.__PPT_LAST_LOCAL_WORKFLOW_RESULT;
+                if (desktopResult?.leaderExecutionId) {
+                    leaderExecution = await apiRequest(`/api/user/executions/${desktopResult.leaderExecutionId}`).catch(() => null);
+                }
+                if (!leaderExecution) {
+                    leaderExecution = {
+                        id: null,
+                        status: desktopResult?.status || 'success',
+                        output_data: desktopResult?.output || '',
+                    };
+                }
+                await handleWorkflowComplete(workflowExecutionId, leaderExecution);
+            }
+
+            await loadHistory();
+            return;
+        }
+
+        // --- ここから下はWeb版パスのみ ---
         stepExecutions.clear();
         _checkNextStepRetryCount = 0;
+        _workflowCompleteHandled = false;
 
         // 結果コンテナを再表示（前回非表示にした場合）
         const resultContainer = document.getElementById('workflow-result-container');
@@ -2398,6 +2641,147 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
             }
         }
 
+        if (false) { /* dead code removed */
+            const _desktopStepPoll = async () => {
+                let pollCount = 0;
+                const maxPolls = 300; // 最大10分（2秒×300）
+                while (pollCount < maxPolls && !_workflowCompleteHandled) {
+                    await new Promise(r => setTimeout(r, 2000));
+                    if (_workflowCompleteHandled) return;
+                    pollCount++;
+                    try {
+                        const execsResp = await apiRequest('/api/user/executions?limit=50');
+                        const execs = (execsResp.items || execsResp).filter(e => e.workflow_execution_id === workflowExecutionId);
+
+                        // ステップステータスを更新
+                        let hasProcessing = false;
+                        for (const exec of execs) {
+                            // stepExecutions にデータを保持（handleWorkflowComplete用）
+                            if (exec.skill_order && !exec.execution_role) {
+                                const existing = stepExecutions.get(exec.skill_order);
+                                if (!existing) {
+                                    stepExecutions.set(exec.skill_order, {
+                                        executionId: exec.id,
+                                        workflowSkillId: exec.workflow_skill_id,
+                                        status: exec.status,
+                                        output: exec.output_data || '',
+                                        stepName: exec.skill_name || `Step ${exec.skill_order}`,
+                                        skillName: exec.skill_name,
+                                        errorMessage: exec.error_message || null,
+                                    });
+                                } else {
+                                    existing.status = exec.status;
+                                    existing.output = exec.output_data || existing.output;
+                                    // success の場合はエラーメッセージをクリア
+                                    existing.errorMessage = exec.status === 'success' ? null : (exec.error_message || existing.errorMessage);
+                                }
+                            }
+
+                            // フロービュー用ステータス
+                            const status = exec.status;
+                            if (exec.execution_role) {
+                                // リーダー
+                                if (status === 'processing' || status === 'pending') {
+                                    _flowStepStatuses['leader'] = 'processing';
+                                    hasProcessing = true;
+                                } else if (status === 'success') {
+                                    _flowStepStatuses['leader'] = 'success';
+                                    _flowLeaderOutput = exec.output_data || _flowLeaderOutput;
+                                } else if (status === 'error') {
+                                    _flowStepStatuses['leader'] = 'error';
+                                }
+                            } else if (exec.workflow_skill_id) {
+                                const key = 'ws_' + exec.workflow_skill_id;
+                                if (status === 'success') {
+                                    _flowStepStatuses[key] = 'success';
+                                } else if (status === 'error') {
+                                    _flowStepStatuses[key] = 'error';
+                                } else if (status === 'processing' || status === 'pending' || status === 'pending_local') {
+                                    _flowStepStatuses[key] = 'processing';
+                                    hasProcessing = true;
+                                }
+                                if (exec.skill_id) {
+                                    _flowStepStatuses[exec.skill_id] = _flowStepStatuses[key];
+                                }
+                            }
+                        }
+
+                        if (_flowViewDetail) renderFlowView(_flowViewDetail, _flowStepStatuses);
+
+                        // 現在実行中のステップをPersistentStatusBarに反映
+                        if (typeof PersistentStatusBar !== 'undefined') {
+                            const processingExec = execs.find(e => e.status === 'processing' && !e.execution_role);
+                            if (processingExec) {
+                                const stepSkill = allSkills.find(s => s.workflow_skill_id == processingExec.workflow_skill_id);
+                                if (stepSkill) {
+                                    PersistentStatusBar.handleWorkflowNextStep(
+                                        processingExec.id,
+                                        stepSkill.skill_order,
+                                        stepSkill.skill_name || `Step ${stepSkill.skill_order}`,
+                                        workflowDetail?.workflow?.name || 'ワークフロー'
+                                    );
+                                }
+                            }
+                        }
+
+                        // ワークフロー進行状態（Stage）を更新
+                        const wfStatusResp = await apiRequest(`/api/user/workflow-executions/${workflowExecutionId}/status`).catch(() => null);
+                        if (wfStatusResp) {
+                            _wfStageMeta = {
+                                currentStage: wfStatusResp.current_stage || null,
+                                finalVerdict: wfStatusResp.final_verdict || null,
+                                handoffSummary: wfStatusResp.handoff_summary || null,
+                                coordinatorView: wfStatusResp.coordinator_view || null,
+                                synthesisEvents: wfStatusResp.synthesis_events || [],
+                            };
+                            if (wfStatusResp.blackboard_keys) _blackboardKeys = wfStatusResp.blackboard_keys;
+                            // オーケストレーション状況も更新
+                            const specialExecs = execs.filter(e => e.execution_role);
+                            if (specialExecs.length > 0) {
+                                _orchestrationStatuses = specialExecs.map(e => ({
+                                    role: e.execution_role,
+                                    groupId: e.execution_group_id,
+                                    status: e.status,
+                                    action: '',
+                                }));
+                            }
+                            if (_flowViewDetail) renderFlowView(_flowViewDetail, _flowStepStatuses);
+                        }
+
+                        // ワークフロー完了判定
+                        if (wfStatusResp && (wfStatusResp.status === 'success' || wfStatusResp.status === 'error' || wfStatusResp.status === 'cancelled')) {
+                            // リーダー実行を取得
+                            const leaderExec = execs.find(e => e.execution_role && (e.status === 'success' || e.status === 'error'));
+                            const leaderExecution = leaderExec
+                                ? await apiRequest(`/api/user/executions/${leaderExec.id}`).catch(() => null)
+                                : { id: null, status: wfStatusResp.status, output_data: '' };
+                            await handleWorkflowComplete(workflowExecutionId, leaderExecution || { id: null, status: wfStatusResp.status, output_data: '' });
+                            return;
+                        }
+
+                        // フォールバック完了判定: workflow_execution status が未更新でも、
+                        // 全ステップ（期待数以上）が完了していればworkflow完了とみなす
+                        if (!hasProcessing && execs.length > 0) {
+                            const expectedSteps = allSkills.length || 1;
+                            const normalExecs = execs.filter(e => !e.execution_role);
+                            const completedNormal = normalExecs.filter(e => e.status === 'success' || e.status === 'error' || e.status === 'cancelled');
+                            if (completedNormal.length >= expectedSteps) {
+                                const leaderExec = execs.find(e => e.execution_role);
+                                const leaderExecution = leaderExec
+                                    ? await apiRequest(`/api/user/executions/${leaderExec.id}`).catch(() => null)
+                                    : { id: null, status: 'success', output_data: '' };
+                                await handleWorkflowComplete(workflowExecutionId, leaderExecution || { id: null, status: 'success', output_data: '' });
+                                return;
+                            }
+                        }
+                    } catch (pollErr) {
+                        console.warn('[DesktopPoll] error:', pollErr);
+                    }
+                }
+            };
+            _desktopStepPoll().catch(err => console.error('[DesktopPoll] fatal:', err));
+        }
+
         // 履歴を再読み込み
         await loadHistory();
         // 実行成功 — ボタンは完了まで非活性のまま維持
@@ -2407,6 +2791,23 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
             workflow_execution_id: workflowExecutionId,
             error_message: error?.message || 'workflow execute error',
         });
+        // バックグラウンドパネルをエラー完了
+        if (typeof PersistentStatusBar !== 'undefined' && PersistentStatusBar.startTime) {
+            PersistentStatusBar.markAsCompleted('error');
+        }
+        // フロービューのステップをエラー状態に更新
+        if (_flowViewDetail?.skills) {
+            for (const skill of _flowViewDetail.skills) {
+                if (skill.workflow_skill_id) {
+                    const key = 'ws_' + skill.workflow_skill_id;
+                    if (_flowStepStatuses[key] === 'processing') _flowStepStatuses[key] = 'error';
+                }
+                if (skill.skill_id && _flowStepStatuses[skill.skill_id] === 'processing') {
+                    _flowStepStatuses[skill.skill_id] = 'error';
+                }
+            }
+            renderFlowView(_flowViewDetail, _flowStepStatuses);
+        }
         await showAlert('ワークフロー実行に失敗しました', 'error');
         console.error('execute workflow error:', error);
         // エラー時のみボタンを再有効化

@@ -158,9 +158,14 @@ function updateExecutingSkills() {
 // PersistentStatusBarの状態変更を監視
 if (typeof PersistentStatusBar !== 'undefined') {
     // 定期的に実行中スキルの状態をチェック（1秒ごと）
-    setInterval(() => {
+    const _dashboardPollId = setInterval(() => {
         updateExecutingSkills();
     }, 1000);
+
+    // ページ離脱時にインターバルをクリーンアップ
+    window.addEventListener('pagehide', () => {
+        clearInterval(_dashboardPollId);
+    });
 
     // カスタムイベントで即座に更新
     window.addEventListener('executionStarted', () => {

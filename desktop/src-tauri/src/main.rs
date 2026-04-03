@@ -1,4 +1,6 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use keyring::Entry;
+use reqwest::Method;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -6,10 +8,12 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State, Url};
 use tauri_plugin_updater::UpdaterExt;
@@ -22,6 +26,9 @@ const PACKAGED_CLI_PROVIDER_ADAPTER: &str = "local_worker";
 const PACKAGED_CLI_PROVIDER_TRANSPORT: &str = "subprocess";
 const DESKTOP_KEYCHAIN_SERVICE: &str = "com.poifull.promptprovisiontool.desktop";
 const DESKTOP_AUTH_SESSION_ACCOUNT: &str = "auth-session";
+/// Keychain round-trip can fail on some macOS builds (e.g. unsigned internal packages).
+/// Mirror session JSON here with user-only permissions so login survives navigation.
+const AUTH_SESSION_FILE_NAME: &str = "auth_session.json";
 
 #[derive(Default)]
 struct DesktopState {
@@ -106,6 +113,25 @@ struct EngineModeConfig {
 struct AuthSession {
     token: String,
     username: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopHttpRequest {
+    url: String,
+    method: String,
+    headers: HashMap<String, String>,
+    body_text: Option<String>,
+    body_base64: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopHttpResponse {
+    status: u16,
+    status_text: String,
+    headers: HashMap<String, String>,
+    body_base64: String,
 }
 
 #[derive(Serialize)]
@@ -847,35 +873,107 @@ fn secure_auth_session_entry() -> Result<Entry, DesktopError> {
     Entry::new(DESKTOP_KEYCHAIN_SERVICE, DESKTOP_AUTH_SESSION_ACCOUNT).map_err(DesktopError::from)
 }
 
-fn get_auth_session_internal() -> Result<Option<AuthSession>, DesktopError> {
+fn get_auth_session_internal(app: &AppHandle) -> Result<Option<AuthSession>, DesktopError> {
+    let path = auth_session_file_path(app)?;
+    if let Some(session) = read_auth_session_file(&path)? {
+        return Ok(Some(session));
+    }
     let entry = secure_auth_session_entry()?;
     match entry.get_password() {
-        Ok(value) => Ok(Some(serde_json::from_str(&value)?)),
+        Ok(value) => Ok(Some(serde_json::from_str::<AuthSession>(&value)?)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(err) => Err(DesktopError::Keyring(err)),
     }
 }
 
-fn set_auth_session_internal(auth_session: AuthSession) -> Result<AuthSession, DesktopError> {
+fn set_auth_session_internal(
+    app: &AppHandle,
+    auth_session: AuthSession,
+) -> Result<AuthSession, DesktopError> {
+    let file_path = auth_session_file_path(app)?;
+    write_auth_session_file(&file_path, &auth_session)?;
+
     let entry = secure_auth_session_entry()?;
     let serialized = serde_json::to_string(&auth_session)?;
-    entry.set_password(&serialized)?;
+    if let Err(err) = entry.set_password(&serialized) {
+        // File mirror is enough for session continuity; keychain is best-effort.
+        eprintln!("keyring set_password failed (session still on disk): {err}");
+    }
     Ok(auth_session)
 }
 
-fn clear_auth_session_internal() -> Result<(), DesktopError> {
+fn clear_auth_session_internal(app: &AppHandle) -> Result<(), DesktopError> {
     let entry = secure_auth_session_entry()?;
     match entry.delete_credential() {
-        Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(err) => Err(DesktopError::Keyring(err)),
+        Ok(_) | Err(keyring::Error::NoEntry) => {}
+        Err(err) => return Err(DesktopError::Keyring(err)),
     }
+    remove_auth_session_file(&auth_session_file_path(app)?)?;
+    Ok(())
+}
+
+fn send_native_http_request_internal(
+    request: DesktopHttpRequest,
+) -> Result<DesktopHttpResponse, DesktopError> {
+    let method = Method::from_bytes(request.method.trim().as_bytes()).map_err(|err| {
+        DesktopError::Message(format!("invalid HTTP method `{}`: {err}", request.method))
+    })?;
+
+    let client = reqwest::blocking::Client::builder()
+        .build()
+        .map_err(|err| DesktopError::Message(format!("failed to build HTTP client: {err}")))?;
+
+    let mut reqwest_request = client.request(method, &request.url);
+
+    for (name, value) in request.headers {
+        reqwest_request = reqwest_request.header(name, value);
+    }
+
+    if let Some(body_base64) = request.body_base64 {
+        let bytes = BASE64_STANDARD.decode(body_base64).map_err(|err| {
+            DesktopError::Message(format!("failed to decode request body as base64: {err}"))
+        })?;
+        reqwest_request = reqwest_request.body(bytes);
+    } else if let Some(body_text) = request.body_text {
+        reqwest_request = reqwest_request.body(body_text);
+    }
+
+    let response = reqwest_request
+        .send()
+        .map_err(|err| DesktopError::Message(format!("native HTTP request failed: {err}")))?;
+    let status = response.status();
+    let status_text = status.canonical_reason().unwrap_or("").to_string();
+
+    let mut headers = HashMap::new();
+    for (name, value) in response.headers().iter() {
+        let key = name.as_str().to_ascii_lowercase();
+        let normalized = value.to_str().unwrap_or_default().to_string();
+        headers
+            .entry(key)
+            .and_modify(|existing: &mut String| {
+                existing.push_str(", ");
+                existing.push_str(&normalized);
+            })
+            .or_insert(normalized);
+    }
+
+    let body = response
+        .bytes()
+        .map_err(|err| DesktopError::Message(format!("failed to read response body: {err}")))?;
+
+    Ok(DesktopHttpResponse {
+        status: status.as_u16(),
+        status_text,
+        headers,
+        body_base64: BASE64_STANDARD.encode(body),
+    })
 }
 
 fn verify_secure_storage_contract_internal(
     app: &AppHandle,
 ) -> Result<SecureStorageVerificationResult, DesktopError> {
     // Prompt contents stay memory-only; this proof only covers auth session persistence.
-    clear_auth_session_internal()?;
+    clear_auth_session_internal(app)?;
 
     let expected_session = AuthSession {
         token: env_nonempty("PPT_VERIFY_STORAGE_TOKEN").unwrap_or_else(|| unique_token("verify-token")),
@@ -883,11 +981,18 @@ fn verify_secure_storage_contract_internal(
             .unwrap_or_else(|| "desktop-storage-proof".to_string()),
     };
 
-    set_auth_session_internal(AuthSession {
+    set_auth_session_internal(app, AuthSession {
         token: expected_session.token.clone(),
         username: expected_session.username.clone(),
     })?;
-    let retrieved = get_auth_session_internal()?;
+    let auth_path = auth_session_file_path(app)?;
+    if !auth_path.exists() {
+        return Err(DesktopError::Message(format!(
+            "auth session file missing immediately after set: {}",
+            auth_path.display()
+        )));
+    }
+    let retrieved = get_auth_session_internal(app)?;
 
     let db_path = desktop_db_path(app)?;
     let db_exists = db_path.exists();
@@ -897,8 +1002,8 @@ fn verify_secure_storage_contract_internal(
         String::new()
     };
 
-    clear_auth_session_internal()?;
-    let cleared_after_verification = get_auth_session_internal()?.is_none();
+    clear_auth_session_internal(app)?;
+    let cleared_after_verification = get_auth_session_internal(app)?.is_none();
 
     Ok(SecureStorageVerificationResult {
         keychain_service: DESKTOP_KEYCHAIN_SERVICE.to_string(),
@@ -972,6 +1077,49 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, DesktopError> {
 
 fn desktop_db_path(app: &AppHandle) -> Result<PathBuf, DesktopError> {
     Ok(app_data_dir(app)?.join("prompt_provision_tool.db"))
+}
+
+/// Open a SQLite connection with busy_timeout to avoid lock contention.
+fn open_db(app: &AppHandle) -> Result<Connection, DesktopError> {
+    let conn = Connection::open(desktop_db_path(app)?)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    Ok(conn)
+}
+
+fn auth_session_file_path(app: &AppHandle) -> Result<PathBuf, DesktopError> {
+    Ok(app_data_dir(app)?.join(AUTH_SESSION_FILE_NAME))
+}
+
+fn write_auth_session_file(path: &Path, session: &AuthSession) -> Result<(), DesktopError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let serialized = serde_json::to_string(session)?;
+    fs::write(path, serialized)?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+fn read_auth_session_file(path: &Path) -> Result<Option<AuthSession>, DesktopError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path)?;
+    Ok(Some(serde_json::from_str(&text)?))
+}
+
+fn remove_auth_session_file(path: &Path) -> Result<(), DesktopError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(DesktopError::Io(err)),
+    }
 }
 
 fn unique_token(prefix: &str) -> String {
@@ -1170,13 +1318,11 @@ fn initialize_continuation_locks(conn: &Connection) -> Result<(), DesktopError> 
 }
 
 fn initialize_storage_internal(app: &AppHandle) -> Result<StorageSummary, DesktopError> {
-    let db_path = desktop_db_path(app)?;
-    let conn = Connection::open(&db_path)?;
+    let conn = open_db(app)?;
 
     conn.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
-        PRAGMA journal_mode = WAL;
 
         CREATE TABLE IF NOT EXISTS workflow_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1257,7 +1403,7 @@ fn initialize_storage_internal(app: &AppHandle) -> Result<StorageSummary, Deskto
     )?;
 
     Ok(StorageSummary {
-        db_path: db_path.display().to_string(),
+        db_path: desktop_db_path(app)?.display().to_string(),
         migrations_applied: 7,
         engine_mode,
     })
@@ -1265,7 +1411,7 @@ fn initialize_storage_internal(app: &AppHandle) -> Result<StorageSummary, Deskto
 
 fn get_engine_mode_internal(app: &AppHandle) -> Result<EngineModeConfig, DesktopError> {
     initialize_storage_internal(app)?;
-    let conn = Connection::open(desktop_db_path(app)?)?;
+    let conn = open_db(app)?;
     let engine_mode = conn.query_row(
         "SELECT engine_mode FROM provider_configs WHERE id = 1",
         [],
@@ -1286,7 +1432,7 @@ fn set_engine_mode_internal(
     }
 
     initialize_storage_internal(app)?;
-    let conn = Connection::open(desktop_db_path(app)?)?;
+    let conn = open_db(app)?;
     conn.execute(
         r#"
         UPDATE provider_configs
@@ -1301,7 +1447,7 @@ fn set_engine_mode_internal(
 
 fn list_workflow_runs_internal(app: &AppHandle) -> Result<Vec<WorkflowRunRow>, DesktopError> {
     initialize_storage_internal(app)?;
-    let conn = Connection::open(desktop_db_path(app)?)?;
+    let conn = open_db(app)?;
     let mut stmt = conn.prepare(
         r#"
         SELECT id, workflow_name, status, engine_mode, created_at
@@ -1531,7 +1677,7 @@ fn list_workflow_run_events_internal(
     run_id: i64,
 ) -> Result<Vec<WorkflowRunEventRow>, DesktopError> {
     initialize_storage_internal(app)?;
-    let conn = Connection::open(desktop_db_path(app)?)?;
+    let conn = open_db(app)?;
     let mut stmt = conn.prepare(
         r#"
         SELECT event_id, event_type, run_id, node_id, attempt_no, occurred_at,
@@ -1605,7 +1751,7 @@ fn record_sidecar_run(
     status: &str,
     drafts: &[SidecarEventDraft],
 ) -> Result<usize, DesktopError> {
-    let conn = Connection::open(desktop_db_path(app)?)?;
+    let conn = open_db(app)?;
     append_sidecar_event_batch(&conn, run_id, drafts)?;
     update_workflow_run_status_internal(&conn, run_id, status)?;
     let events = list_workflow_run_events_internal(app, run_id)?;
@@ -1624,6 +1770,10 @@ fn ensure_sidecar_started(app: &AppHandle, runtime: &mut SidecarRuntime) -> Resu
     }
 
     let sidecar_target = resolve_sidecar_target(app);
+    eprintln!("[sidecar] resolved target: executable={}, display={}, exists={}",
+        sidecar_target.executable_path.display(),
+        sidecar_target.display_path.display(),
+        sidecar_target.display_path.exists());
     if !sidecar_target.display_path.exists() {
         return Err(DesktopError::Message(format!(
             "sidecar entrypoint not found: {}",
@@ -1632,10 +1782,21 @@ fn ensure_sidecar_started(app: &AppHandle, runtime: &mut SidecarRuntime) -> Resu
     }
 
     let mut child_command = Command::new(&sidecar_target.executable_path);
+    // sidecar stderr をファイルにキャプチャ（デバッグ用）
+    let sidecar_stderr_path = app_data_dir(app)
+        .map(|dir| dir.join("sidecar_stderr.log"))
+        .unwrap_or_else(|_| PathBuf::from("/tmp/ppt_sidecar_stderr.log"));
+    eprintln!("[sidecar] stderr log: {}", sidecar_stderr_path.display());
+    let stderr_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&sidecar_stderr_path)
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::inherit());
     child_command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(stderr_file);
     for arg in &sidecar_target.args {
         child_command.arg(arg);
     }
@@ -1649,9 +1810,32 @@ fn ensure_sidecar_started(app: &AppHandle, runtime: &mut SidecarRuntime) -> Resu
             .env("PPT_CLI_PROVIDER_ADAPTER", cli_provider_adapter());
     }
 
-    let mut child = child_command.spawn()?;
+    eprintln!("[sidecar] spawning...");
+    let mut child = child_command.spawn().map_err(|err| {
+        eprintln!("[sidecar] spawn failed: {}", err);
+        err
+    })?;
 
     let pid = child.id();
+    eprintln!("[sidecar] started pid={}", pid);
+
+    // Check if sidecar exited immediately (crash detection)
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    match child.try_wait() {
+        Ok(Some(exit_status)) => {
+            eprintln!("[sidecar] CRASHED immediately with exit status: {}", exit_status);
+            return Err(DesktopError::Message(format!(
+                "sidecar crashed on startup with exit status: {}",
+                exit_status
+            )));
+        }
+        Ok(None) => {
+            eprintln!("[sidecar] still running after 500ms — OK");
+        }
+        Err(e) => {
+            eprintln!("[sidecar] try_wait error: {}", e);
+        }
+    }
     runtime.stdin = child.stdin.take();
     runtime.stdout = child.stdout.take().map(BufReader::new);
     runtime.child = Some(child);
@@ -1665,10 +1849,7 @@ fn sidecar_health_internal(
     state: &State<DesktopState>,
 ) -> Result<SidecarHealth, DesktopError> {
     initialize_storage_internal(app)?;
-    let mut runtime = state
-        .sidecar
-        .lock()
-        .map_err(|_| DesktopError::Message("sidecar lock poisoned".to_string()))?;
+    let mut runtime = state.sidecar.lock();
     let pid = ensure_sidecar_started(app, &mut runtime)?;
     let result = send_sidecar_command(app, &mut runtime, "health", json!({}))?;
     let configured_engine_mode = get_engine_mode_internal(app)?.engine_mode;
@@ -1721,12 +1902,9 @@ fn run_local_skill_execution_internal(
     input: LocalSkillExecutionInput,
 ) -> Result<LocalSkillExecutionResult, DesktopError> {
     initialize_storage_internal(app)?;
-    let mut runtime = state
-        .sidecar
-        .lock()
-        .map_err(|_| DesktopError::Message("sidecar lock poisoned".to_string()))?;
+    let mut runtime = state.sidecar.lock();
     let engine_mode = get_engine_mode_internal(app)?.engine_mode;
-    let conn = Connection::open(desktop_db_path(app)?)?;
+    let conn = open_db(app)?;
     let run_name = input
         .skill_name
         .clone()
@@ -1805,12 +1983,9 @@ fn run_local_workflow_execution_internal(
     input: LocalWorkflowExecutionInput,
 ) -> Result<LocalWorkflowExecutionResult, DesktopError> {
     initialize_storage_internal(app)?;
-    let mut runtime = state
-        .sidecar
-        .lock()
-        .map_err(|_| DesktopError::Message("sidecar lock poisoned".to_string()))?;
+    let mut runtime = state.sidecar.lock();
     let engine_mode = get_engine_mode_internal(app)?.engine_mode;
-    let conn = Connection::open(desktop_db_path(app)?)?;
+    let conn = open_db(app)?;
     let run_name = input
         .workflow_name
         .clone()
@@ -1964,6 +2139,10 @@ fn run_packaged_verification(app: &AppHandle) -> Result<DesktopVerificationRepor
     })
 }
 
+/// Default timeout for sidecar commands (seconds).
+/// Timeout for sidecar commands. Workflow execution can take several minutes.
+const SIDECAR_COMMAND_TIMEOUT_SECS: u64 = 600;
+
 fn send_sidecar_command(
     app: &AppHandle,
     runtime: &mut SidecarRuntime,
@@ -1971,6 +2150,7 @@ fn send_sidecar_command(
     payload: Value,
 ) -> Result<Value, DesktopError> {
     ensure_sidecar_started(app, runtime)?;
+    eprintln!("[sidecar] sending command '{}'", command);
 
     runtime.next_request_id += 1;
     let request_id = runtime.next_request_id;
@@ -1987,20 +2167,66 @@ fn send_sidecar_command(
     writeln!(stdin, "{}", request)?;
     stdin.flush()?;
 
-    let stdout = runtime
+    // Read with timeout using a dedicated thread to avoid blocking indefinitely.
+    // Take ownership of the BufReader temporarily so it can be sent to the thread.
+    let mut owned_stdout = runtime
         .stdout
-        .as_mut()
+        .take()
         .ok_or_else(|| DesktopError::Message("sidecar stdout unavailable".to_string()))?;
 
-    let mut line = String::new();
-    stdout.read_line(&mut line)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let read_thread = std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = owned_stdout.read_line(&mut line);
+        let _ = tx.send((result.map(|_| line), owned_stdout));
+    });
+
+    let cmd_name = command.to_string();
+    let timeout = std::time::Duration::from_secs(SIDECAR_COMMAND_TIMEOUT_SECS);
+    eprintln!("[sidecar] waiting for response to '{}'...", cmd_name);
+    let line = match rx.recv_timeout(timeout) {
+        Ok((Ok(line), returned_stdout)) => {
+            eprintln!("[sidecar] got response for '{}': {} bytes", cmd_name, line.len());
+            runtime.stdout = Some(returned_stdout);
+            line
+        }
+        Ok((Err(io_err), returned_stdout)) => {
+            eprintln!("[sidecar] read error for '{}': {}", cmd_name, io_err);
+            runtime.stdout = Some(returned_stdout);
+            return Err(DesktopError::Io(io_err));
+        }
+        Err(_) => {
+            // Timeout — clean up the sidecar to unblock the read thread.
+            eprintln!("[sidecar] command '{}' timed out after {}s", command, SIDECAR_COMMAND_TIMEOUT_SECS);
+            runtime.cleanup();
+            // The cleanup kills the child, closing the pipe and unblocking read_line.
+            // stdout is lost with the killed process — next command will restart sidecar.
+            let _ = read_thread.join();
+            return Err(DesktopError::Message(format!(
+                "sidecar command '{}' timed out after {}s",
+                command, SIDECAR_COMMAND_TIMEOUT_SECS
+            )));
+        }
+    };
+    let _ = read_thread.join();
+
     if line.trim().is_empty() {
         return Err(DesktopError::Message(
             "sidecar returned an empty response".to_string(),
         ));
     }
 
-    let response: SidecarResponse = serde_json::from_str(&line)?;
+    let response: SidecarResponse = match serde_json::from_str(&line) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[sidecar] failed to parse response: {}\nraw line: {}", e, line.trim());
+            return Err(DesktopError::Message(format!(
+                "failed to parse sidecar response: {} (raw: {})",
+                e,
+                line.trim()
+            )));
+        }
+    };
     if response.id != request_id {
         return Err(DesktopError::Message(format!(
             "unexpected sidecar response id: expected {}, got {}",
@@ -2055,19 +2281,24 @@ fn initialize_storage(app: AppHandle) -> Result<StorageSummary, String> {
 }
 
 #[tauri::command]
-fn get_auth_session() -> Result<Option<AuthSession>, String> {
-    get_auth_session_internal().map_err(|err| err.to_string())
+fn get_auth_session(app: AppHandle) -> Result<Option<AuthSession>, String> {
+    get_auth_session_internal(&app).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-fn set_auth_session(auth_session: AuthSession) -> Result<AuthSession, String> {
+fn set_auth_session(app: AppHandle, auth_session: AuthSession) -> Result<AuthSession, String> {
     // Prompt contents stay memory-only; persistent auth session storage belongs here.
-    set_auth_session_internal(auth_session).map_err(|err| err.to_string())
+    set_auth_session_internal(&app, auth_session).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-fn clear_auth_session() -> Result<(), String> {
-    clear_auth_session_internal().map_err(|err| err.to_string())
+fn clear_auth_session(app: AppHandle) -> Result<(), String> {
+    clear_auth_session_internal(&app).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn native_http_request(request: DesktopHttpRequest) -> Result<DesktopHttpResponse, String> {
+    send_native_http_request_internal(request).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -2091,8 +2322,7 @@ fn create_workflow_run(
     input: CreateWorkflowRunInput,
 ) -> Result<WorkflowRunRow, String> {
     initialize_storage_internal(&app).map_err(|err| err.to_string())?;
-    let conn = Connection::open(desktop_db_path(&app).map_err(|err| err.to_string())?)
-        .map_err(|err| err.to_string())?;
+    let conn = open_db(&app).map_err(|err| err.to_string())?;
     create_workflow_run_internal(
         &conn,
         &input.workflow_name,
@@ -2108,8 +2338,7 @@ fn append_workflow_run_event(
     input: AppendWorkflowRunEventInput,
 ) -> Result<WorkflowRunEventRow, String> {
     initialize_storage_internal(&app).map_err(|err| err.to_string())?;
-    let conn = Connection::open(desktop_db_path(&app).map_err(|err| err.to_string())?)
-        .map_err(|err| err.to_string())?;
+    let conn = open_db(&app).map_err(|err| err.to_string())?;
     append_workflow_run_event_internal(&conn, &input).map_err(|err| err.to_string())
 }
 
@@ -2119,8 +2348,7 @@ fn update_workflow_run_status(
     input: UpdateWorkflowRunStatusInput,
 ) -> Result<(), String> {
     initialize_storage_internal(&app).map_err(|err| err.to_string())?;
-    let conn = Connection::open(desktop_db_path(&app).map_err(|err| err.to_string())?)
-        .map_err(|err| err.to_string())?;
+    let conn = open_db(&app).map_err(|err| err.to_string())?;
     update_workflow_run_status_internal(&conn, input.run_id, &input.status)
         .map_err(|err| err.to_string())
 }
@@ -2141,8 +2369,7 @@ fn simulate_continuation(
     delta_instruction_hash: String,
 ) -> Result<Vec<WorkflowRunEventRow>, String> {
     initialize_storage_internal(&app).map_err(|err| err.to_string())?;
-    let conn = Connection::open(desktop_db_path(&app).map_err(|err| err.to_string())?)
-        .map_err(|err| err.to_string())?;
+    let conn = open_db(&app).map_err(|err| err.to_string())?;
 
     let correlation_id = unique_token("corr");
     let continuation_dedupe_key = build_continuation_dedupe_key(
@@ -2248,131 +2475,162 @@ fn simulate_continuation(
 }
 
 #[tauri::command]
-fn start_sidecar(app: AppHandle, state: State<DesktopState>) -> Result<SidecarStatus, String> {
-    let mut runtime = state.sidecar.lock().map_err(|_| "sidecar lock poisoned")?;
-    let pid = ensure_sidecar_started(&app, &mut runtime).map_err(|err| err.to_string())?;
-
-    Ok(SidecarStatus {
-        running: true,
-        pid: Some(pid),
-        mode: "stdio",
+async fn start_sidecar(app: AppHandle) -> Result<SidecarStatus, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<DesktopState>();
+        let mut runtime = state.sidecar.lock();
+        let pid = ensure_sidecar_started(&handle, &mut runtime).map_err(|err| err.to_string())?;
+        Ok(SidecarStatus {
+            running: true,
+            pid: Some(pid),
+            mode: "stdio",
+        })
     })
+    .await
+    .map_err(|err| format!("task join error: {}", err))?
 }
 
 #[tauri::command]
-fn stop_sidecar(app: AppHandle, state: State<DesktopState>) -> Result<SidecarStatus, String> {
-    let mut runtime = state.sidecar.lock().map_err(|_| "sidecar lock poisoned")?;
-
-    if runtime.child.is_some() {
-        let _ = send_sidecar_command(&app, &mut runtime, "shutdown", json!({}));
-        runtime.cleanup();
-    }
-
-    Ok(SidecarStatus {
-        running: false,
-        pid: None,
-        mode: "stdio",
+async fn stop_sidecar(app: AppHandle) -> Result<SidecarStatus, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<DesktopState>();
+        let mut runtime = state.sidecar.lock();
+        if runtime.child.is_some() {
+            let _ = send_sidecar_command(&handle, &mut runtime, "shutdown", json!({}));
+            runtime.cleanup();
+        }
+        Ok(SidecarStatus {
+            running: false,
+            pid: None,
+            mode: "stdio",
+        })
     })
+    .await
+    .map_err(|err| format!("task join error: {}", err))?
 }
 
 #[tauri::command]
-fn sidecar_health(app: AppHandle, state: State<DesktopState>) -> Result<SidecarHealth, String> {
-    sidecar_health_internal(&app, &state).map_err(|err| err.to_string())
+async fn sidecar_health(app: AppHandle) -> Result<SidecarHealth, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<DesktopState>();
+        sidecar_health_internal(&handle, &state).map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("task join error: {}", err))?
 }
 
 #[tauri::command]
-fn run_demo_workflow(
+async fn run_demo_workflow(
     app: AppHandle,
-    state: State<DesktopState>,
     topic: Option<String>,
 ) -> Result<DemoWorkflowResult, String> {
-    initialize_storage_internal(&app).map_err(|err| err.to_string())?;
-    let mut runtime = state.sidecar.lock().map_err(|_| "sidecar lock poisoned")?;
-    let engine_mode = get_engine_mode_internal(&app)
-        .map_err(|err| err.to_string())?
-        .engine_mode;
-    let conn = Connection::open(desktop_db_path(&app).map_err(|err| err.to_string())?)
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        initialize_storage_internal(&handle).map_err(|err| err.to_string())?;
+        let state = handle.state::<DesktopState>();
+        let mut runtime = state.sidecar.lock();
+        let engine_mode = get_engine_mode_internal(&handle)
+            .map_err(|err| err.to_string())?
+            .engine_mode;
+        let conn = open_db(&handle).map_err(|err| err.to_string())?;
+        let run = create_workflow_run_internal(
+            &conn,
+            "Desktop Demo Workflow",
+            "running",
+            Some(&engine_mode),
+        )
         .map_err(|err| err.to_string())?;
-    let run = create_workflow_run_internal(
-        &conn,
-        "Desktop Demo Workflow",
-        "running",
-        Some(&engine_mode),
-    )
-    .map_err(|err| err.to_string())?;
-    let correlation_id = unique_token("corr");
-    let command_id = unique_token("cmd");
-    let result = send_sidecar_command(
-        &app,
-        &mut runtime,
-        "run_demo_workflow",
-        json!({
-            "topic": topic.unwrap_or_else(|| "Desktop orchestration bootstrap".to_string()),
-            "engine_mode": engine_mode,
-            "workflow_name": run.workflow_name,
-            "correlation_id": correlation_id,
-            "command_id": command_id,
-            "node_id": "demo-node",
-            "attempt_no": 1,
-        }),
-    );
-    let result = match result {
-        Ok(value) => value,
-        Err(err) => {
-            let _ = update_workflow_run_status_internal(&conn, run.id, "error");
-            return Err(err.to_string());
-        }
-    };
-    let typed_result: SidecarWorkflowResult = match serde_json::from_value(result) {
-        Ok(value) => value,
-        Err(err) => {
-            let _ = update_workflow_run_status_internal(&conn, run.id, "error");
-            return Err(err.to_string());
-        }
-    };
-    let event_count = match record_sidecar_run(&app, run.id, &typed_result.status, &typed_result.events)
-    {
-        Ok(count) => count,
-        Err(err) => {
-            let _ = update_workflow_run_status_internal(&conn, run.id, "error");
-            return Err(err.to_string());
-        }
-    };
+        let correlation_id = unique_token("corr");
+        let command_id = unique_token("cmd");
+        let result = send_sidecar_command(
+            &handle,
+            &mut runtime,
+            "run_demo_workflow",
+            json!({
+                "topic": topic.unwrap_or_else(|| "Desktop orchestration bootstrap".to_string()),
+                "engine_mode": engine_mode,
+                "workflow_name": run.workflow_name,
+                "correlation_id": correlation_id,
+                "command_id": command_id,
+                "node_id": "demo-node",
+                "attempt_no": 1,
+            }),
+        );
+        let result = match result {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = update_workflow_run_status_internal(&conn, run.id, "error");
+                return Err(err.to_string());
+            }
+        };
+        let typed_result: SidecarWorkflowResult = match serde_json::from_value(result) {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = update_workflow_run_status_internal(&conn, run.id, "error");
+                return Err(err.to_string());
+            }
+        };
+        let event_count = match record_sidecar_run(&handle, run.id, &typed_result.status, &typed_result.events)
+        {
+            Ok(count) => count,
+            Err(err) => {
+                let _ = update_workflow_run_status_internal(&conn, run.id, "error");
+                return Err(err.to_string());
+            }
+        };
 
-    Ok(DemoWorkflowResult {
-        status: typed_result.status,
-        summary: typed_result.summary,
-        engine_mode_hint: typed_result.engine_mode_hint,
-        run_id: run.id,
-        event_count,
-        configured_engine_mode: typed_result.configured_engine_mode,
-        effective_engine_mode: typed_result.effective_engine_mode,
-        provider_mode: typed_result.provider_mode,
-        provider_transport: typed_result.provider_transport,
-        provider_adapter: typed_result.provider_adapter,
-        provider_runtime: typed_result.provider_runtime,
-        provider_impl: typed_result.provider_impl,
-        auth_key_source: typed_result.auth_key_source,
-        observation_source: typed_result.observation_source,
+        Ok(DemoWorkflowResult {
+            status: typed_result.status,
+            summary: typed_result.summary,
+            engine_mode_hint: typed_result.engine_mode_hint,
+            run_id: run.id,
+            event_count,
+            configured_engine_mode: typed_result.configured_engine_mode,
+            effective_engine_mode: typed_result.effective_engine_mode,
+            provider_mode: typed_result.provider_mode,
+            provider_transport: typed_result.provider_transport,
+            provider_adapter: typed_result.provider_adapter,
+            provider_runtime: typed_result.provider_runtime,
+            provider_impl: typed_result.provider_impl,
+            auth_key_source: typed_result.auth_key_source,
+            observation_source: typed_result.observation_source,
+        })
     })
+    .await
+    .map_err(|err| format!("task join error: {}", err))?
 }
 
 #[tauri::command]
-fn run_local_skill_execution(
+async fn run_local_skill_execution(
     app: AppHandle,
-    state: State<DesktopState>,
     input: LocalSkillExecutionInput,
 ) -> Result<LocalSkillExecutionResult, String> {
-    run_local_skill_execution_internal(&app, &state, input).map_err(|err| err.to_string())
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<DesktopState>();
+        run_local_skill_execution_internal(&handle, &state, input)
+            .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("task join error: {}", err))?
 }
 
 #[tauri::command]
-fn run_local_workflow_execution(
+async fn run_local_workflow_execution(
     app: AppHandle,
-    state: State<DesktopState>,
     input: LocalWorkflowExecutionInput,
 ) -> Result<LocalWorkflowExecutionResult, String> {
-    run_local_workflow_execution_internal(&app, &state, input).map_err(|err| err.to_string())
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<DesktopState>();
+        run_local_workflow_execution_internal(&handle, &state, input)
+            .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("task join error: {}", err))?
 }
 
 #[tauri::command]
@@ -2479,6 +2737,7 @@ fn main() {
             get_auth_session,
             set_auth_session,
             clear_auth_session,
+            native_http_request,
             get_engine_mode,
             set_engine_mode,
             list_workflow_runs,
@@ -2495,6 +2754,18 @@ fn main() {
             run_local_workflow_execution,
             check_for_app_update
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let app = window.app_handle();
+                if let Some(state) = app.try_state::<DesktopState>() {
+                    let mut runtime = state.sidecar.lock();
+                    if runtime.child.is_some() {
+                        eprintln!("[sidecar] cleaning up sidecar on window close");
+                        runtime.cleanup();
+                    }
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("failed to run desktop app");
 }

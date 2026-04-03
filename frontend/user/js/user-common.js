@@ -50,8 +50,8 @@ async function checkAuth() {
         if (response.status === 401) {
             // トークンが無効な場合
             const errorText = await response.text().catch(() => '');
-            // エラー情報をlocalStorageに保存（リダイレクト後も確認できるように）
-            localStorage.setItem('auth_error', JSON.stringify({
+            // エラー情報をsessionStorageに保存（リダイレクト後も確認できるように）
+            sessionStorage.setItem('auth_error', JSON.stringify({
                 type: '401',
                 message: 'トークンが無効です',
                 response: errorText,
@@ -65,8 +65,8 @@ async function checkAuth() {
         if (!response.ok) {
             // その他のエラー
             const errorText = await response.text().catch(() => '');
-            // エラー情報をlocalStorageに保存
-            localStorage.setItem('auth_error', JSON.stringify({
+            // エラー情報をsessionStorageに保存
+            sessionStorage.setItem('auth_error', JSON.stringify({
                 type: 'http_error',
                 status: response.status,
                 message: `認証チェックに失敗しました (${response.status})`,
@@ -91,8 +91,8 @@ async function checkAuth() {
             mobileUsernameDisplay.textContent = username;
         }
     } catch (error) {
-        // エラー情報をlocalStorageに保存
-        localStorage.setItem('auth_error', JSON.stringify({
+        // エラー情報をsessionStorageに保存
+        sessionStorage.setItem('auth_error', JSON.stringify({
             type: 'exception',
             message: error.message,
             stack: error.stack,
@@ -196,7 +196,13 @@ async function apiRequest(endpoint, options = {}) {
         }
 
         if (!response.ok) {
-            throw new Error(data?.detail || 'リクエストに失敗しました');
+            // 409 Conflict はデスクトップのワークフロー完了後に発生しうる（完了済み実行への再アクセス）
+            // データが取得できていればエラーとして扱わない
+            if (response.status === 409 && data) {
+                console.warn(`API 409 (ignored): ${data?.detail || 'conflict'}`);
+                return data;
+            }
+            throw new Error(`API error ${response.status}: ${JSON.stringify(data?.detail || 'リクエストに失敗しました')}`);
         }
 
         return data;
@@ -1144,17 +1150,14 @@ const PersistentStatusBar = {
         const title = isSuccess ? '実行完了' : '実行失敗';
         const body = isSuccess ? `${name} が完了しました` : `${name} でエラーが発生しました`;
 
-        // ブラウザ通知（Notification API）
-        if ('Notification' in window) {
-            if (Notification.permission === 'granted') {
+        // ブラウザ通知（Notification API）— パーミッション取得済みの場合のみ送信
+        // requestPermission はユーザージェスチャーが必要なため、非同期完了時には呼ばない
+        try {
+            if ('Notification' in window && Notification.permission === 'granted') {
                 new Notification(title, { body, icon: '/favicon.ico' });
-            } else if (Notification.permission !== 'denied') {
-                Notification.requestPermission().then(perm => {
-                    if (perm === 'granted') {
-                        new Notification(title, { body, icon: '/favicon.ico' });
-                    }
-                });
             }
+        } catch (e) {
+            // 通知送信失敗は無視
         }
     },
 
