@@ -2248,6 +2248,98 @@ async function showHistoryDetail(id) {
     }
 }
 
+async function executeWorkflowWithOrchestration({ workflowId, globalInputData, perSkillInput, outputFormat }) {
+    const token = await window.PPTRuntime.getAuthToken();
+    if (!token) {
+        throw new Error('ログイン情報が見つかりません');
+    }
+
+    // Start orchestrated workflow (returns immediately with status)
+    const orchStatus = await window.PPTRuntime.startOrchestratedWorkflow({
+        authToken: token,
+        workflowId: parseInt(workflowId),
+        workflowName: workflowDetail?.workflow?.name || `Workflow ${workflowId}`,
+        globalInputData,
+        perSkillInput,
+        outputFormat,
+    });
+
+    console.info('[Orchestration] started:', orchStatus);
+    workflowExecutionId = orchStatus.workflowExecutionId;
+
+    if (typeof PersistentStatusBar !== 'undefined' && orchStatus.workflowExecutionId) {
+        PersistentStatusBar.workflowExecutionId = orchStatus.workflowExecutionId;
+    }
+
+    // Show flow view with all steps as processing
+    const resultContainer = document.getElementById('workflow-result-container');
+    if (resultContainer) resultContainer.style.display = '';
+    _flowStepStatuses = {};
+    _flowLeaderOutput = '';
+    _orchestrationStatuses = [];
+    _blackboardKeys = [];
+    _flowViewDetail = workflowDetail;
+    const allSkillsInit = workflowDetail?.skills || [];
+    for (const skill of allSkillsInit) {
+        if (skill.workflow_skill_id) _flowStepStatuses['ws_' + skill.workflow_skill_id] = 'processing';
+        if (skill.skill_id) _flowStepStatuses[skill.skill_id] = 'processing';
+    }
+    if (workflowDetail) renderFlowView(workflowDetail, _flowStepStatuses);
+
+    // Listen for orchestration progress events
+    const unlistenProgress = window.PPTRuntime.onOrchestrationProgress((event) => {
+        console.info('[Orchestration] progress:', event);
+        // Update step statuses based on completed executions
+        if (event.eventType === 'worker_completed' || event.eventType === 'worker_error') {
+            _orchestrationStatuses.push(event);
+            if (workflowDetail) renderFlowView(workflowDetail, _flowStepStatuses);
+        }
+    });
+
+    // Poll until orchestration completes
+    let finalStatus = null;
+    for (let i = 0; i < 1200; i++) {  // 10 minutes max (500ms * 1200)
+        await new Promise(r => setTimeout(r, 500));
+        const status = await window.PPTRuntime.getOrchestrationStatus(orchStatus.workflowExecutionId);
+        if (!status || status.status !== 'running') {
+            finalStatus = status;
+            break;
+        }
+    }
+
+    unlistenProgress();
+
+    // Fetch final results from backend
+    try {
+        const apiBase = window.PPTRuntime.getApiBase();
+        const execResp = await apiRequest(`/api/user/executions?limit=100`);
+        const allExecs = execResp.items || execResp;
+        const wfExecs = allExecs.filter(e => e.workflow_execution_id === orchStatus.workflowExecutionId);
+
+        // Update flow view with final statuses
+        for (const exec of wfExecs) {
+            if (exec.workflow_skill_id) {
+                _flowStepStatuses['ws_' + exec.workflow_skill_id] = exec.status;
+            }
+            if (exec.skill_id) {
+                _flowStepStatuses[exec.skill_id] = exec.status;
+            }
+        }
+
+        // Find leader execution (parent skill) output
+        const leaderExec = wfExecs.find(e => !e.workflow_skill_id && e.status === 'success');
+        if (leaderExec) {
+            _flowLeaderOutput = leaderExec.output_data || '';
+        }
+
+        if (workflowDetail) renderFlowView(workflowDetail, _flowStepStatuses);
+    } catch (e) {
+        console.error('[Orchestration] failed to fetch final results:', e);
+    }
+
+    return { workflowExecutionId: orchStatus.workflowExecutionId, status: finalStatus?.status || 'error' };
+}
+
 async function executeWorkflowWithDesktopLocalEngine({ workflowId, globalInputData, perSkillInput, outputFormat }) {
     const token = await window.PPTRuntime.getAuthToken();
     if (!token) {
@@ -2378,11 +2470,22 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
         inputs.forEach((el) => { if (el !== executeBtn) el.disabled = true; });
 
         const isDesktopLocal = window.PPTRuntime?.shouldUseDesktopLocalExecution?.();
+        const useOrchestrated = window.PPTRuntime?.shouldUseOrchestratedExecution?.();
 
         let resp;
-        if (isDesktopLocal) {
-            // デスクトップローカル実行: sidecar経由でバックエンドAPIを呼ぶ。
-            // spawn_blockingで実行されるためUIはフリーズしない。
+        if (useOrchestrated) {
+            // マルチターミナル・オーケストレーション実行:
+            // 複数の sidecar ワーカープロセスで並列実行する。
+            const orchResult = await executeWorkflowWithOrchestration({
+                workflowId,
+                globalInputData,
+                perSkillInput,
+                outputFormat,
+            });
+            // オーケストレーション完了後、バックエンドの最終結果を取得して表示
+            resp = orchResult;
+        } else if (isDesktopLocal) {
+            // デスクトップローカル実行（レガシー単一 sidecar パス）
 
             // sidecar実行を開始（Promiseを保持、awaitは後で）
             const desktopPromise = executeWorkflowWithDesktopLocalEngine({
@@ -2452,9 +2555,21 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
                         PersistentStatusBar.workflowExecutionId = progressPollWfExecId;
                     }
 
+                    // 同じ workflow_skill_id に複数execution がある場合（再実行）、最新IDのみ使用
+                    const latestByWsId = {};
+                    for (const exec of wfExecs) {
+                        if (exec.execution_role) continue;
+                        if (!exec.workflow_skill_id) continue;
+                        const prev = latestByWsId[exec.workflow_skill_id];
+                        if (!prev || exec.id > prev.id) {
+                            latestByWsId[exec.workflow_skill_id] = exec;
+                        }
+                    }
+
                     // 各ステップのステータスを更新
                     let hasChanged = false;
-                    for (const exec of wfExecs) {
+                    // 通常ステップ（最新executionのみ）
+                    for (const exec of Object.values(latestByWsId)) {
                         const st = exec.status;
                         const mapped = (st === 'success') ? 'success'
                             : (st === 'error') ? 'error'
@@ -2462,40 +2577,50 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
                             : null;
                         if (!mapped) continue;
 
-                        if (exec.execution_role) {
-                            if (_flowStepStatuses['leader'] !== mapped) {
-                                _flowStepStatuses['leader'] = mapped;
-                                hasChanged = true;
-                            }
-                            if (mapped === 'success') _flowLeaderOutput = exec.output_data || _flowLeaderOutput;
-                        } else if (exec.workflow_skill_id) {
-                            const key = 'ws_' + exec.workflow_skill_id;
-                            if (_flowStepStatuses[key] !== mapped) {
-                                _flowStepStatuses[key] = mapped;
-                                hasChanged = true;
-                            }
-                            if (exec.skill_id) _flowStepStatuses[exec.skill_id] = mapped;
+                        const key = 'ws_' + exec.workflow_skill_id;
+                        if (_flowStepStatuses[key] !== mapped) {
+                            _flowStepStatuses[key] = mapped;
+                            hasChanged = true;
                         }
+                        if (exec.skill_id) _flowStepStatuses[exec.skill_id] = mapped;
 
                         // stepExecutions に保持（handleWorkflowComplete用）
-                        if (exec.skill_order && !exec.execution_role) {
-                            const existing = stepExecutions.get(exec.skill_order);
-                            if (!existing) {
-                                stepExecutions.set(exec.skill_order, {
-                                    executionId: exec.id,
-                                    workflowSkillId: exec.workflow_skill_id,
-                                    status: exec.status,
-                                    output: exec.output_data || '',
-                                    stepName: exec.skill_name || `Step ${exec.skill_order}`,
-                                    skillName: exec.skill_name,
-                                    errorMessage: exec.status === 'success' ? null : (exec.error_message || null),
-                                });
-                            } else {
-                                existing.status = exec.status;
-                                existing.output = exec.output_data || existing.output;
-                                existing.errorMessage = exec.status === 'success' ? null : (exec.error_message || existing.errorMessage);
-                            }
+                        if (exec.skill_order) {
+                            stepExecutions.set(exec.skill_order, {
+                                executionId: exec.id,
+                                workflowSkillId: exec.workflow_skill_id,
+                                status: exec.status,
+                                output: exec.output_data || '',
+                                stepName: exec.skill_name || `Step ${exec.skill_order}`,
+                                skillName: exec.skill_name,
+                                errorMessage: exec.status === 'success' ? null : (exec.error_message || null),
+                            });
                         }
+                    }
+                    // リーダー・特殊ロール
+                    for (const exec of wfExecs) {
+                        if (!exec.execution_role) continue;
+                        const st = exec.status;
+                        const mapped = (st === 'success') ? 'success'
+                            : (st === 'error') ? 'error'
+                            : (st === 'processing' || st === 'pending' || st === 'pending_local') ? 'processing'
+                            : null;
+                        if (!mapped) continue;
+                        if (_flowStepStatuses['leader'] !== mapped) {
+                            _flowStepStatuses['leader'] = mapped;
+                            hasChanged = true;
+                        }
+                        if (mapped === 'success') _flowLeaderOutput = exec.output_data || _flowLeaderOutput;
+                    }
+                    // リーダー（workflow_skill_id=null, role=null）
+                    const leaderExec = wfExecs.find(e => !e.workflow_skill_id && !e.execution_role);
+                    if (leaderExec) {
+                        const lm = leaderExec.status === 'success' ? 'success' : leaderExec.status === 'error' ? 'error' : 'processing';
+                        if (_flowStepStatuses['leader'] !== lm) {
+                            _flowStepStatuses['leader'] = lm;
+                            hasChanged = true;
+                        }
+                        if (lm === 'success') _flowLeaderOutput = leaderExec.output_data || _flowLeaderOutput;
                     }
 
                     if (hasChanged && _flowViewDetail) renderFlowView(_flowViewDetail, _flowStepStatuses);

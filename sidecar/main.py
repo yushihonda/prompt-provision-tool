@@ -12,6 +12,7 @@ from app.execution import RetryPolicy, RetryReason
 from app.providers import ProviderRequest, ProviderResponse, create_provider
 from app.real_execution import (
     OBSERVATION_SOURCE_ENGINE_ORIGIN_BATCH,
+    _run_existing_execution,
     preview_runtime_info,
     run_skill_execution,
     run_workflow_execution,
@@ -154,6 +155,7 @@ class SidecarApp:
             "run_demo_workflow": self._run_demo_workflow,
             "run_skill_execution": self._run_skill_execution,
             "run_workflow_execution": self._run_workflow_execution,
+            "execute_single": self._execute_single,
             "shutdown": self._shutdown,
         }
 
@@ -179,6 +181,7 @@ class SidecarApp:
                 "run_demo_workflow",
                 "run_skill_execution",
                 "run_workflow_execution",
+                "execute_single",
                 "shutdown",
             ],
             "retry_taxonomy": [reason.value for reason in RetryReason],
@@ -472,6 +475,14 @@ class SidecarApp:
         correlation_id = str(payload.get("correlation_id") or f"sidecar-corr-{payload['request_id']}")
         command_id = str(payload.get("command_id") or f"sidecar-request-{payload['request_id']}")
         api_base = str(payload["api_base"])
+        import sys as _sys
+        print(f"[sidecar-py] _run_workflow_execution: api_base={api_base}, workflow_id={payload.get('workflow_id')}", file=_sys.stderr, flush=True)
+        try:
+            import httpx
+            _test = httpx.get(f"{api_base}/health", timeout=5)
+            print(f"[sidecar-py] health check: {_test.status_code}", file=_sys.stderr, flush=True)
+        except Exception as _e:
+            print(f"[sidecar-py] health check FAILED: {_e}", file=_sys.stderr, flush=True)
         auth_token = str(payload["auth_token"])
         configured_engine_mode = str(payload.get("configured_engine_mode") or "api_key")
         workflow_id = int(payload["workflow_id"])
@@ -501,6 +512,7 @@ class SidecarApp:
                 "observation_source": OBSERVATION_SOURCE_ENGINE_ORIGIN_BATCH,
             },
         )
+        print(f"[sidecar-py] calling asyncio.run(run_workflow_execution)...", file=_sys.stderr, flush=True)
         outcome = asyncio.run(
             run_workflow_execution(
                 api_base=api_base,
@@ -512,6 +524,7 @@ class SidecarApp:
                 configured_engine_mode=configured_engine_mode,
             )
         )
+        print(f"[sidecar-py] asyncio.run completed: status={outcome.status}, wf_exec_id={outcome.workflow_execution_id}, steps={len(outcome.steps)}", file=_sys.stderr, flush=True)
         last_event_key = workflow_created.event_key
         for step in outcome.steps:
             node_id = f"execution:{step['execution_id']}"
@@ -850,6 +863,31 @@ class SidecarApp:
             "events": builder.export(),
         }
 
+    def _execute_single(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Execute a single skill execution by ID. Stateless one-shot mode.
+
+        Used by the OrchestrationManager to dispatch individual executions
+        to independent worker processes. Reuses _run_existing_execution which
+        handles bundle fetch, provider execution, and completion POST.
+        """
+        api_base = str(payload["api_base"])
+        auth_token = str(payload["auth_token"])
+        execution_id = int(payload["execution_id"])
+        configured_engine_mode = str(payload.get("configured_engine_mode") or "api_key")
+
+        import sys as _sys
+        print(
+            f"[sidecar-py] execute_single: execution_id={execution_id}, api_base={api_base}",
+            file=_sys.stderr, flush=True,
+        )
+
+        outcome = asyncio.run(
+            _run_existing_execution(
+                api_base, auth_token, execution_id, configured_engine_mode,
+            )
+        )
+        return outcome.as_payload()
+
     def _shutdown(self, _: dict[str, Any]) -> dict[str, Any]:
         return {"status": "ok", "message": "shutdown"}
 
@@ -900,5 +938,32 @@ def main() -> int:
     return 0
 
 
+def main_execute_single() -> int:
+    """One-shot mode: read payload from stdin, execute single skill, write result, exit.
+
+    Launched by OrchestrationManager as: python sidecar/main.py --execute-single
+    Each invocation handles exactly one execution_id.
+    """
+    import sys as _sys
+    print("[sidecar-py] starting in --execute-single mode", file=_sys.stderr, flush=True)
+
+    raw = sys.stdin.readline().strip()
+    if not raw:
+        emit_response(0, False, error="empty input")
+        return 1
+
+    try:
+        payload = json.loads(raw)
+        app = SidecarApp()
+        result = app._execute_single(payload)
+        emit_response(0, True, result=result)
+        return 0
+    except Exception as exc:
+        emit_response(0, False, error=str(exc))
+        return 1
+
+
 if __name__ == "__main__":
+    if "--execute-single" in sys.argv:
+        raise SystemExit(main_execute_single())
     raise SystemExit(main())

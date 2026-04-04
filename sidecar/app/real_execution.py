@@ -189,13 +189,25 @@ async def _request_json(
 
 
 async def _fetch_bundle(api_base: str, auth_token: str, execution_id: int) -> dict[str, Any]:
-    return await _request_json(
-        "GET",
-        api_base,
-        f"/api/worker/executions/{execution_id}/bundle",
-        auth_token,
-        timeout=60.0,
-    )
+    # bundleエンドポイントは pending/pending_local のみ受け付ける。
+    # 品質ゲート再実行時に一瞬 processing になることがあるため、409ならリトライ。
+    last_error = None
+    for attempt in range(15):
+        try:
+            return await _request_json(
+                "GET",
+                api_base,
+                f"/api/worker/executions/{execution_id}/bundle",
+                auth_token,
+                timeout=60.0,
+            )
+        except Exception as exc:
+            if "409" in str(exc) or "status=" in str(exc):
+                last_error = exc
+                await asyncio.sleep(2)
+                continue
+            raise
+    raise last_error or RuntimeError(f"Failed to fetch bundle for execution {execution_id}")
 
 
 async def _complete_execution(
@@ -293,6 +305,29 @@ async def _run_existing_execution(
     runtime_info = preview_runtime_info(configured_engine_mode)
     try:
         bundle = await _fetch_bundle(api_base, auth_token, execution_id)
+
+        # リーダーステップ（workflow_skill_idなし）のbundleに前ステップ出力が含まれていない場合、
+        # バックエンドのDB更新を待って再取得する（並列ステップ完了直後のタイミング問題対策）
+        if not bundle.get("workflow_skill_id"):
+            _prompt = str(bundle.get("final_prompt") or "")
+            for _retry in range(10):
+                if "all_step_results" in _prompt and "出力" not in _prompt[:50]:
+                    # プロンプト内に結果が含まれている可能性が高い
+                    break
+                # input_data を確認
+                _input_data = bundle.get("input_data")
+                if isinstance(_input_data, str):
+                    try:
+                        _input_data = __import__("json").loads(_input_data)
+                    except Exception:
+                        _input_data = {}
+                if isinstance(_input_data, dict):
+                    _results = _input_data.get("all_step_results") or []
+                    if _results and any(r.get("output") for r in _results if isinstance(r, dict)):
+                        break
+                await asyncio.sleep(2)
+                bundle = await _fetch_bundle(api_base, auth_token, execution_id)
+                _prompt = str(bundle.get("final_prompt") or "")
         runtime_info.auth_key_source = _detect_auth_key_source(bundle)
         if runtime_info.effective_engine_mode == "cli":
             provider = create_provider("cli")
@@ -507,20 +542,23 @@ async def run_workflow_execution(
     workflow_execution_id = int(response["workflow_execution_id"])
     queue: list[int] = [int(execution_id) for execution_id in response.get("execution_ids", [])]
     processed: set[int] = set()
+    in_flight: set[int] = set()  # fetch_bundle 済み (processing に遷移済み) の ID
     steps: list[dict[str, Any]] = []
     idle_rounds = 0
 
     while True:
         if queue:
             execution_id = queue.pop(0)
-            if execution_id in processed:
+            if execution_id in processed or execution_id in in_flight:
                 continue
+            in_flight.add(execution_id)
             outcome = await _run_existing_execution(
                 api_base,
                 auth_token,
                 execution_id,
                 configured_engine_mode,
             )
+            in_flight.discard(execution_id)
             processed.add(execution_id)
             steps.append(outcome.as_payload())
             idle_rounds = 0
@@ -532,11 +570,14 @@ async def run_workflow_execution(
             for execution in executions
             if execution.get("workflow_execution_id") == workflow_execution_id
         ]
+        # pending_local のみ対象。processing は既に _fetch_bundle で遷移済みなので
+        # 再取得すると 409 になる。
         next_ids = sorted(
             execution["id"]
             for execution in workflow_executions
             if execution.get("id") not in processed
-            and execution.get("status") in {"pending_local", "processing"}
+            and execution.get("id") not in in_flight
+            and execution.get("status") == "pending_local"
         )
         if next_ids:
             queue.extend(next_ids)

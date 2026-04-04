@@ -131,12 +131,146 @@
         return new URL(normalized, window.location.href).toString();
     }
 
+    function normalizeHeaders(headersInit) {
+        const normalized = {};
+        if (!headersInit) {
+            return normalized;
+        }
+
+        if (headersInit instanceof Headers) {
+            headersInit.forEach((value, key) => {
+                normalized[key] = value;
+            });
+            return normalized;
+        }
+
+        if (Array.isArray(headersInit)) {
+            headersInit.forEach(([key, value]) => {
+                normalized[String(key)] = String(value);
+            });
+            return normalized;
+        }
+
+        Object.entries(headersInit).forEach(([key, value]) => {
+            if (value !== undefined && value !== null) {
+                normalized[key] = String(value);
+            }
+        });
+        return normalized;
+    }
+
+    function ensureHeader(headers, key, value) {
+        const existingKey = Object.keys(headers).find((headerName) => headerName.toLowerCase() === key.toLowerCase());
+        if (!existingKey) {
+            headers[key] = value;
+        }
+    }
+
+    function base64ToUint8Array(base64) {
+        const binary = window.atob(base64 || '');
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+            bytes[index] = binary.charCodeAt(index);
+        }
+        return bytes;
+    }
+
+    async function normalizeDesktopRequest(url, options = {}) {
+        const method = String(options.method || 'GET').toUpperCase();
+        const headers = normalizeHeaders(options.headers);
+        const body = options.body;
+        const request = {
+            url,
+            method,
+            headers,
+            bodyText: null,
+            bodyBase64: null,
+        };
+
+        if (body === undefined || body === null) {
+            return request;
+        }
+
+        if (body instanceof FormData) {
+            const formPairs = [];
+            for (const [key, value] of body.entries()) {
+                if (typeof value !== 'string') {
+                    throw new Error('desktop native HTTP does not support file FormData bodies');
+                }
+                formPairs.push([key, value]);
+            }
+            request.bodyText = new URLSearchParams(formPairs).toString();
+            ensureHeader(request.headers, 'Content-Type', 'application/x-www-form-urlencoded;charset=UTF-8');
+            return request;
+        }
+
+        if (body instanceof URLSearchParams) {
+            request.bodyText = body.toString();
+            ensureHeader(request.headers, 'Content-Type', 'application/x-www-form-urlencoded;charset=UTF-8');
+            return request;
+        }
+
+        if (typeof body === 'string') {
+            request.bodyText = body;
+            return request;
+        }
+
+        if (body instanceof Blob) {
+            const buffer = await body.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            bytes.forEach((byte) => {
+                binary += String.fromCharCode(byte);
+            });
+            request.bodyBase64 = window.btoa(binary);
+            ensureHeader(request.headers, 'Content-Type', body.type || 'application/octet-stream');
+            return request;
+        }
+
+        if (body instanceof ArrayBuffer) {
+            const bytes = new Uint8Array(body);
+            let binary = '';
+            bytes.forEach((byte) => {
+                binary += String.fromCharCode(byte);
+            });
+            request.bodyBase64 = window.btoa(binary);
+            ensureHeader(request.headers, 'Content-Type', 'application/octet-stream');
+            return request;
+        }
+
+        if (ArrayBuffer.isView(body)) {
+            const bytes = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+            let binary = '';
+            bytes.forEach((byte) => {
+                binary += String.fromCharCode(byte);
+            });
+            request.bodyBase64 = window.btoa(binary);
+            ensureHeader(request.headers, 'Content-Type', 'application/octet-stream');
+            return request;
+        }
+
+        throw new Error(`unsupported desktop request body: ${Object.prototype.toString.call(body)}`);
+    }
+
+    async function fetchWithDesktopNativeHttp(url, options = {}) {
+        const request = await normalizeDesktopRequest(url, options);
+        const response = await invokeDesktop('native_http_request', { request });
+        return new Response(base64ToUint8Array(response.bodyBase64), {
+            status: Number(response.status || 0),
+            statusText: response.statusText || '',
+            headers: response.headers || {},
+        });
+    }
+
     async function fetchWithRuntime(path, options = {}) {
         const url = buildApiUrl(path);
         const mergedOptions = {
             credentials: 'include',
             ...options,
         };
+        if (tauriInvoke && isDesktopRuntime()) {
+            return fetchWithDesktopNativeHttp(url, mergedOptions);
+        }
         return fetch(url, mergedOptions);
     }
 
@@ -430,6 +564,48 @@
     commitRuntimeConfig(runtimeConfig);
     void ensureRuntimeConfig();
 
+    // -----------------------------------------------------------------------
+    // Orchestration API (multi-terminal workflow execution)
+    // -----------------------------------------------------------------------
+
+    async function startOrchestratedWorkflow(input) {
+        if (!tauriInvoke) throw new Error('Orchestration requires desktop runtime');
+        return tauriInvoke('start_orchestrated_workflow', { input });
+    }
+
+    async function getOrchestrationStatus(workflowExecutionId) {
+        if (!tauriInvoke) return null;
+        return tauriInvoke('get_orchestration_status', { workflowExecutionId });
+    }
+
+    async function cancelOrchestration(workflowExecutionId) {
+        if (!tauriInvoke) return;
+        return tauriInvoke('cancel_orchestration', { workflowExecutionId });
+    }
+
+    let orchestrationProgressUnlisten = null;
+
+    function onOrchestrationProgress(callback) {
+        if (!window.__TAURI__?.event?.listen) return () => {};
+        if (orchestrationProgressUnlisten) {
+            orchestrationProgressUnlisten();
+        }
+        const promise = window.__TAURI__.event.listen('orchestration-progress', (event) => {
+            callback(event.payload);
+        });
+        promise.then(unlisten => { orchestrationProgressUnlisten = unlisten; });
+        return () => {
+            if (orchestrationProgressUnlisten) {
+                orchestrationProgressUnlisten();
+                orchestrationProgressUnlisten = null;
+            }
+        };
+    }
+
+    function shouldUseOrchestratedExecution() {
+        return Boolean(tauriInvoke) && isDesktopRuntime();
+    }
+
     window.PPTRuntime = {
         getRuntimeConfig,
         isDesktopRuntime,
@@ -466,6 +642,11 @@
         shouldRecordProxyLifecycleEvents,
         getObservationSource,
         createDesktopEventRecorder,
+        startOrchestratedWorkflow,
+        getOrchestrationStatus,
+        cancelOrchestration,
+        onOrchestrationProgress,
+        shouldUseOrchestratedExecution,
         invoke: tauriInvoke,
     };
 })();

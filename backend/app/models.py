@@ -255,8 +255,8 @@ class Execution(Base):
     workflow_execution_id = Column(Integer, ForeignKey("workflow_executions.id", ondelete="SET NULL"), nullable=True, index=True)
     workflow_skill_id = Column(Integer, ForeignKey("workflow_skills.id", ondelete="SET NULL"), nullable=True)
     skill_order = Column(Integer, nullable=True)  # ワークフロー内のスキル順序
-    input_data = Column(Text)
-    output_data = Column(Text)
+    input_data = Column(Text(length=16777215))   # MEDIUMTEXT: ワークフロー後段で前ステップ出力を含むため
+    output_data = Column(Text(length=16777215))  # MEDIUMTEXT: 長文出力対応
     model_used = Column(String(100))
     tokens_used = Column(Integer)
     cost = Column(Numeric(10, 6), nullable=True)

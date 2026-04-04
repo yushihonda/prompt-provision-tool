@@ -1,3 +1,5 @@
+mod orchestration;
+
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use keyring::Entry;
 use reqwest::Method;
@@ -14,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State, Url};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, State, Url};
 use tauri_plugin_updater::UpdaterExt;
 use thiserror::Error;
 
@@ -33,6 +35,7 @@ const AUTH_SESSION_FILE_NAME: &str = "auth_session.json";
 #[derive(Default)]
 struct DesktopState {
     sidecar: Mutex<SidecarRuntime>,
+    orchestration: Mutex<orchestration::OrchestrationManager>,
 }
 
 #[derive(Default)]
@@ -104,8 +107,8 @@ struct StorageSummary {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct EngineModeConfig {
-    engine_mode: String,
+pub(crate) struct EngineModeConfig {
+    pub engine_mode: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -555,10 +558,10 @@ impl SidecarRuntime {
 }
 
 #[derive(Clone)]
-struct ResolvedSidecarTarget {
-    executable_path: PathBuf,
-    args: Vec<String>,
-    display_path: PathBuf,
+pub(crate) struct ResolvedSidecarTarget {
+    pub executable_path: PathBuf,
+    pub args: Vec<String>,
+    pub display_path: PathBuf,
 }
 
 fn repo_sidecar_script_path() -> PathBuf {
@@ -571,7 +574,7 @@ fn python_executable() -> String {
     env::var("PPT_SIDECAR_PYTHON").unwrap_or_else(|_| "python3".to_string())
 }
 
-fn desktop_api_base() -> String {
+pub(crate) fn desktop_api_base() -> String {
     env::var("PPT_DESKTOP_API_BASE")
         .or_else(|_| env::var("WORKER_SERVER_URL"))
         .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string())
@@ -632,7 +635,7 @@ fn packaged_resource_binary_path(
     None
 }
 
-fn packaged_cli_provider_binary_path(app: &AppHandle) -> Option<PathBuf> {
+pub(crate) fn packaged_cli_provider_binary_path(app: &AppHandle) -> Option<PathBuf> {
     let binary_name = packaged_cli_provider_binary_name();
     packaged_resource_binary_path(app, "PPT_CLI_PROVIDER_BINARY_PATH", &binary_name)
 }
@@ -642,7 +645,7 @@ fn packaged_sidecar_binary_path(app: &AppHandle) -> Option<PathBuf> {
     packaged_resource_binary_path(app, "PPT_SIDECAR_BINARY_PATH", &binary_name)
 }
 
-fn resolve_sidecar_target(app: &AppHandle) -> ResolvedSidecarTarget {
+pub(crate) fn resolve_sidecar_target(app: &AppHandle) -> ResolvedSidecarTarget {
     if let Some(binary_path) = packaged_sidecar_binary_path(app) {
         return ResolvedSidecarTarget {
             executable_path: binary_path.clone(),
@@ -659,7 +662,7 @@ fn resolve_sidecar_target(app: &AppHandle) -> ResolvedSidecarTarget {
     }
 }
 
-fn cli_provider_adapter() -> String {
+pub(crate) fn cli_provider_adapter() -> String {
     env::var("PPT_CLI_PROVIDER_ADAPTER")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -1065,7 +1068,7 @@ fn updater_is_configured() -> bool {
             .unwrap_or(false)
 }
 
-fn app_data_dir(app: &AppHandle) -> Result<PathBuf, DesktopError> {
+pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, DesktopError> {
     let base = match app.path().app_data_dir() {
         Ok(path) => path,
         Err(_) => env::current_dir()?.join(".ppt-desktop"),
@@ -1409,7 +1412,7 @@ fn initialize_storage_internal(app: &AppHandle) -> Result<StorageSummary, Deskto
     })
 }
 
-fn get_engine_mode_internal(app: &AppHandle) -> Result<EngineModeConfig, DesktopError> {
+pub(crate) fn get_engine_mode_internal(app: &AppHandle) -> Result<EngineModeConfig, DesktopError> {
     initialize_storage_internal(app)?;
     let conn = open_db(app)?;
     let engine_mode = conn.query_row(
@@ -2186,7 +2189,7 @@ fn send_sidecar_command(
     eprintln!("[sidecar] waiting for response to '{}'...", cmd_name);
     let line = match rx.recv_timeout(timeout) {
         Ok((Ok(line), returned_stdout)) => {
-            eprintln!("[sidecar] got response for '{}': {} bytes", cmd_name, line.len());
+            eprintln!("[sidecar] got response for '{}': {} bytes, preview: {}", cmd_name, line.len(), &line[..line.len().min(500)]);
             runtime.stdout = Some(returned_stdout);
             line
         }
@@ -2692,6 +2695,46 @@ async fn check_for_app_update(app: AppHandle) -> Result<AppUpdateStatus, String>
     }
 }
 
+// ---------------------------------------------------------------------------
+// Orchestration Tauri commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn start_orchestrated_workflow(
+    app: AppHandle,
+    input: orchestration::StartOrchestrationInput,
+) -> Result<orchestration::OrchestrationStatus, String> {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_clone.state::<DesktopState>();
+        let mut mgr = state.orchestration.lock();
+        mgr.start_workflow(&app_clone, input).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_orchestration_status(
+    app: AppHandle,
+    workflow_execution_id: i64,
+) -> Result<Option<orchestration::OrchestrationStatus>, String> {
+    let state = app.state::<DesktopState>();
+    let mgr = state.orchestration.lock();
+    Ok(mgr.get_status(workflow_execution_id))
+}
+
+#[tauri::command]
+async fn cancel_orchestration(
+    app: AppHandle,
+    workflow_execution_id: i64,
+) -> Result<(), String> {
+    let state = app.state::<DesktopState>();
+    let mut mgr = state.orchestration.lock();
+    mgr.cancel(workflow_execution_id);
+    Ok(())
+}
+
 fn main() {
     let builder = tauri::Builder::default();
     let builder = if updater_is_configured() {
@@ -2701,6 +2744,24 @@ fn main() {
     };
 
     builder.manage(DesktopState::default()).setup(|app| {
+            // Start orchestration background tick task
+            let tick_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let h = tick_handle.clone();
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        if let Some(state) = h.try_state::<DesktopState>() {
+                            let mut mgr = state.orchestration.lock();
+                            if mgr.has_active_runs() {
+                                mgr.tick(&h);
+                            }
+                        }
+                    })
+                    .await;
+                }
+            });
+
             if env_nonempty("PPT_VERIFY_MODE").is_some() {
                 let app_handle = app.handle().clone();
                 let exit_code = match run_packaged_verification(&app_handle) {
@@ -2752,7 +2813,10 @@ fn main() {
             run_demo_workflow,
             run_local_skill_execution,
             run_local_workflow_execution,
-            check_for_app_update
+            check_for_app_update,
+            start_orchestrated_workflow,
+            get_orchestration_status,
+            cancel_orchestration
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
