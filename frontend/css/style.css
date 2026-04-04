@@ -1,41 +1,42 @@
 /* ============================================================
-   テーマカスタムプロパティ（CSS変数）
-   user-theme = 紫, admin-theme = 赤
+   NexMAGI — Desktop-first App Shell Theme
    ============================================================ */
-.user-theme {
-    --theme-rgb: 124, 58, 237;        /* 紫 */
-    --theme-accent: #a78bfa;
-    --theme-accent-rgb: 167, 139, 250;
-    --theme-bg-gradient: rgba(124, 58, 237, 0.1);
-    --theme-header-bg: rgba(124, 58, 237, 0.2);
-    --theme-header-border: rgba(167, 139, 250, 0.3);
-    --theme-scrollbar: rgba(167, 139, 250, 0.4);
-    --theme-scrollbar-hover: rgba(167, 139, 250, 0.6);
-    --theme-confirm-bg: rgba(124, 58, 237, 0.8);
-    --theme-confirm-hover: rgba(124, 58, 237, 0.9);
-    --theme-confirm-border: rgba(167, 139, 250, 0.3);
-    --theme-confirm-shadow: rgba(124, 58, 237, 0.4);
-    --theme-progress-bar: rgba(124, 58, 237, 0.6);
-    --theme-meta-bg: rgba(124, 58, 237, 0.12);
-    --theme-meta-border: rgba(167, 139, 250, 0.28);
+:root {
+    --shell-bg: #1e1e1e;
+    --shell-border: #2a2a2a;
+    --shell-radius: 20px;
+    --content-bg: #DFDFD7;
+    --content-text: #2d2d2d;
+    --content-text-secondary: #7a7a7a;
+    --content-text-muted: #a0a0a0;
+    --accent: #7c3aed;
+    --accent-dark: #6d28d9;
+    --accent-light: #a78bfa;
+    --card-bg: #E9EAE5;
+    --card-bg-hover: #eff0eb;
+    --nav-pill-bg: rgba(255, 255, 255, 0.08);
+    --nav-pill-active-bg: var(--accent);
+    --nav-pill-text: rgba(255, 255, 255, 0.6);
+    --nav-pill-active-text: #fff;
+    --sub-color: #A4A9A8;
 }
 
-.admin-theme {
-    --theme-rgb: 220, 53, 69;         /* 赤 */
-    --theme-accent: #ff6b6b;
-    --theme-accent-rgb: 255, 107, 107;
-    --theme-bg-gradient: rgba(220, 53, 69, 0.1);
-    --theme-header-bg: rgba(220, 53, 69, 0.2);
-    --theme-header-border: rgba(255, 107, 107, 0.3);
-    --theme-scrollbar: rgba(255, 107, 107, 0.4);
-    --theme-scrollbar-hover: rgba(255, 107, 107, 0.6);
-    --theme-confirm-bg: rgba(220, 53, 69, 0.8);
-    --theme-confirm-hover: rgba(220, 53, 69, 0.9);
-    --theme-confirm-border: rgba(255, 107, 107, 0.3);
-    --theme-confirm-shadow: rgba(220, 53, 69, 0.4);
-    --theme-progress-bar: rgba(220, 53, 69, 0.6);
-    --theme-meta-bg: rgba(156, 39, 176, 0.1);
-    --theme-meta-border: rgba(186, 104, 200, 0.35);
+.user-theme, .admin-theme {
+    --theme-rgb: 124, 58, 237;
+    --theme-accent: var(--accent);
+    --theme-accent-rgb: 124, 58, 237;
+    --theme-bg-gradient: transparent;
+    --theme-header-bg: var(--shell-bg);
+    --theme-header-border: var(--shell-border);
+    --theme-scrollbar: rgba(124, 58, 237, 0.4);
+    --theme-scrollbar-hover: rgba(124, 58, 237, 0.6);
+    --theme-confirm-bg: var(--accent);
+    --theme-confirm-hover: var(--accent-dark);
+    --theme-confirm-border: var(--accent);
+    --theme-confirm-shadow: rgba(124, 58, 237, 0.3);
+    --theme-progress-bar: var(--accent);
+    --theme-meta-bg: rgba(124, 58, 237, 0.1);
+    --theme-meta-border: rgba(124, 58, 237, 0.3);
 }
 
 /* グローバルスタイル */
@@ -495,19 +496,16 @@ div:where(.swal2-container) label:where(.swal2-checkbox) {
 }
 
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     min-height: 100vh;
     padding: 0;
     margin: 0;
 }
 
-/* テーマ別背景 */
+/* App shell — dark frame */
 body.user-theme,
 body.admin-theme {
-    background: #1e1e1e;
-    background-image:
-        radial-gradient(circle at 20% 50%, var(--theme-bg-gradient) 0%, transparent 50%),
-        radial-gradient(circle at 80% 80%, var(--theme-bg-gradient) 0%, transparent 50%);
+    background: var(--shell-bg);
 }
 
 /* ログインページのみ中央配置 */
@@ -531,56 +529,141 @@ body:not(.login-page) {
     padding: 0;
 }
 
-/* コンテナ：画面全体表示 */
+/* コンテナ：アプリシェル */
 .container {
     width: 100%;
     min-height: 100vh;
     margin: 0;
     display: flex;
     flex-direction: column;
+    background: var(--shell-bg);
 }
 
-/* テーマ共通コンテナ背景 */
 .user-theme .container,
 .admin-theme .container {
-    background: transparent;
+    background: var(--shell-bg);
 }
 
-/* ヘッダー */
+/* -----------------------------------------------------------------------
+   App Shell Header — dark bar with cutout brand + pill nav
+   ----------------------------------------------------------------------- */
 .header {
     color: white;
-    padding: 20px 30px;
+    padding: 0;
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    align-items: stretch;
     flex-shrink: 0;
-    margin: 20px 20px 0 20px;
-    border-radius: 12px;
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
     z-index: 1000;
-    width: calc(100% - 40px);
-    margin-left: 20px;
-    margin-right: 20px;
+    background: var(--shell-bg);
+    height: 52px;
 }
 
-.header .tool-name {
+/* NexMAGI brand — content-bg cutout in the dark bar with inverse radius.
+   Uses clip-path to carve the shape: straight top-left, rounded top-right,
+   concave (inverse) bottom-right, straight bottom-left. */
+.header .brand-cutout {
+    display: flex;
+    align-items: center;
+    padding: 0 32px 0 24px;
+    background: var(--content-bg);
+    position: relative;
+    flex-shrink: 0;
+    align-self: stretch;
+    z-index: 1;
+    /* W=240px, H=52px (header height).
+       Top-left: square corner
+       Top-right: convex curve r=28px
+       Bottom-right: concave (inverse) curve r=28px
+       Bottom-left: square corner */
+    min-width: 240px;
+    clip-path: path('M 0,28 Q 0,0 28,0 L 184,0 Q 212,0 212,28 Q 212,52 240,52 L 0,52 Z');
+}
+
+.header .brand-cutout .tool-name {
     font-size: 20px;
-    font-weight: 700;
-    flex: 1;
-    color: rgba(255, 255, 255, 0.95);
+    font-weight: 800;
+    color: var(--content-text);
+    letter-spacing: -0.5px;
 }
 
-/* テーマ別ヘッダーガラス効果 */
+/* Nav pills area — dark background, offset for brand cutout */
+.header .header-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 20px;
+    margin-left: 20px;
+    flex: 1;
+}
+
+.header .header-nav .nav-pill {
+    padding: 7px 18px;
+    border-radius: 50px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s;
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.55);
+    white-space: nowrap;
+}
+
+.header .header-nav .nav-pill:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.85);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.header .header-nav .nav-pill.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(124, 58, 237, 0.3);
+}
+
+/* User info — right side of header */
+.header .header-user {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 20px;
+    flex-shrink: 0;
+}
+
+.header .header-user span {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.header .header-user .btn-logout {
+    font-size: 12px;
+    padding: 5px 14px;
+    border-radius: 50px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.5);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.header .header-user .btn-logout:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+}
+
+/* テーマ別ヘッダー — 統一ダークシェル */
 .user-theme .header,
 .admin-theme .header {
-    background: var(--theme-header-bg);
-    backdrop-filter: blur(15px) saturate(180%);
-    -webkit-backdrop-filter: blur(15px) saturate(180%);
-    border: 1px solid var(--theme-header-border);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    background: var(--shell-bg);
+    backdrop-filter: none;
+    border: none;
+    box-shadow: none;
 }
 
 .header h1 {
@@ -592,7 +675,8 @@ body:not(.login-page) {
 .user-info {
     display: flex;
     align-items: center;
-    gap: 15px;
+    gap: 12px;
+    flex-shrink: 0;
 }
 
 /* ハンバーガーメニューボタン */
@@ -1046,100 +1130,126 @@ body:not(.login-page) {
     color: rgba(255, 255, 255, 0.95);
 }
 
+/* Content area — below header, content-bg */
 .content {
-    color: rgba(255, 255, 255, 0.9);
+    color: var(--content-text);
+    background: var(--content-bg);
+    border-radius: 0;
+    margin-top: 52px;
+    padding: 28px 32px;
+    min-height: calc(100vh - 52px);
+    flex: 1;
 }
 
-/* ナビゲーション */
+/* Desktop nav (below header) — hidden, replaced by header pills */
 .nav {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 30px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    display: none;
 }
 
 .nav-item {
-    padding: 10px 20px;
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-weight: 500;
-    transition: all 0.3s;
-    border-bottom: 3px solid transparent;
+    display: none;
 }
 
-.nav-item {
-    color: rgba(255, 255, 255, 0.7);
+/* Page title — dark text on light bg */
+.page-title {
+    color: var(--content-text) !important;
+    font-size: 24px;
+    font-weight: 700;
 }
 
-.nav-item:hover {
-    color: var(--theme-accent);
+/* Override card text colors for light background */
+.content .card h3 {
+    color: var(--content-text);
 }
 
-.nav-item.active {
-    color: var(--theme-accent);
-    border-bottom-color: var(--theme-accent);
+.content .card p {
+    color: var(--content-text-secondary);
 }
 
-/* カード */
+/* カード（ベース — 統計・グラフ等の汎用カード） */
 .card {
-    border-radius: 12px;
+    border-radius: 20px;
     padding: 20px;
     margin-bottom: 20px;
     transition: all 0.3s;
     position: relative;
-}
-
-/* カード：ガラス効果（テーマ共通） */
-.card {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(15px) saturate(180%);
-    -webkit-backdrop-filter: blur(15px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    background: var(--card-bg);
+    border: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
 }
 
 .card:hover {
-    background: rgba(255, 255, 255, 0.08);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-    transform: translateY(-2px);
 }
 
 .card h3 {
-    color: rgba(255, 255, 255, 0.95);
+    color: var(--content-text);
 }
 
 .card p {
-    color: rgba(255, 255, 255, 0.7);
+    color: var(--content-text-secondary);
 }
 
-/* カードコンテンツ */
-.card-content {
-    padding-right: 80px; /* ボタン用のスペース */
-}
-
-/* グラフコンテナのカードコンテンツは余白を削除（スキルカードのスタイルが適用されないように） */
+/* グラフコンテナのカードコンテンツは余白を削除 */
 .card-content-graph {
     padding: 0 !important;
     overflow: visible !important;
     width: 100%;
 }
 
-/* カードの角（ボタン配置用） */
-.card-corner {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    width: 80px;
-    height: 80px;
+/* -----------------------------------------------------------------------
+   Item Cards — CodePen shape() inspired design for skills-grid items
+   ----------------------------------------------------------------------- */
+.skills-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
 }
 
-/* カード内の実行ボタン */
-.card-execute-btn {
+.skills-grid .card-wrapper {
+    position: relative;
+}
+
+.skills-grid .card {
+    --r: 30px;
+    --s: 40px;
+    margin-bottom: 0;
+    padding: 24px;
+    border-radius: 30px;
+    text-align: left;
+    clip-path: shape(
+        from 0 0,
+        hline to calc(100% - var(--s) - 2 * var(--r)),
+        arc by var(--r) var(--r) of var(--r) cw,
+        arc by var(--s) var(--s) of var(--s),
+        arc by var(--r) var(--r) of var(--r) cw,
+        vline to 100%,
+        hline to 0
+    );
+    background: #fff;
+    border: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+}
+
+.skills-grid .card:hover {
+    background: #fff;
+}
+
+.skills-grid .card-circle {
+    width: 60px;
+    height: 60px;
     position: absolute;
-    right: 10px;
-    bottom: 10px;
+    top: 0;
+    right: 0;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.skills-grid .card-circle .card-execute-btn {
     width: 60px;
     height: 60px;
     padding: 0;
@@ -1148,28 +1258,86 @@ body:not(.login-page) {
     align-items: center;
     justify-content: center;
     font-size: 12px;
-    z-index: 10;
-    white-space: normal;
-    word-break: break-all;
-    line-height: 1.2;
+    font-weight: 700;
+    border: none;
+    cursor: pointer;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s;
 }
 
-.card-execute-btn:hover {
-    transform: translateY(-2px) scale(1.05);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+.skills-grid .card-circle .card-execute-btn:hover {
+    transform: scale(1.1);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
-/* 管理者側カード — .card に統合済み */
-
-.skills-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
+.skills-grid .card-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    padding-right: 70px;
+    color: var(--content-text);
 }
 
-.skills-grid .card {
+.skills-grid .card-desc {
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--content-text-secondary);
+    margin-bottom: 12px;
+    padding-right: 65px;
+}
+
+.skills-grid .card-meta,
+.skills-grid .card-meta span,
+.skills-grid .card-meta strong {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: var(--content-text-muted) !important;
+}
+
+.skills-grid .card-meta span,
+.skills-grid .card-meta strong {
     margin-bottom: 0;
+}
+
+.skills-grid .card-meta .meta-divider {
+    color: #ddd;
+}
+
+.skills-grid .card-figure {
+    height: 48px;
+    background: var(--sub-color);
+    border-radius: 16px;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.skills-grid .card-figure .profile-tag {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 8px;
+    white-space: nowrap;
+}
+
+.skills-grid .card-figure .flow-arrow {
+    color: #ccc;
+    font-size: 10px;
+}
+
+/* Legacy card-content / card-corner used by non-grid cards */
+.card-content {
+    padding-right: 0;
+}
+
+.card-corner {
+    display: none;
 }
 
 /* コントリビューショングラフ */
@@ -1199,7 +1367,7 @@ body:not(.login-page) {
 .contribution-week-label-column {
     min-width: 30px;
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--content-text-muted);
     text-align: right;
     padding-right: 10px;
     padding-top: 2px;
@@ -1212,7 +1380,7 @@ body:not(.login-page) {
 
 .contribution-month-header {
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.7);
+    color: var(--content-text-secondary);
     text-align: left;
     padding-bottom: 5px;
     white-space: nowrap;
@@ -1278,8 +1446,8 @@ body:not(.login-page) {
 
 /* 色のレベル（GitHub風） */
 .contribution-level-0 {
-    background-color: rgba(255, 255, 255, 0.1);
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    background-color: rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 .contribution-level-1 {
@@ -1306,9 +1474,9 @@ body:not(.login-page) {
     gap: 5px;
     margin-top: 15px;
     padding-top: 15px;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--content-text-muted);
     padding-left: 40px;
 }
 
@@ -1385,16 +1553,19 @@ body:not(.login-page) {
 /* テーブル（テーマ共通） */
 .table th,
 .table td {
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    color: rgba(255, 255, 255, 0.9);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    color: var(--content-text);
 }
 
 .table th {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(0, 0, 0, 0.03);
+    color: var(--content-text-secondary);
+    font-weight: 600;
+    font-size: 13px;
 }
 
 .table tr:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(0, 0, 0, 0.02);
 }
 
 /* ローディング */
@@ -1581,27 +1752,31 @@ body:not(.login-page) {
 
 .stat-card {
     padding: 25px;
-    border-radius: 12px;
+    border-radius: 20px;
+    background: var(--card-bg);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
 }
 
-/* ユーザー側統計カード：ガラス効果 */
-.user-theme .stat-card {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(15px) saturate(180%);
-    -webkit-backdrop-filter: blur(15px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+.user-theme .stat-card,
+.admin-theme .stat-card {
+    background: var(--card-bg);
+    backdrop-filter: none;
+    border: none;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
 }
 
-.user-theme .stat-card h3 {
-    color: rgba(255, 255, 255, 0.8);
-    font-size: 14px;
+.user-theme .stat-card h3,
+.admin-theme .stat-card h3 {
+    color: var(--content-text-muted);
+    font-size: 13px;
     margin-bottom: 10px;
+    font-weight: 500;
 }
 
-.user-theme .stat-card .value {
-    color: #a78bfa;
-    font-size: 36px;
+.user-theme .stat-card .value,
+.admin-theme .stat-card .value {
+    color: var(--accent);
+    font-size: 32px;
     font-weight: 700;
 }
 
@@ -1834,6 +2009,15 @@ table .actions {
     }
 }
 
+/* shape() 非対応ブラウザ向けフォールバック */
+@supports not (clip-path: shape(from 0 0, move to 0 0)) {
+    .skills-grid .card {
+        clip-path: none;
+        border-radius: 24px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+}
+
 @media (max-width: 768px) {
     body.login-page {
         padding: 10px;
@@ -1962,30 +2146,13 @@ table .actions {
         padding: 15px;
     }
 
-    .card-content {
-        padding-right: 70px; /* モバイル用に少し小さく */
+    .skills-grid .card {
+        padding: 20px;
     }
 
-    /* グラフコンテナのカードコンテンツは余白を削除 */
-    #contribution-graph-container {
-        margin: 0; /* カードのパディングを相殺 */
-        padding: 0;
-    }
-
-    #contribution-graph-container .contribution-graph-grid {
-        padding: 20px 10px;
-    }
-
-    .card-corner {
-        width: 70px;
-        height: 70px;
-    }
-
-    .card-execute-btn {
+    .skills-grid .card-circle .card-execute-btn {
         width: 50px;
         height: 50px;
-        right: 8px;
-        bottom: 8px;
         font-size: 11px;
     }
 
@@ -2133,4 +2300,131 @@ option[value="gpt-5.1-thinking"] {
     letter-spacing: 0.5px;
     box-shadow: 0 2px 8px rgba(253, 160, 133, 0.4);
     vertical-align: middle;
+}
+
+/* ===================================================================
+   Light background overrides — force all content-area elements to
+   use dark text / light borders instead of white-on-dark defaults.
+   Only applies inside .content (not in the dark header).
+   =================================================================== */
+.content,
+.content * {
+    --_text: var(--content-text);
+    --_text-sec: var(--content-text-secondary);
+    --_text-muted: var(--content-text-muted);
+    --_border: rgba(0, 0, 0, 0.08);
+    --_bg-subtle: rgba(0, 0, 0, 0.03);
+}
+
+/* Text colors */
+.content h1, .content h2, .content h3, .content h4 {
+    color: var(--content-text) !important;
+}
+
+.content p, .content span, .content td, .content li, .content label,
+.content div, .content a {
+    color: var(--content-text);
+}
+
+.content .text-muted, .content small {
+    color: var(--content-text-muted) !important;
+}
+
+/* Borders */
+.content .table th,
+.content .table td {
+    border-bottom-color: var(--_border) !important;
+    color: var(--content-text) !important;
+}
+
+.content .table th {
+    background: var(--_bg-subtle) !important;
+    color: var(--content-text-secondary) !important;
+}
+
+.content .table tr:hover {
+    background: var(--_bg-subtle) !important;
+}
+
+/* Input / select / textarea */
+.content input,
+.content select,
+.content textarea {
+    background: #fff !important;
+    border: 1px solid rgba(0, 0, 0, 0.12) !important;
+    color: var(--content-text) !important;
+}
+
+.content input::placeholder,
+.content textarea::placeholder {
+    color: var(--content-text-muted) !important;
+}
+
+.content input:focus,
+.content select:focus,
+.content textarea:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1) !important;
+}
+
+/* Buttons — secondary / outline */
+.content .btn-secondary,
+.content .btn-outline {
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    color: var(--content-text-secondary);
+}
+
+.content .btn-secondary:hover,
+.content .btn-outline:hover {
+    background: var(--card-bg-hover);
+    color: var(--content-text);
+}
+
+/* Status badges */
+.content .status-success { color: #16a34a; }
+.content .status-error { color: #dc2626; }
+.content .status-pending, .content .status-processing { color: var(--accent); }
+
+/* History section */
+.content .history-section h3 {
+    color: var(--content-text) !important;
+}
+
+.content .history-section {
+    border-bottom-color: var(--_border) !important;
+}
+
+/* Pagination */
+.content .pagination button {
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    color: var(--content-text-secondary);
+}
+
+.content .pagination button.active,
+.content .pagination button:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+.content .pagination button:disabled {
+    background: var(--card-bg);
+    color: var(--content-text-muted);
+    border-color: rgba(0, 0, 0, 0.06);
+}
+
+/* Loading spinner text */
+.content .loading p {
+    color: var(--content-text-muted) !important;
+}
+
+/* Links */
+.content a {
+    color: var(--accent);
+}
+
+.content a:hover {
+    color: var(--accent-dark);
 }

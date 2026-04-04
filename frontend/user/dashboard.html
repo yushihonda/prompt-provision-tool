@@ -3,14 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ワークフロー / スキル管理 - Prompt Provision Tool</title>
+    <title>NexMAGI - ワークフロー / スキル管理</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body class="user-theme">
     <div class="container">
         <div class="content">
-            <h1 class="page-title">ワークフロー / スキル管理</h1>
             <div class="nav" id="desktop-nav"></div>
 
 
@@ -19,12 +18,12 @@
                     <h3>利用可能数</h3>
                     <div style="display: flex; align-items: center; gap: 0;">
                         <div style="flex: 1; text-align: center;">
-                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">ワークフロー</div>
+                            <div style="font-size: 10px; color: #a0a0a0; margin-bottom: 2px;">ワークフロー</div>
                             <div class="value" id="available-workflows">-</div>
                         </div>
-                        <div style="width: 1px; height: 36px; background: rgba(255,255,255,0.15); flex-shrink: 0;"></div>
+                        <div style="width: 1px; height: 36px; background: #ddd; flex-shrink: 0;"></div>
                         <div style="flex: 1; text-align: center;">
-                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">スキル</div>
+                            <div style="font-size: 10px; color: #a0a0a0; margin-bottom: 2px;">スキル</div>
                             <div class="value" id="available-skills">-</div>
                         </div>
                     </div>
@@ -33,12 +32,12 @@
                     <h3>実行回数</h3>
                     <div style="display: flex; align-items: center; gap: 0;">
                         <div style="flex: 1; text-align: center;">
-                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">今月</div>
+                            <div style="font-size: 10px; color: #a0a0a0; margin-bottom: 2px;">今月</div>
                             <div class="value" id="executions-month">-</div>
                         </div>
-                        <div style="width: 1px; height: 36px; background: rgba(255,255,255,0.15); flex-shrink: 0;"></div>
+                        <div style="width: 1px; height: 36px; background: #ddd; flex-shrink: 0;"></div>
                         <div style="flex: 1; text-align: center;">
-                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">累計</div>
+                            <div style="font-size: 10px; color: #a0a0a0; margin-bottom: 2px;">累計</div>
                             <div class="value" id="total-executions">-</div>
                         </div>
                     </div>
@@ -47,12 +46,12 @@
                     <h3>トークン数</h3>
                     <div style="display: flex; align-items: center; gap: 0;">
                         <div style="flex: 1; text-align: center;">
-                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">今月</div>
+                            <div style="font-size: 10px; color: #a0a0a0; margin-bottom: 2px;">今月</div>
                             <div class="value" id="total-tokens-month">-</div>
                         </div>
-                        <div style="width: 1px; height: 36px; background: rgba(255,255,255,0.15); flex-shrink: 0;"></div>
+                        <div style="width: 1px; height: 36px; background: #ddd; flex-shrink: 0;"></div>
                         <div style="flex: 1; text-align: center;">
-                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px;">累計</div>
+                            <div style="font-size: 10px; color: #a0a0a0; margin-bottom: 2px;">累計</div>
                             <div class="value" id="total-tokens">-</div>
                         </div>
                     </div>
@@ -61,7 +60,7 @@
                     <h3>トークン料金</h3>
                     <div style="display: flex; align-items: center; justify-content: center; min-height: 50px;">
                         <div>
-                            <div style="font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 2px; text-align: center;">今月</div>
+                            <div style="font-size: 10px; color: #a0a0a0; margin-bottom: 2px; text-align: center;">今月</div>
                             <div class="value" id="total-cost-month">-</div>
                         </div>
                     </div>
@@ -70,8 +69,8 @@
 
             <div class="card card-graph" style="margin-top: 20px;">
                 <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2 style="margin: 0;">実行活動グラフ</h2>
-                    <select id="year-select" style="padding: 5px 10px; border-radius: 4px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: rgba(255, 255, 255, 0.9);">
+                    <h2 style="margin: 0; color: #2d2d2d;">実行活動グラフ</h2>
+                    <select id="year-select" style="padding: 5px 10px; border-radius: 8px; background: #eee; border: 1px solid #ddd; color: #2d2d2d;">
                         <!-- JavaScriptで動的に生成 -->
                     </select>
                 </div>
@@ -85,8 +84,8 @@
                 </div>
             </div>
 
-            <div class="card" style="margin-top: 20px;">
-                <h2 style="margin-top: 0;">ワークフロー一覧</h2>
+            <div style="margin-top: 28px;">
+                <h2 style="margin: 0 0 16px 0; color: var(--content-text); font-size: 18px; font-weight: 700;">ワークフロー一覧</h2>
                 <div id="workflows-container" class="skills-grid">
                     <div class="loading">
                         <div class="spinner"></div>
@@ -95,8 +94,8 @@
                 </div>
             </div>
 
-            <div class="card" style="margin-top: 20px;">
-                <h2 style="margin-top: 0;">スキル一覧</h2>
+            <div style="margin-top: 28px;">
+                <h2 style="margin: 0 0 16px 0; color: var(--content-text); font-size: 18px; font-weight: 700;">スキル一覧</h2>
                 <div id="skills-container" class="skills-grid">
                     <div class="loading">
                         <div class="spinner"></div>

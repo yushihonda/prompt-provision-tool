@@ -69,43 +69,43 @@ function renderUserWorkflows() {
         return;
     }
 
+    const profileColors = { default: '#ce93d8', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
+    const profileLabels = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
+
     container.innerHTML = userWorkflows
-        .map((item) => {
+        .map((item, idx) => {
             const wf = item.workflow;
             const skillCount = (item.skills || []).length;
             const modelDisplay = typeof formatModelDisplay === 'function'
                 ? formatModelDisplay(wf.parent_model_type || '', null, {})
                 : (wf.parent_model_type || '-');
-            // profile フロー表示
             const profiles = item.step_profiles || [];
-            const profileColors = { default: '#ce93d8', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
-            const profileLabels = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
             const flowHtml = profiles.length > 0
                 ? profiles.map((p, i) => {
                     const c = profileColors[p] || '#9e9e9e';
                     const l = profileLabels[p] || p;
-                    return `${i > 0 ? '<span style="color:rgba(255,255,255,0.2); margin:0 2px;">→</span>' : ''}<span style="font-size:10px; padding:1px 6px; background:${c}22; border-radius:8px; color:${c};">${l}</span>`;
+                    return `${i > 0 ? '<span class="flow-arrow">→</span>' : ''}<span class="profile-tag" style="background:${c}22; color:${c};">${l}</span>`;
                 }).join('')
                 : '';
             return `
-                <div class="card" data-workflow-id="${wf.id}">
-                    <div class="card-content">
-                        <h3>${wf.name}</h3>
-                        <p>${wf.description || '説明なし'}</p>
-                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
-                            <span style="font-size:12px; color:rgba(255,255,255,0.6);"><strong>${skillCount}</strong> steps</span>
-                            <span style="color:rgba(255,255,255,0.15);">|</span>
-                            <span>${modelDisplay}</span>
-                        </div>
-                        ${flowHtml ? `<div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px;">${flowHtml}</div>` : ''}
-                    </div>
-                    <div class="card-corner">
+                <article class="card-wrapper" data-workflow-id="${wf.id}">
+                    <div class="card-circle">
                         <button class="btn btn-primary card-execute-btn"
                                 onclick="window.PPTRuntime.navigate('workflow-execute.html?id=${wf.id}')">
                             実行
                         </button>
                     </div>
-                </div>
+                    <div class="card">
+                        <h3 class="card-title">${wf.name}</h3>
+                        <p class="card-desc">${wf.description || '説明なし'}</p>
+                        <div class="card-meta">
+                            <span><strong>${skillCount}</strong> steps</span>
+                            <span class="meta-divider">|</span>
+                            <span>${modelDisplay}</span>
+                        </div>
+                        ${flowHtml ? `<div class="card-figure">${flowHtml}</div>` : ''}
+                    </div>
+                </article>
             `;
         })
         .join('');
@@ -122,23 +122,25 @@ function renderSkills() {
     // 実行中のスキルIDを取得
     const executingSkillId = PersistentStatusBar?.skillId ? parseInt(PersistentStatusBar.skillId) : null;
 
-    container.innerHTML = skills.map(skill => {
+    container.innerHTML = skills.map((skill, idx) => {
         const isExecuting = executingSkillId && skill.id === executingSkillId;
         const modelDisplay = formatModelDisplay(skill.model_type, null, skill);
         return `
-        <div class="card ${isExecuting ? 'card-executing' : ''}" data-skill-id="${skill.id}">
-            <div class="card-content">
-                <h3>${skill.name}${isExecuting ? '<span class="executing-badge">実行中</span>' : ''}</h3>
-                <p>${skill.description || '説明なし'}</p>
-                <p><strong>モデル:</strong> ${modelDisplay}</p>
-            </div>
-            <div class="card-corner">
+        <article class="card-wrapper ${isExecuting ? 'card-executing' : ''}" data-skill-id="${skill.id}">
+            <div class="card-circle">
                 <button class="btn btn-primary card-execute-btn"
                         onclick="window.PPTRuntime.navigate('execute.html?id=${skill.id}')">
                     ${isExecuting ? '実行中' : '実行'}
                 </button>
             </div>
-        </div>
+            <div class="card">
+                <h3 class="card-title">${skill.name}${isExecuting ? '<span class="executing-badge">実行中</span>' : ''}</h3>
+                <p class="card-desc">${skill.description || '説明なし'}</p>
+                <div class="card-meta">
+                    <span>${modelDisplay}</span>
+                </div>
+            </div>
+        </article>
     `;
     }).join('');
 }

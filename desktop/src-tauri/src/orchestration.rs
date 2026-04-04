@@ -594,19 +594,18 @@ impl OrchestrationManager {
             .query(&[("limit", "500")])
             .send();
 
-        let executions: Vec<Value> = match resp {
-            Ok(r) if r.status().is_success() => r.json().unwrap_or_default(),
+        let body: Value = match resp {
+            Ok(r) if r.status().is_success() => r.json().unwrap_or(Value::Null),
             _ => return Vec::new(),
         };
 
-        // The endpoint may return {items: [...]} or [...] directly
-        let items = if let Some(arr) = executions.first().and_then(|_| {
-            // It's already a Vec<Value> if we got here
-            None::<&Vec<Value>>
-        }) {
-            executions.clone()
+        // API returns {"items": [...]} or [...] directly
+        let items = if let Some(arr) = body.as_array() {
+            arr.clone()
+        } else if let Some(arr) = body["items"].as_array() {
+            arr.clone()
         } else {
-            executions
+            return Vec::new();
         };
 
         items

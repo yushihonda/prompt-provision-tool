@@ -69,7 +69,7 @@ function renderHistory() {
     const pageRows = groupedRows.slice(start, start + itemsPerPage);
 
     if (pageRows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: rgba(255, 255, 255, 0.6);">実行履歴がありません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #a0a0a0;">実行履歴がありません</td></tr>';
         return;
     }
 
@@ -121,7 +121,7 @@ function renderWorkflowRow(group) {
     const skillBars = stepExecs.map(e => {
         const sc = getStatusColor(e.status);
         const name = escapeHtmlCommon(e.skill_name || `Step ${e.skill_order}`);
-        return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px;background:rgba(0,0,0,0.2);border-left:2px solid ${sc};color:rgba(255,255,255,0.8);">${name}</span>`;
+        return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px;background:rgba(0,0,0,0.05);border-left:2px solid ${sc};color:#555;">${name}</span>`;
     }).join(' ');
 
     return `
@@ -130,7 +130,7 @@ function renderWorkflowRow(group) {
         <td>
             <div style="margin-bottom:4px;">
                 <span style="color: #7c3aed; font-weight: 600; font-size: 13px;">${escapeHtmlCommon(group.workflowName)}</span>
-                <span style="color: rgba(255,255,255,0.4); font-size: 11px; margin-left: 6px;">${stepExecs.length} steps</span>
+                <span style="color: #a0a0a0; font-size: 11px; margin-left: 6px;">${stepExecs.length} steps</span>
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
         </td>
@@ -153,7 +153,7 @@ function getStatusColor(status) {
     if (status === 'error') return '#dc3545';
     if (status === 'cancelled') return '#ffc107';
     if (status === 'pending' || status === 'pending_local' || status === 'processing') return '#7c3aed';
-    return 'rgba(255, 255, 255, 0.6)';
+    return '#a0a0a0';
 }
 
 function getOverallStatus(execs) {
@@ -271,7 +271,7 @@ async function showWorkflowDetail(weId) {
 
         const detailHTML = `
             <div style="text-align: left;">
-                <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(0,0,0,0.08);">
                     <div style="color: #c4b5fd; font-weight: 600; font-size: 16px; margin-bottom: 6px;">${esc(workflowName)}</div>
                     <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
                         <span>${stepExecs.length} ステップ</span>

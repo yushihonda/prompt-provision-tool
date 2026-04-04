@@ -2265,79 +2265,35 @@ async function executeWorkflowWithOrchestration({ workflowId, globalInputData, p
     });
 
     console.info('[Orchestration] started:', orchStatus);
-    workflowExecutionId = orchStatus.workflowExecutionId;
 
-    if (typeof PersistentStatusBar !== 'undefined' && orchStatus.workflowExecutionId) {
-        PersistentStatusBar.workflowExecutionId = orchStatus.workflowExecutionId;
-    }
-
-    // Show flow view with all steps as processing
-    const resultContainer = document.getElementById('workflow-result-container');
-    if (resultContainer) resultContainer.style.display = '';
-    _flowStepStatuses = {};
-    _flowLeaderOutput = '';
-    _orchestrationStatuses = [];
-    _blackboardKeys = [];
-    _flowViewDetail = workflowDetail;
-    const allSkillsInit = workflowDetail?.skills || [];
-    for (const skill of allSkillsInit) {
-        if (skill.workflow_skill_id) _flowStepStatuses['ws_' + skill.workflow_skill_id] = 'processing';
-        if (skill.skill_id) _flowStepStatuses[skill.skill_id] = 'processing';
-    }
-    if (workflowDetail) renderFlowView(workflowDetail, _flowStepStatuses);
-
-    // Listen for orchestration progress events
-    const unlistenProgress = window.PPTRuntime.onOrchestrationProgress((event) => {
-        console.info('[Orchestration] progress:', event);
-        // Update step statuses based on completed executions
-        if (event.eventType === 'worker_completed' || event.eventType === 'worker_error') {
-            _orchestrationStatuses.push(event);
-            if (workflowDetail) renderFlowView(workflowDetail, _flowStepStatuses);
-        }
-    });
-
-    // Poll until orchestration completes
-    let finalStatus = null;
-    for (let i = 0; i < 1200; i++) {  // 10 minutes max (500ms * 1200)
+    // Poll until orchestration completes (background tick handles actual execution)
+    for (let i = 0; i < 1200; i++) {
         await new Promise(r => setTimeout(r, 500));
         const status = await window.PPTRuntime.getOrchestrationStatus(orchStatus.workflowExecutionId);
         if (!status || status.status !== 'running') {
-            finalStatus = status;
             break;
         }
     }
 
-    unlistenProgress();
+    // Fetch final results from backend to build the same shape as legacy path
+    const execResp = await apiRequest('/api/user/executions?limit=100');
+    const allExecs = (execResp.items || execResp);
+    const wfExecs = allExecs.filter(e => e.workflow_execution_id === orchStatus.workflowExecutionId);
+    const executionIds = wfExecs.map(e => e.id);
+    const leaderExec = wfExecs.find(e => !e.workflow_skill_id && !e.execution_role);
+    const wfStatus = await apiRequest(`/api/user/workflow-executions/${orchStatus.workflowExecutionId}/status`).catch(() => null);
 
-    // Fetch final results from backend
-    try {
-        const apiBase = window.PPTRuntime.getApiBase();
-        const execResp = await apiRequest(`/api/user/executions?limit=100`);
-        const allExecs = execResp.items || execResp;
-        const wfExecs = allExecs.filter(e => e.workflow_execution_id === orchStatus.workflowExecutionId);
+    // Store result globally for the form handler (same as legacy path)
+    const result = {
+        workflowExecutionId: orchStatus.workflowExecutionId,
+        executionIds,
+        leaderExecutionId: leaderExec?.id || null,
+        status: wfStatus?.status || 'error',
+        output: leaderExec?.output_data || '',
+    };
+    window.__PPT_LAST_LOCAL_WORKFLOW_RESULT = result;
 
-        // Update flow view with final statuses
-        for (const exec of wfExecs) {
-            if (exec.workflow_skill_id) {
-                _flowStepStatuses['ws_' + exec.workflow_skill_id] = exec.status;
-            }
-            if (exec.skill_id) {
-                _flowStepStatuses[exec.skill_id] = exec.status;
-            }
-        }
-
-        // Find leader execution (parent skill) output
-        const leaderExec = wfExecs.find(e => !e.workflow_skill_id && e.status === 'success');
-        if (leaderExec) {
-            _flowLeaderOutput = leaderExec.output_data || '';
-        }
-
-        if (workflowDetail) renderFlowView(workflowDetail, _flowStepStatuses);
-    } catch (e) {
-        console.error('[Orchestration] failed to fetch final results:', e);
-    }
-
-    return { workflowExecutionId: orchStatus.workflowExecutionId, status: finalStatus?.status || 'error' };
+    return result;
 }
 
 async function executeWorkflowWithDesktopLocalEngine({ workflowId, globalInputData, perSkillInput, outputFormat }) {
@@ -2473,27 +2429,24 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
         const useOrchestrated = window.PPTRuntime?.shouldUseOrchestratedExecution?.();
 
         let resp;
-        if (useOrchestrated) {
-            // マルチターミナル・オーケストレーション実行:
-            // 複数の sidecar ワーカープロセスで並列実行する。
-            const orchResult = await executeWorkflowWithOrchestration({
-                workflowId,
-                globalInputData,
-                perSkillInput,
-                outputFormat,
-            });
-            // オーケストレーション完了後、バックエンドの最終結果を取得して表示
-            resp = orchResult;
-        } else if (isDesktopLocal) {
-            // デスクトップローカル実行（レガシー単一 sidecar パス）
-
-            // sidecar実行を開始（Promiseを保持、awaitは後で）
-            const desktopPromise = executeWorkflowWithDesktopLocalEngine({
-                workflowId,
-                globalInputData,
-                perSkillInput,
-                outputFormat,
-            });
+        if (useOrchestrated || isDesktopLocal) {
+            // デスクトップ実行: オーケストレーション（マルチワーカー）または単一 sidecar
+            let desktopPromise;
+            if (useOrchestrated) {
+                desktopPromise = executeWorkflowWithOrchestration({
+                    workflowId,
+                    globalInputData,
+                    perSkillInput,
+                    outputFormat,
+                });
+            } else {
+                desktopPromise = executeWorkflowWithDesktopLocalEngine({
+                    workflowId,
+                    globalInputData,
+                    perSkillInput,
+                    outputFormat,
+                });
+            }
 
             // sidecar完了前に、バックエンドの最新execution IDを記録
             let prevMaxExecId = 0;
