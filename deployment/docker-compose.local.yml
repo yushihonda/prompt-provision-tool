@@ -59,18 +59,20 @@ services:
       retries: 3
       start_period: 15s
 
-  web:
-    image: nginx:alpine
-    container_name: ppt-web
-    restart: unless-stopped
-    depends_on:
-      backend:
-        condition: service_healthy
-    volumes:
-      - ../frontend:/usr/share/nginx/html:ro
-      - ./local/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    ports:
-      - "8080:80"
+  # web: NexMAGIデスクトップアプリではTauriがフロントエンドを提供するため不要
+  # 開発時のブラウザ確認用に残す場合は以下のコメントを解除
+  # web:
+  #   image: nginx:alpine
+  #   container_name: ppt-web
+  #   restart: unless-stopped
+  #   depends_on:
+  #     backend:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ../frontend:/usr/share/nginx/html:ro
+  #     - ./local/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  #   ports:
+  #     - "8080:80"
 
 volumes:
   db_data:

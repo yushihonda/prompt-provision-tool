@@ -218,7 +218,7 @@
 
     async function runDemoWorkflow() {
         const result = await safeInvoke('run_demo_workflow', {
-            topic: 'Prompt Provision Tool desktop bootstrap',
+            topic: 'NexMAGI desktop bootstrap',
         });
         setSidecarOutput(
             [

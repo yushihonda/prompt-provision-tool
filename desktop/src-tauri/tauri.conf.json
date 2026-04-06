@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Prompt Provision Tool Desktop",
+  "productName": "NexMAGI",
   "version": "0.1.0",
-  "identifier": "com.poifull.promptprovisiontool.desktop",
+  "identifier": "com.nexmagi.desktop",
   "build": {
     "frontendDist": "../../frontend"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Prompt Provision Tool",
+        "title": "NexMAGI",
         "width": 1280,
         "height": 900,
         "minWidth": 1100,

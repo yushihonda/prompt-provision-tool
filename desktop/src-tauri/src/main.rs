@@ -26,7 +26,7 @@ const PACKAGED_CLI_PROVIDER_BINARY_ID: &str = "ppt-provider-adapter";
 const PACKAGED_SIDECAR_BINARY_ID: &str = "ppt-sidecar";
 const PACKAGED_CLI_PROVIDER_ADAPTER: &str = "local_worker";
 const PACKAGED_CLI_PROVIDER_TRANSPORT: &str = "subprocess";
-const DESKTOP_KEYCHAIN_SERVICE: &str = "com.poifull.promptprovisiontool.desktop";
+const DESKTOP_KEYCHAIN_SERVICE: &str = "com.nexmagi.desktop";
 const DESKTOP_AUTH_SESSION_ACCOUNT: &str = "auth-session";
 /// Keychain round-trip can fail on some macOS builds (e.g. unsigned internal packages).
 /// Mirror session JSON here with user-only permissions so login survives navigation.

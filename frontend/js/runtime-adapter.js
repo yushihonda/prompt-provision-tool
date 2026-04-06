@@ -1,22 +1,23 @@
 (function () {
     const tauriInvoke = window.__TAURI__?.core?.invoke;
+    // NexMAGI Desktop — Tauri前提の設定（WEB版フォールバック削除済み）
     const fallbackConfig = {
-        desktop: Boolean(tauriInvoke),
-        apiBase: Boolean(tauriInvoke) ? 'http://127.0.0.1:8000' : window.location.origin,
+        desktop: true,
+        apiBase: 'http://127.0.0.1:8000',
         workerScriptPath: 'js/execution-worker.js',
         sidecarScriptPath: '',
-        engineEventMode: Boolean(tauriInvoke) ? 'sidecar-batch' : 'browser',
-        localExecutionMode: Boolean(tauriInvoke) ? 'sidecar' : 'browser',
-        configuredEngineMode: Boolean(tauriInvoke) ? 'api_key' : 'browser',
-        effectiveEngineMode: Boolean(tauriInvoke) ? 'api_key' : 'browser',
+        engineEventMode: 'sidecar-batch',
+        localExecutionMode: 'sidecar',
+        configuredEngineMode: 'api_key',
+        effectiveEngineMode: 'api_key',
         providerMode: 'api_key',
-        providerTransport: Boolean(tauriInvoke) ? 'sdk' : 'browser_http',
-        providerAdapter: Boolean(tauriInvoke) ? 'none' : 'browser',
-        providerRuntime: Boolean(tauriInvoke) ? 'python' : 'browser',
-        providerImpl: Boolean(tauriInvoke) ? 'sdk_execute_bundle' : 'browser_fetch',
-        authKeySource: Boolean(tauriInvoke) ? 'bundle_or_local_env' : 'browser_session',
-        observationSource: Boolean(tauriInvoke) ? 'engine_origin_batch' : 'browser_http',
-        configSource: Boolean(tauriInvoke) ? 'desktop-fallback' : 'browser-origin',
+        providerTransport: 'sdk',
+        providerAdapter: 'none',
+        providerRuntime: 'python',
+        providerImpl: 'sdk_execute_bundle',
+        authKeySource: 'bundle_or_local_env',
+        observationSource: 'engine_origin_batch',
+        configSource: 'desktop-fallback',
         lastRuntimeError: null,
     };
     let runtimeConfig = normalizeRuntimeConfig({
@@ -289,21 +290,7 @@
     function commitAuthSession(nextSession) {
         authSession = normalizeAuthSession(nextSession);
         authSessionLoaded = true;
-
-        if (isDesktopRuntime()) {
-            sessionStorage.removeItem('token');
-        } else if (authSession?.token) {
-            sessionStorage.setItem('token', authSession.token);
-        } else {
-            sessionStorage.removeItem('token');
-        }
-
-        if (authSession?.username) {
-            sessionStorage.setItem('username', authSession.username);
-        } else if (nextSession === null) {
-            sessionStorage.removeItem('username');
-        }
-
+        // デスクトップ専用: sessionStorage不要（Keychain/ファイルで管理）
         return getCachedAuthSession();
     }
 
@@ -312,16 +299,6 @@
     }
 
     async function ensureAuthSession() {
-        if (!tauriInvoke || !isDesktopRuntime()) {
-            if (!authSessionLoaded) {
-                commitAuthSession({
-                    token: sessionStorage.getItem('token') || '',
-                    username: sessionStorage.getItem('username') || '',
-                });
-            }
-            return getCachedAuthSession();
-        }
-
         if (authSessionLoaded) {
             return getCachedAuthSession();
         }
@@ -330,13 +307,18 @@
             return authSessionPromise;
         }
 
-        authSessionPromise = invokeDesktop('get_auth_session')
-            .then((session) => commitAuthSession(session || null))
-            .finally(() => {
-                authSessionPromise = null;
-            });
+        // デスクトップ: Tauriのget_auth_sessionでKeychain/ファイルから取得
+        if (tauriInvoke) {
+            authSessionPromise = invokeDesktop('get_auth_session')
+                .then((session) => commitAuthSession(session || null))
+                .finally(() => {
+                    authSessionPromise = null;
+                });
+            return authSessionPromise;
+        }
 
-        return authSessionPromise;
+        // フォールバック（Tauriが初期化前の場合）
+        return getCachedAuthSession();
     }
 
     async function getAuthSession() {
@@ -350,7 +332,7 @@
 
     async function getAuthUsername() {
         const session = await ensureAuthSession();
-        return session?.username || sessionStorage.getItem('username') || '';
+        return session?.username || '';
     }
 
     async function saveAuthSession(session) {

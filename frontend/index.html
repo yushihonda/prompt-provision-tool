@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Prompt Provision Tool Desktop</title>
+    <title>NexMAGI Desktop</title>
     <link rel="stylesheet" href="css/style.css">
     <style>
         .desktop-grid {
@@ -80,7 +80,7 @@
     <div class="container">
         <div class="content">
             <div class="card">
-                <h1>Prompt Provision Tool Desktop</h1>
+                <h1>NexMAGI Desktop</h1>
                 <p class="desktop-note">
                     この画面は Tauri shell の最小ホームです。既存 frontend 資産を流用しつつ、
                     app info、SQLite 初期化、engine mode 切替、runtime diagnostics、sidecar 疎通確認をここから行います。
@@ -161,8 +161,8 @@
 
     <script>
         window.__PPT_RUNTIME = window.__PPT_RUNTIME || {
-            desktop: Boolean(window.__TAURI__?.core?.invoke),
-            apiBase: window.__TAURI__?.core?.invoke ? 'http://127.0.0.1:8000' : window.location.origin,
+            desktop: true,
+            apiBase: 'http://127.0.0.1:8000',
             workerScriptPath: 'js/execution-worker.js'
         };
     </script>

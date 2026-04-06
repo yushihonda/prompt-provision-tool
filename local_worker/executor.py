@@ -286,7 +286,7 @@ async def _execute_gemini(prompt: str, model: str, enable_deep_think: bool, api_
 
     client = genai_new.Client(
         api_key=api_key,
-        http_options={"headers": {"Referer": "https://prompt-provision-tool.local"}},
+        http_options={"headers": {"Referer": "https://nexmagi.local"}},
     )
 
     # モデル名正規化
