@@ -3,23 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ユーザーログイン - NexMAGI</title>
+    <title>ログイン - NexMAGI</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body class="user-theme login-page">
-    <div class="login-container">
-        <h1>ログイン</h1>
+    <div class="login-card">
+        <div class="login-logo">NexMAGI</div>
+        <p class="login-subtitle">ワークフロー実行プラットフォーム</p>
         <form id="login-form">
-            <div class="form-group">
+            <div class="login-field">
                 <label for="username">ユーザー名</label>
-                <input type="text" id="username" name="username" required>
+                <input type="text" id="username" name="username" placeholder="ユーザー名を入力" required>
             </div>
-            <div class="form-group">
+            <div class="login-field">
                 <label for="password">パスワード</label>
-                <input type="password" id="password" name="password" required>
+                <input type="password" id="password" name="password" placeholder="パスワードを入力" required>
             </div>
-            <button type="submit" class="btn btn-primary">ログイン</button>
+            <button type="submit" class="login-btn">ログイン</button>
         </form>
     </div>
 
@@ -35,4 +36,3 @@
     <script src="js/login.js"></script>
 </body>
 </html>
-

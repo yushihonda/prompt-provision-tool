@@ -904,29 +904,101 @@ body:not(.login-page) {
 }
 
 /* ログインページ */
+/* === NexMAGI Login Card === */
+.login-card {
+    max-width: 420px;
+    width: 100%;
+    padding: 48px 40px;
+    border-radius: 24px;
+    background: var(--content-bg);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.login-logo {
+    text-align: center;
+    font-size: 32px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: -1px;
+    margin-bottom: 4px;
+}
+
+.login-subtitle {
+    text-align: center;
+    font-size: 13px;
+    color: var(--content-text-muted);
+    margin: 0 0 32px 0;
+}
+
+.login-field {
+    margin-bottom: 20px;
+}
+
+.login-field label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--content-text);
+}
+
+.login-field input {
+    width: 100%;
+    padding: 12px 16px;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 12px;
+    font-size: 14px;
+    color: var(--content-text);
+    background: #fff;
+    transition: all 0.2s;
+    box-sizing: border-box;
+}
+
+.login-field input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(var(--theme-accent-rgb), 0.1);
+}
+
+.login-field input::placeholder {
+    color: var(--content-text-muted);
+}
+
+.login-btn {
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 20px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-top: 8px;
+}
+
+.login-btn:hover {
+    background: var(--accent-dark);
+    box-shadow: 0 4px 16px rgba(var(--theme-accent-rgb), 0.3);
+    transform: translateY(-1px);
+}
+
+/* 旧login-container（後方互換） */
 .login-container {
     max-width: 400px;
     width: 100%;
     padding: 40px;
     border-radius: 16px;
-}
-
-/* ログイン：ガラス効果（テーマ共通） */
-.login-container {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    background: var(--content-bg);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
 }
 
 .login-container h1 {
     text-align: center;
     margin-bottom: 30px;
-}
-
-.login-container h1 {
-    color: var(--theme-accent);
+    color: var(--accent);
 }
 
 .form-group {
