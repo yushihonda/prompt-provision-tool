@@ -766,7 +766,7 @@ SSE_HEARTBEAT_INTERVAL=30
 ```ini
 # deployment/prompt-tool-celery.service
 [Unit]
-Description=Prompt Provision Tool Celery Worker
+Description=NexMAGI Celery Worker
 After=network.target redis.service
 
 [Service]

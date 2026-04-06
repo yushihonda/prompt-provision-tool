@@ -1,6 +1,8 @@
-# Prompt Provision Tool v2.0.1
+# NexMAGI v3.0.0
 
-スキル本文を外部に出さず、AI実行機能を提供するWebアプリケーション。
+次世代AIオーケストレーションデスクトップアプリ — マルチエージェントワークフローを3Dビジュアルパイプラインで実行・管理。
+
+> 旧名: NexMAGI。v3.0.0 で NexMAGI にリブランディングし、Tauri デスクトップアプリ専用に移行。
 
 > 変更履歴は [CHANGELOG.md](/CHANGELOG.md) を参照してください。
 
@@ -358,12 +360,12 @@ commercial-release-ready:
   `python3 -m pip install -r local_worker/requirements-build.txt`
   `CARGO_TARGET_DIR="$PWD/desktop/.cargo-target" npm --prefix desktop run tauri:build`
   生成確認済み成果物の例:
-  `desktop/.cargo-target/release/bundle/macos/Prompt Provision Tool Desktop.app`
-  `desktop/.cargo-target/release/bundle/dmg/Prompt Provision Tool Desktop_0.1.0_aarch64.dmg`
+  `desktop/.cargo-target/release/bundle/macos/NexMAGI Desktop.app`
+  `desktop/.cargo-target/release/bundle/dmg/NexMAGI Desktop_0.1.0_aarch64.dmg`
 - macOS package:
   `.app` または `.dmg` を社内共有し、初回起動は `右クリック -> 開く` を案内する
 - macOS quarantine 除去が必要な場合:
-  `xattr -dr com.apple.quarantine "Prompt Provision Tool Desktop.app"`
+  `xattr -dr com.apple.quarantine "NexMAGI Desktop.app"`
 - Windows package:
   `.exe` または installer を社内共有し、unsigned 警告が出る前提で案内する
 - 補足:
@@ -1334,7 +1336,7 @@ sudo systemctl status redis-server
 cd /Users/hondayushi/workspaece/poifull/prompt-provision-tool
 git init
 git add .
-git commit -m "Initial commit: Prompt Provision Tool"
+git commit -m "Initial commit: NexMAGI"
 ```
 
 ### リモートリポジトリの設定

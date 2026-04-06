@@ -1,5 +1,54 @@
 # Changelog
 
+## [3.0.0] - 2026-04-06
+
+### Breaking Changes
+- **NexMAGI リブランディング** — アプリ名を「Prompt Provision Tool」から「NexMAGI」に変更
+  - Tauri productName, bundle identifier: `com.nexmagi.desktop`
+  - Cargo crate: `nexmagi-desktop`
+  - 全HTMLタイトル、ヘッダーロゴ
+- **WEB版廃止** — ブラウザ直接アクセスを廃止、Tauri デスクトップアプリ専用に
+  - runtime-adapter.js: ブラウザフォールバック削除、デスクトップ固定
+  - HTML初期化: `window.__TAURI__` 分岐削除
+  - 認証: sessionStorage 廃止、Keychain/ファイル認証のみ
+  - Docker: nginx webコンテナをコメントアウト
+
+### Added
+- **3Dアクリルキューブ** — ワークフロー実行パイプラインに preserve-3d + 3面キューブ表示
+  - ロール別色分け（Explore=青, Plan=橙, Implement=緑, Verification=桃, Leader=紫）
+  - ステータス連動（pending/processing/success/error で枠色・アニメーション変化）
+  - ガラス風半透明エフェクト（color-mix + inset shadow）
+- **切り抜きカードデザイン** — card-cutout + card-cutout-circle の再利用可能コンポーネント
+  - ワークフロー実行の戻るボタン、入力パネルの実行ボタン、出力パネルのコピーボタン
+  - バックグラウンドパネルの詳細へ/完了タスク
+- **管理画面赤アクセント** — admin-theme に `--accent: #dc3545` を独立設定
+- **ミニ3Dキューブ** — ダッシュボード、実行履歴、管理画面の実行ログで共通使用
+  - mini-cube.js に共通関数として分離
+- **モデルバッジ** — Deep Think / Pro / Thinking / NEW バッジを全表示箇所で統一
+  - `formatModelDisplay` でスキル情報（enable_deep_think）を参照
+  - バッジ色: 8px, !important で親要素の色継承を上書き
+- **実行データ不変性** — `skill_name_snapshot`, `workflow_name_snapshot` カラム追加
+  - 実行時点のスキル名/ワークフロー名をスナップショット保存
+  - 編集後も過去の実行履歴が変わらない
+- **ワークフロー実行詳細ポップアップ共通化** — `showWorkflowDetailPopup` を exec-detail-modal.js に集約
+- **SweetAlert2共通設定** — swal-defaults.js で全ポップアップに×ボタン左上表示、閉じるボタン自動非表示
+- **Verification UI** — 品質ゲート検証中/リトライ中のバッジ表示（検証中=オレンジ、再試行=#N）
+- **ステータスインジケーター** — STEPラベル横にチェック/×アイコン（ドットからアイコンに変更）
+
+### Changed
+- **ポップアップデザイン統一** — border-radius 24px、入力フィールド 12px角丸、ボタン 20px角丸
+- **フォーム要素統一** — 白背景、アクセント色フォーカスglow、カスタムselect矢印
+- **ページネーション** — 丸いボタンデザイン
+- **バッジサイズ** — 全バッジ 8px に統一（モデル名より小さく）
+- **バックグラウンドパネル** — 完了検知改善、staleデータ自動クリア、復帰時ポーリング
+- **実行履歴ステータス** — 特殊ロール（quality_gate等）のエラーをWF全体のエラーから除外
+
+### Fixed
+- **FINAL完了しない問題** — リーダーステータスを `handleWorkflowComplete` で確実に設定
+- **バックグラウンドパネル完了しない問題** — ID不一致チェック緩和、catchでもmarkAsCompleted
+- **詳細へ遷移で表示されない問題** — Stageメタデータ復元、ポーリング再開
+- **実行中レイアウト崩れ** — wf-node-output を position:absolute に変更
+
 ## [2.0.1] - 2026-04-03
 
 ### Added
