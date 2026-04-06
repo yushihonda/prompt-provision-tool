@@ -1,9 +1,0 @@
-flowchart LR
-  Client[Browser] --> Nginx[Nginx]
-  Nginx --> FastAPI[FastAPI v2.0.0]
-  FastAPI --> MySQL[(MySQL)]
-  FastAPI --> Redis[(Redis<br/>SSE Stream)]
-  FastAPI --> LocalWorker[Local Worker<br/>LLM実行]
-  LocalWorker --> OpenAI[OpenAI API]
-  LocalWorker --> Gemini[Gemini API]
-  LocalWorker --> Claude[Anthropic API]

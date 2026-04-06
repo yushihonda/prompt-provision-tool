@@ -1,14 +1,12 @@
-# NexMAGI v3.0.0
+# NexMAGI v3.0.0 — 技術詳細ドキュメント
 
 次世代AIオーケストレーションデスクトップアプリ — マルチエージェントワークフローを3Dビジュアルパイプラインで実行・管理。
 
-> 旧名: NexMAGI。v3.0.0 で NexMAGI にリブランディングし、Tauri デスクトップアプリ専用に移行。
+> 旧名: Prompt Provision Tool。v3.0.0 で NexMAGI にリブランディングし、Tauri デスクトップアプリ専用に移行。
 
 > 変更履歴は [CHANGELOG.md](/CHANGELOG.md) を参照してください。
 
-## 📋 要件定義書 / 動作確認レポート
-
-Celery + Redis + ストリーミング + Web Worker まわりの要件定義と動作確認レポートは、もともと `REQUIREMENTS.md` / `VERIFICATION_REPORT.md` に分かれていましたが、内容はこの `README.md` に集約しました。
+> ⚠️ **注意**: 本ドキュメントの一部（Celery、nginx、Web Worker、ブラウザ直接アクセス等）は v2.x 以前の Web 版の記述が残っています。v3.0.0 以降は Tauri デスクトップアプリ専用です。
 
 ## 機能/セキュリティ（要点）
 - スキルは暗号化保存（Fernet）し、復号はサーバ側のみ
