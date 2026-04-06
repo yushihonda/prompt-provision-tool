@@ -68,14 +68,15 @@ async function loadExecutions(page = 1) {
 
 function getStatusColor(status) {
     const colors = { success: '#28a745', error: '#dc3545', cancelled: '#ffc107', pending: '#7c3aed', processing: '#7c3aed', pending_local: '#7c3aed' };
-    return colors[status] || 'rgba(255, 255, 255, 0.6)';
+    return colors[status] || 'var(--content-text-muted)';
 }
 
 function getOverallStatus(execs) {
-    if (execs.some(e => e.status === 'error')) return 'error';
-    if (execs.some(e => e.status === 'cancelled')) return 'cancelled';
-    if (execs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
-    if (execs.every(e => e.status === 'success')) return 'success';
+    const normalExecs = execs.filter(e => !e.execution_role);
+    if (normalExecs.some(e => e.status === 'error')) return 'error';
+    if (normalExecs.some(e => e.status === 'cancelled')) return 'cancelled';
+    if (normalExecs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
+    if (normalExecs.every(e => e.status === 'success')) return 'success';
     return 'pending';
 }
 
@@ -85,7 +86,7 @@ function renderExecutions() {
     const pageRows = groupedRows.slice(start, start + itemsPerPage);
 
     if (pageRows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: rgba(255, 255, 255, 0.6);">実行ログがありません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--content-text-muted);">実行ログがありません</td></tr>';
         return;
     }
 
@@ -131,24 +132,26 @@ function renderWorkflowRow(group) {
     const modelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModel, null, {}) : parentModel;
     const weId = group.workflowExecutionId;
 
-    // 各スキルの小さなバー
-    const skillBars = stepExecs.map(e => {
+    // ミニキューブ + 矢印 + リーダー（ユーザー側と同じ）
+    let skillBars = stepExecs.map((e, i) => {
         const sc = getStatusColor(e.status);
-        const name = escapeHtmlAdmin(e.skill_name || `Step ${e.skill_order}`);
-        return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px;background:rgba(0,0,0,0.2);border-left:2px solid ${sc};color:rgba(255,255,255,0.8);">${name}</span>`;
-    }).join(' ');
+        const cube = renderMiniCube(e.agent_profile || 'default', { size: 22, borderColor: sc, showLabel: false });
+        return (i > 0 ? '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' : '') + cube;
+    }).join('');
+    const leaderSc = getStatusColor(overallStatus);
+    skillBars += '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' + renderMiniCube('default', { size: 22, borderColor: leaderSc, showLabel: false });
 
     return `
     <tr>
-        <td style="color:rgba(255,255,255,0.4);font-size:11px;">${execs.map(e=>e.id).join(', ')}</td>
+        <td style="color:var(--content-text-muted);font-size:11px;">${execs.map(e=>e.id).join(', ')}</td>
         <td>${group.executedAt ? formatDate(group.executedAt) : '-'}</td>
         <td>${group.accountId || '-'}</td>
         <td>
             <div style="margin-bottom:4px;">
-                <span style="color: #7c3aed; font-weight: 600; font-size: 13px;">${escapeHtmlAdmin(group.workflowName)}</span>
-                <span style="color: rgba(255,255,255,0.4); font-size: 11px; margin-left: 6px;">${stepExecs.length} steps</span>
+                <span style="color: var(--content-text); font-weight: 600; font-size: 13px;">${escapeHtmlAdmin(group.workflowName)}</span>
+                <span style="color: var(--content-text-muted); font-size: 11px; margin-left: 6px;">${stepExecs.length} steps</span>
             </div>
-            <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:12px;perspective:300px;align-items:center;">${skillBars}</div>
         </td>
         <td>${modelDisplay}</td>
         <td>${totalTime ? totalTime + 'ms' : '-'}</td>
@@ -257,8 +260,9 @@ async function showWorkflowDetail(weId) {
     try {
         wfStatus = await apiRequest(`/api/admin/workflow-executions/${weId}/status`);
     } catch (e) { /* ignore */ }
-    const resultHtml = execDetailModal.buildWorkflowFlowHTML({
-        finalOutput, allStepResults, workflowName, groups,
+    await execDetailModal.showWorkflowDetailPopup({
+        workflowName, allStepResults, leaderExec, groups,
+        leaderModel: leaderExec?.model_used || '',
         stageMeta: {
             currentStage: wfStatus?.current_stage || null,
             finalVerdict: wfStatus?.final_verdict || null,
@@ -266,31 +270,10 @@ async function showWorkflowDetail(weId) {
             coordinatorView: wfStatus?.coordinator_view || null,
             synthesisEvents: wfStatus?.synthesis_events || [],
         },
-    });
-
-    const detailHTML = `
-        <div style="text-align: left;">
-            <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);">
-                <div style="color: #c4b5fd; font-weight: 600; font-size: 16px; margin-bottom: 6px;">${esc(workflowName)}</div>
-                <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
-                    <span>Account: ${esc(String(accountId))}</span>
-                    <span>${stepExecs.length} ステップ</span>
-                    <span>${typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderExec?.model_used || '', null, {}) : (leaderExec?.model_used || '-')}</span>
-                    <span>合計 ${totalTime}ms</span>
-                    <span>${totalTokens} tokens</span>
-                </div>
-            </div>
-            ${resultHtml}
-        </div>
-    `;
-
-    await Swal.fire({
-        title: 'ワークフロー実行詳細',
-        html: detailHTML,
-        width: '880px',
-        confirmButtonText: ADMIN_SWAL.btnClose,
-        confirmButtonColor: ADMIN_SWAL.primary,
-        customClass: { popup: 'swal-wide swal-exec-detail' },
+        stepCount: stepExecs.length,
+        totalTime,
+        totalTokens,
+        extraInfo: `<span>Account: ${esc(String(accountId))}</span>`,
     });
 }
 

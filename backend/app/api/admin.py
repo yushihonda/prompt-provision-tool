@@ -1510,7 +1510,7 @@ async def list_executions(
 
     items = []
     for execution in executions:
-        skill_name = execution.skill.name if execution.skill else None
+        skill_name = getattr(execution, 'skill_name_snapshot', None) or (execution.skill.name if execution.skill else None)
         # 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
         # 保存されていない場合はスキルの設定を参照（後方互換性のため）
         enable_deep_think = getattr(execution, 'enable_deep_think', None)
@@ -1525,13 +1525,15 @@ async def list_executions(
         if output_format is None:
             output_format = 'txt'  # デフォルト値
 
-        # ワークフロー情報を取得
+        # ワークフロー情報を取得（スナップショット優先）
         workflow_name = None
         wf_id = None
         if execution.workflow_execution_id:
             wf_exec = execution.workflow_execution
-            if wf_exec and wf_exec.workflow:
-                workflow_name = wf_exec.workflow.name
+            if wf_exec:
+                workflow_name = getattr(wf_exec, 'workflow_name_snapshot', None)
+                if not workflow_name and wf_exec.workflow:
+                    workflow_name = wf_exec.workflow.name
                 wf_id = wf_exec.workflow_id
 
         # ExecutionResponseスキーマに合致するフィールドのみを返す（encrypted_contentやリレーションオブジェクトは含めない）
@@ -1555,6 +1557,8 @@ async def list_executions(
             "skill_order": execution.skill_order,
             "workflow_name": workflow_name,
             "workflow_id": wf_id,
+            "agent_profile": getattr(execution, "agent_profile", None),
+            "execution_role": getattr(execution, "execution_role", None),
         }
         items.append(execution_dict)
 

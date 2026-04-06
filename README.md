@@ -235,6 +235,8 @@ desktop preview の現在地です。設計意図は「動く土台」から「�
 - 単一ライタ: SQLite は desktop 側のみが書き込む
 - dedupe: continuation は DB 制約で active lock を 1 件に制限
 - adapter: frontend の `apiBase`, `workerUrl`, `navigate()` を `frontend/js/runtime-adapter.js` に集約
+- desktop の REST 呼び出し: WebView の `fetch` ではなく Tauri `native_http_request`（Rust + reqwest）を経由。`fetchWithRuntime` が desktop 時に切り替え
+- 認証セッション: app data の `auth_session.json` にミラー（Unix はパーミッション 600）、読み取りはファイル優先のあと keychain。keychain 書き込みはベストエフォート
 
 event 共通フィールド:
 
@@ -372,7 +374,7 @@ npm --prefix desktop run verify:packaged:skill
 - release workflow は build 前に `desktop/scripts/check_release_prereqs.mjs` を通し、updater/signing/notarization secrets の不足を fail-fast する
 - release workflow は build 後に `verify:packaged:storage:strict` を通し、signed runtime でだけ `authSessionRoundTripOk=true` を要求する
 - release workflow は artifact upload 前後に `desktop/scripts/check_release_artifacts.mjs` を通し、metadata / asset / signature の整合を fail-fast する
-- desktop auth session は OS keychain 経由で保持し、SQLite は workflow/event/engine_mode の永続化に限定する
+- desktop auth session は `auth_session.json`（app data）と OS keychain の併用（ファイル優先・keychain はベストエフォート）。SQLite は workflow/event/engine_mode の永続化に限定する
 
 今回確認できた事実:
 
@@ -412,6 +414,9 @@ commercial-release-ready:
   `npm --prefix desktop ci`
   `python3 -m pip install -r local_worker/requirements-build.txt`
   `CARGO_TARGET_DIR="$PWD/desktop/.cargo-target" npm --prefix desktop run tauri:build`
+  生成確認済み成果物:
+  `desktop/.cargo-target/release/bundle/macos/Prompt Provision Tool Desktop.app`
+  `desktop/.cargo-target/release/bundle/dmg/Prompt Provision Tool Desktop_0.1.0_aarch64.dmg`
 - macOS 配布:
   `.app` または `.dmg` を社内配布し、初回起動は `右クリック -> 開く` を案内する
 - macOS で quarantine が強く残る場合:

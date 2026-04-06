@@ -1,4 +1,4 @@
-# Prompt Provision Tool v2.0.0
+# Prompt Provision Tool v2.0.1
 
 スキル本文を外部に出さず、AI実行機能を提供するWebアプリケーション。
 
@@ -32,12 +32,22 @@ Celery + Redis + ストリーミング + Web Worker まわりの要件定義と�
 - `workflow_runs` は一覧・状態表示用の補助テーブル
 - continuation 重複防止は DB 制約と event 記録をセットで扱う
 - frontend の browser / desktop 差分は `frontend/js/runtime-adapter.js` に集約する
+- desktop の API 呼び出しは WebView `fetch` ではなく Tauri `native_http_request`（Rust `reqwest`）を正とし、`runtime-adapter.js` の `fetchWithRuntime` が切り替える
+- 認証セッションは app data の `auth_session.json` にミラーし、読み取りはファイル優先・続けて keychain。keychain への書き込みはベストエフォート（未署名ビルド等での keychain 失敗でもセッション継続を優先）
+
+### Native HTTP と認証セッション（desktop）
+
+- **`native_http_request`**: 入力は `url`, `method`, `headers`, `bodyText` または `bodyBase64`（camelCase）。レスポンスは `status`, `statusText`, `headers`, `bodyBase64`。ストリーミングは対象外（バッチ応答）
+- **`fetchWithRuntime`（desktop）**: `normalizeDesktopRequest` で `Headers`/plain object/`FormData`（ファイル添付は不可）/`URLSearchParams`/`Blob`/`ArrayBuffer`/TypedArray を正規化してから invoke
+- **`auth_session.json`**: `app_data_dir` 配下、Unix は `chmod 600`。`get_auth_session_internal` はファイルがあればそれを返し、無ければ keychain。`set_auth_session_internal` は常にファイルへ書き込み後、keychain を試行
 
 ### Desktop 実行フロー
 
 ```mermaid
 flowchart TD
     DesktopHome[frontend/index.html] --> Adapter[frontend/js/runtime-adapter.js]
+    Adapter --> NativeHttp[native_http_request]
+    NativeHttp --> BackendHttp[backend HTTP API]
     Adapter --> Tauri[Tauri commands]
     Tauri --> Events[(workflow_run_events)]
     Tauri --> Runs[(workflow_runs)]
@@ -282,7 +292,7 @@ verification mode の設計意図:
 - `Rust/Tauri = runtime truth`、`Node helper = discover / launch / read / assert only` を守り、mode semantics や fallback semantics を helper 側へ複製しない
 - `PPT_VERIFY_EXECUTABLE_PATH` を与えると artifact path を手動 override できる
 - real skill verification の最小 fixture contract は `PPT_DESKTOP_API_BASE`, `PPT_VERIFY_AUTH_TOKEN`, `PPT_VERIFY_SKILL_ID`
-- `verify:packaged:storage` は auth session write path が keyring 経由であることと、token / username が SQLite に保存されていないことを packaged app 自身に証明させる
+- `verify:packaged:storage` は `auth_session.json` が set 直後に存在すること、ラウンドトリップが取れること、token / username が SQLite に保存されていないことを packaged app 自身に証明させる（keychain はベストエフォート）
 - `verify:packaged:storage:strict` は signed release workflow 専用で、上記に加えて `authSessionRoundTripOk=true` を要求する
 
 今回の実測結果:
@@ -325,7 +335,7 @@ verification mode の設計意図:
 - release workflow は build 前に `desktop/scripts/check_release_prereqs.mjs` を通し、updater/signing/notarization secrets の不足を fail-fast する
 - release workflow は build 後に `verify:packaged:storage:strict` を通し、signed runtime のみで `authSessionRoundTripOk=true` を要求する
 - release workflow は artifact upload 前後に `desktop/scripts/check_release_artifacts.mjs` を通し、metadata / asset / signature の整合を fail-fast する
-- desktop auth session は OS keychain に保存し、SQLite は workflow/event/engine_mode の正本に限定する
+- desktop auth session は `auth_session.json` と OS keychain の併用（ファイル優先）で保持し、SQLite は workflow/event/engine_mode の正本に限定する
 
 Completion gate:
 
@@ -347,6 +357,9 @@ commercial-release-ready:
   `npm --prefix desktop ci`
   `python3 -m pip install -r local_worker/requirements-build.txt`
   `CARGO_TARGET_DIR="$PWD/desktop/.cargo-target" npm --prefix desktop run tauri:build`
+  生成確認済み成果物の例:
+  `desktop/.cargo-target/release/bundle/macos/Prompt Provision Tool Desktop.app`
+  `desktop/.cargo-target/release/bundle/dmg/Prompt Provision Tool Desktop_0.1.0_aarch64.dmg`
 - macOS package:
   `.app` または `.dmg` を社内共有し、初回起動は `右クリック -> 開く` を案内する
 - macOS quarantine 除去が必要な場合:

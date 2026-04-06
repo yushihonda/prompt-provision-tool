@@ -337,6 +337,8 @@ class WorkflowGroupSkillItem(BaseModel):
     # ハンドオフ
     handoff_rules: Optional[List[Dict[str, Any]]] = None
     agent_profile: Optional[AgentProfile] = None
+    # Deep Think
+    enable_deep_think: Optional[bool] = None
 
 
 class WorkflowGroupItem(BaseModel):
@@ -484,6 +486,8 @@ class UserWorkflowDetailSkill(BaseModel):
     skill_id: int
     skill_display_name: str
     agent_profile: Optional[AgentProfile] = None
+    model_type: Optional[str] = None
+    enable_deep_think: Optional[bool] = None
 
 
 class UserWorkflowDetail(BaseModel):

@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.0.1] - 2026-04-03
+
+### Added
+- **Desktop ネイティブ HTTP** — Tauri コマンド `native_http_request`（Rust `reqwest` + rustls）。リクエスト/レスポンスは JSON（本文は base64）でやり取りし、WebView 経由の `fetch` との差分を吸収
+- **認証セッションのファイルミラー** — app data 直下に `auth_session.json` を書き込み（Unix は `0o600`）。未署名パッケージ等で keychain が不安定でもログイン状態を維持しやすくする
+- **frontend** — `runtime-adapter.js` の desktop 分岐で `fetchWithRuntime` が `native_http_request` を使う。`FormData`（文字列フィールドのみ）/`URLSearchParams`/`Blob`/`ArrayBuffer`/TypedArray などを正規化
+
+### Changed
+- **認証セッション読み取り** — `auth_session.json` を優先し、無ければ keychain
+- **keychain 書き込み** — `set_auth_session` 時はファイル必須・keychain はベストエフォート（失敗時はログのみ）
+- **desktop Cargo** — `base64`, `reqwest`（`blocking`, `rustls-tls`）を追加
+
 ## [2.0.0] - 2026-04-02
 
 ### Added

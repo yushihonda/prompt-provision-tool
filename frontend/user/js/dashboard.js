@@ -69,7 +69,7 @@ function renderUserWorkflows() {
         return;
     }
 
-    const profileColors = { default: '#ce93d8', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
+    const profileColors = { default: '#9c27b0', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
     const profileLabels = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
 
     container.innerHTML = userWorkflows
@@ -80,13 +80,14 @@ function renderUserWorkflows() {
                 ? formatModelDisplay(wf.parent_model_type || '', null, {})
                 : (wf.parent_model_type || '-');
             const profiles = item.step_profiles || [];
-            const flowHtml = profiles.length > 0
-                ? profiles.map((p, i) => {
-                    const c = profileColors[p] || '#9e9e9e';
-                    const l = profileLabels[p] || p;
-                    return `${i > 0 ? '<span class="flow-arrow">→</span>' : ''}<span class="profile-tag" style="background:${c}22; color:${c};">${l}</span>`;
-                }).join('')
-                : '';
+            let flowHtml = '';
+            if (profiles.length > 0) {
+                flowHtml = profiles.map((p, i) => {
+                    return (i > 0 ? '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' : '') + renderMiniCube(p, { size: 28, showLabel: false });
+                }).join('');
+                // リーダーキューブを追加
+                flowHtml += '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' + renderMiniCube('default', { size: 28, showLabel: false });
+            }
             return `
                 <article class="card-wrapper" data-workflow-id="${wf.id}">
                     <div class="card-circle">

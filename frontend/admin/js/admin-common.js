@@ -3,6 +3,8 @@
 const runtimeFetch = (path, options) => window.PPTRuntime.fetchWithRuntime(path, options);
 const navigateToAdmin = (path) => window.PPTRuntime.navigate(path);
 
+// SweetAlert2のデフォルト設定は swal-defaults.js で共通化
+
 /** HTML特殊文字をエスケープ（XSS防止） */
 function escapeHtmlAdmin(text) {
     if (!text) return '';
@@ -284,11 +286,20 @@ function initAdminLayout(activePage) {
             `<button class="nav-item${n.href === activePage ? ' active' : ''}${extraClass}" onclick="window.PPTRuntime.navigate('${n.href}')">${n.label}</button>`
         ).join('\n');
 
+    const pillNavHtml = ADMIN_NAV_ITEMS.map(p =>
+        `<button class="nav-pill${p.href === activePage ? ' active' : ''}" onclick="window.PPTRuntime.navigate('${p.href}')">${p.label}</button>`
+    ).join('\n');
+
     const headerHtml = `
         <div class="header">
-            <span class="tool-name">Prompt Provision Tool</span>
-            <div class="user-info">
-                <span id="username-display">-</span>
+            <div class="brand-cutout">
+                <span class="tool-name">NexMAGI</span>
+            </div>
+            <div class="header-nav">
+                ${pillNavHtml}
+            </div>
+            <div class="header-user">
+                <span id="username-display">admin</span>
                 <button class="btn-logout" onclick="logout()">ログアウト</button>
             </div>
             <button class="hamburger-menu" onclick="toggleMobileMenu()">
@@ -298,7 +309,7 @@ function initAdminLayout(activePage) {
         <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
         <div class="mobile-menu" id="mobile-menu">
             <div class="mobile-menu-header">
-                <span class="tool-name">Prompt Provision Tool</span>
+                <span class="tool-name">NexMAGI</span>
                 <button class="hamburger-menu active" onclick="toggleMobileMenu()">
                     <span></span><span></span><span></span>
                 </button>
@@ -306,7 +317,7 @@ function initAdminLayout(activePage) {
             <div class="mobile-menu-content">
                 <div class="nav">${navHtml('')}</div>
                 <div class="user-info">
-                    <span id="mobile-username-display">-</span>
+                    <span id="mobile-username-display">admin</span>
                     <button class="btn btn-logout" onclick="logout()">ログアウト</button>
                 </div>
             </div>
@@ -383,7 +394,7 @@ function statusBadgeHtml(isActive) {
 /** 実行ステータス色付き span を返す */
 function executionStatusHtml(status) {
     const colors = { success: '#28a745', error: '#dc3545', cancelled: '#ffc107', pending: '#7c3aed', processing: '#7c3aed', pending_local: '#7c3aed' };
-    const color = colors[status] || 'rgba(255, 255, 255, 0.6)';
+    const color = colors[status] || 'var(--content-text-muted)';
     return `<span style="color:${color}">${escapeHtmlAdmin(status)}</span>`;
 }
 

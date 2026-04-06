@@ -792,6 +792,7 @@ def _launch_dynamic_skill(db, wf_exec, group, step, index, planner_ws,
         output_format=first_exec.output_format if first_exec else "txt",
         execution_group_id=group.id,  # グループに紐付けて追跡
         executed_at=datetime.now(JST),
+            skill_name_snapshot=skill.name,
     )
     db.add(execution)
     db.flush()
@@ -1158,6 +1159,7 @@ def _launch_skills(db, wf_exec, skills, structured_context,
                 enable_deep_think=bool(deep_think),
                 output_format=first_exec.output_format if first_exec else "txt",
                 executed_at=datetime.now(JST),
+            skill_name_snapshot=skill.name,
             )
             db.add(execution)
 
@@ -1217,6 +1219,7 @@ def _retry_skill(db, wf_exec, ws, failed_ex, per_skill_input,
         output_format=failed_ex.output_format or "txt",
         retry_count=failed_ex.retry_count + 1,
         executed_at=datetime.now(JST),
+            skill_name_snapshot=skill.name,
     )
     db.add(execution)
     wf_exec.current_step = ws.skill_order
@@ -1286,6 +1289,7 @@ def _start_parent_skill(db, wf_exec, workflow, structured_context,
             enable_deep_think=bool(workflow.parent_enable_deep_think),
             output_format=first_exec.output_format if first_exec else "txt",
             executed_at=datetime.now(JST),
+            skill_name_snapshot="結果統合",
         )
         db.add(execution)
         wf_exec.status = "processing"

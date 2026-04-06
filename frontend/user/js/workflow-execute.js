@@ -272,6 +272,10 @@ async function loadWorkflowDetail() {
         // 入力フィールドを生成（各Skillのinput_schemaを統合）
         await generateWorkflowInputFields(workflowDetail);
 
+        // フロービューを初期表示（ステータスなし = 全 pending）
+        _flowViewDetail = workflowDetail;
+        renderFlowView(workflowDetail, {});
+
         // 実行履歴を読み込む
         await loadHistory();
 
@@ -352,10 +356,9 @@ async function restoreActiveWorkflowExecution() {
             }
         }
 
-        // フロービューを初期化（詳細へ遷移時に必要）
-        if (!_flowViewDetail && workflowDetail) {
+        // フロービューを初期化・更新（詳細へ遷移時 + 実行中復帰時）
+        if (workflowDetail) {
             _flowViewDetail = workflowDetail;
-            _flowStepStatuses = {};
             // 各スキルのステータスを設定（最新のExecutionのみ）
             for (const exec of Object.values(latestByWsId)) {
                 const skillInfo = workflowDetail?.skills?.find(s => s.skill_order == exec.skill_order);
@@ -367,7 +370,7 @@ async function restoreActiveWorkflowExecution() {
             // リーダーステータス（特殊ロールでない、workflow_skill_id=null）
             const leaderExecForStatus = normalExecs.find(e => !e.workflow_skill_id);
             if (leaderExecForStatus) {
-                _flowStepStatuses['leader'] = leaderExecForStatus.status;
+                _flowStepStatuses['leader'] = leaderExecForStatus.status === 'pending_local' ? 'pending' : leaderExecForStatus.status;
             }
             // オーケストレーション状況を復元
             _orchestrationStatuses = specialExecs.map(e => ({
@@ -376,6 +379,7 @@ async function restoreActiveWorkflowExecution() {
                 status: e.status,
                 action: '',
             }));
+            renderFlowView(_flowViewDetail, _flowStepStatuses);
         }
 
         // 入力データを復元（全ステップから）
@@ -440,7 +444,21 @@ async function restoreActiveWorkflowExecution() {
                 displayWorkflowResult(finalOutput, allStepResults, resultExec);
             }
         } else {
-            // 実行中: ステップごとの進捗を表示
+            // 実行中: Stageメタデータを復元
+            try {
+                const wfStatusRestore = await apiRequest(`/api/user/workflow-executions/${weId}/status`);
+                if (wfStatusRestore?.blackboard_keys) _blackboardKeys = wfStatusRestore.blackboard_keys;
+                _wfStageMeta = {
+                    currentStage: wfStatusRestore?.current_stage || null,
+                    finalVerdict: wfStatusRestore?.final_verdict || null,
+                    handoffSummary: wfStatusRestore?.handoff_summary || null,
+                    coordinatorView: wfStatusRestore?.coordinator_view || null,
+                    synthesisEvents: wfStatusRestore?.synthesis_events || [],
+                };
+                updateStatusBar();
+                if (_flowViewDetail) renderFlowView(_flowViewDetail, _flowStepStatuses);
+            } catch (e) {}
+
             renderStepExecutions();
 
             // ボタン・入力フィールドを無効化（実行完了まで）
@@ -454,6 +472,97 @@ async function restoreActiveWorkflowExecution() {
             if (form) {
                 form.querySelectorAll('input, textarea, select').forEach(el => { el.disabled = true; });
             }
+            // 入力パネル全体を無効化 + 切り抜き円をスピナーに
+            const inputPanel = document.querySelector('.wf-io-input');
+            if (inputPanel) inputPanel.classList.add('is-disabled');
+            const execCircle = document.getElementById('workflow-execute-circle');
+            const execIcon = document.getElementById('wf-exec-icon');
+            const execSpinner = document.getElementById('wf-exec-spinner');
+            if (execCircle) execCircle.style.pointerEvents = 'none';
+            if (execIcon) execIcon.style.display = 'none';
+            if (execSpinner) execSpinner.style.display = 'flex';
+
+            // デスクトップポーリングを再開（ページ遷移後の復帰）
+            const allSkills = workflowDetail?.skills || [];
+            const _resumePoll = async () => {
+                const pollInterval = 3000;
+                while (true) {
+                    await new Promise(r => setTimeout(r, pollInterval));
+                    try {
+                        const execsResp = await apiRequest('/api/user/executions?limit=100');
+                        const allExecs = execsResp.items || execsResp;
+                        const resumeWfExecs = allExecs.filter(e => e.workflow_execution_id === weId);
+                        if (resumeWfExecs.length === 0) continue;
+
+                        let hasChanged = false;
+                        let hasProcessing = false;
+
+                        // 通常ステップ
+                        const latestResume = {};
+                        for (const exec of resumeWfExecs) {
+                            if (exec.execution_role) continue;
+                            if (!exec.workflow_skill_id) continue;
+                            const prev = latestResume[exec.workflow_skill_id];
+                            if (!prev || exec.id > prev.id) latestResume[exec.workflow_skill_id] = exec;
+                        }
+                        for (const exec of Object.values(latestResume)) {
+                            const mapped = exec.status === 'success' ? 'success'
+                                : exec.status === 'error' ? 'error'
+                                : (exec.status === 'processing' || exec.status === 'pending' || exec.status === 'pending_local') ? 'processing' : null;
+                            if (!mapped) continue;
+                            const key = 'ws_' + exec.workflow_skill_id;
+                            if (_flowStepStatuses[key] !== mapped) { _flowStepStatuses[key] = mapped; hasChanged = true; }
+                            if (exec.skill_id) _flowStepStatuses[exec.skill_id] = mapped;
+                            if (mapped === 'processing') hasProcessing = true;
+                            if (exec.skill_order) {
+                                stepExecutions.set(exec.skill_order, {
+                                    executionId: exec.id, workflowSkillId: exec.workflow_skill_id,
+                                    status: exec.status, output: exec.output_data || '',
+                                    stepName: exec.skill_name || `Step ${exec.skill_order}`,
+                                    skillName: exec.skill_name,
+                                    errorMessage: exec.status === 'success' ? null : (exec.error_message || null),
+                                });
+                            }
+                        }
+
+                        // リーダー（parent skill: workflow_skill_id=null）
+                        const leaderResume = resumeWfExecs.find(e => !e.workflow_skill_id && !e.execution_role);
+                        if (leaderResume) {
+                            const lm = leaderResume.status === 'success' ? 'success'
+                                : leaderResume.status === 'error' ? 'error'
+                                : (leaderResume.status === 'processing' || leaderResume.status === 'pending' || leaderResume.status === 'pending_local') ? 'processing' : 'pending';
+                            if (_flowStepStatuses['leader'] !== lm) { _flowStepStatuses['leader'] = lm; hasChanged = true; }
+                            if (lm === 'success') _flowLeaderOutput = leaderResume.output_data || _flowLeaderOutput;
+                            if (lm === 'processing') hasProcessing = true;
+                        }
+                        // 特殊ロール
+                        for (const exec of resumeWfExecs) {
+                            if (!exec.execution_role) continue;
+                            const lm = exec.status === 'success' ? 'success' : exec.status === 'error' ? 'error' : 'processing';
+                            if (_flowStepStatuses['leader'] !== lm) { _flowStepStatuses['leader'] = lm; hasChanged = true; }
+                            if (lm === 'success') _flowLeaderOutput = exec.output_data || _flowLeaderOutput;
+                            if (lm === 'processing') hasProcessing = true;
+                        }
+
+                        if (hasChanged && _flowViewDetail) renderFlowView(_flowViewDetail, _flowStepStatuses);
+
+                        // 完了チェック
+                        const wfStatusResp = await apiRequest(`/api/user/workflow-executions/${weId}/status`).catch(() => null);
+                        if (wfStatusResp && (wfStatusResp.status === 'success' || wfStatusResp.status === 'error' || wfStatusResp.status === 'cancelled')) {
+                            const leaderExec = resumeWfExecs.find(e => e.execution_role && (e.status === 'success' || e.status === 'error'))
+                                || resumeWfExecs.find(e => !e.workflow_skill_id && !e.execution_role);
+                            const leaderExecution = leaderExec
+                                ? await apiRequest(`/api/user/executions/${leaderExec.id}`).catch(() => null)
+                                : { id: null, status: wfStatusResp.status, output_data: '' };
+                            await handleWorkflowComplete(weId, leaderExecution || { id: null, status: wfStatusResp.status, output_data: '' });
+                            return;
+                        }
+                    } catch (e) {
+                        console.warn('[ResumePoll] error:', e);
+                    }
+                }
+            };
+            _resumePoll().catch(err => console.error('[ResumePoll] fatal:', err));
         }
     } catch (error) {
         console.error('Failed to restore workflow execution:', error);
@@ -488,11 +597,11 @@ async function generateWorkflowInputFields(detail) {
         Object.keys(workflowInputSchema).length > 0;
     if (hasWorkflowGlobalSchema) {
         parts.push(`
-            <div class="workflow-global-section" style="margin-bottom: 24px; padding-bottom: 24px; border-bottom: 2px solid rgba(255,255,255,0.2);">
-                <h3 style="margin-top: 0; margin-bottom: 12px; color: rgba(255,255,255,0.9);">
+            <div class="workflow-global-section" style="margin-bottom: 24px; padding-bottom: 24px; border-bottom: 2px solid rgba(0,0,0,0.08);">
+                <h3 style="margin-top: 0; margin-bottom: 12px; color: var(--content-text);">
                     ワークフロー共通入力
                 </h3>
-                <p style="font-size: 12px; color: rgba(255,255,255,0.7); margin-bottom: 12px;">
+                <p style="font-size: 12px; color: var(--content-text-muted); margin-bottom: 12px;">
                     すべてのステップで共通して使用される入力データ
                 </p>
                 <div data-workflow-global-input="true">
@@ -585,13 +694,13 @@ async function generateWorkflowInputFields(detail) {
             if (type === 'number' || type === 'integer') {
                 return `<div class="form-group">
                     <label for="${fullName}">${label}</label>
-                    ${description ? `<small style="color: rgba(255,255,255,0.6);">${description}</small>` : ''}
+                    ${description ? `<small style="color: var(--content-text-muted);">${description}</small>` : ''}
                     <input type="number" id="${fullName}" name="${fullName}" ${requiredAttr} ${placeholderAttr}>
                 </div>`;
             }
             return `<div class="form-group">
                 <label for="${fullName}">${label}</label>
-                ${description ? `<small style="color: rgba(255,255,255,0.6);">${description}</small>` : ''}
+                ${description ? `<small style="color: var(--content-text-muted);">${description}</small>` : ''}
                 <textarea id="${fullName}" name="${fullName}" rows="${rows}" ${requiredAttr} ${placeholderAttr}></textarea>
             </div>`;
         }).join('');
@@ -622,22 +731,22 @@ async function generateWorkflowInputFields(detail) {
         // 1ステップだけなら見出し不要、複数ならステップ名で区別
         if (stepSections.length === 1) {
             parts.push(`
-                <div class="workflow-step-input-section" style="margin-top: 24px;">
-                    <h3 style="margin-top: 0; margin-bottom: 12px; color: rgba(255,255,255,0.9);">入力データ</h3>
-                    <div>${stepSections[0].fieldsHTML}</div>
+                <div class="workflow-step-input-section workflow-step-section" style="margin-top: 24px;">
+                    <h3 style="margin-top: 0; margin-bottom: 12px; color: var(--content-text);">入力データ</h3>
+                    <div class="workflow-step-fields">${stepSections[0].fieldsHTML}</div>
                 </div>
             `);
         } else {
             parts.push(`
-                <div class="workflow-step-input-section" style="margin-top: 24px;">
-                    <h3 style="margin-top: 0; margin-bottom: 12px; color: rgba(255,255,255,0.9);">各ステップの入力データ</h3>
-                    <p style="font-size: 12px; color: rgba(255,255,255,0.7); margin-bottom: 12px;">
+                <div class="workflow-step-input-section workflow-step-section" style="margin-top: 24px;">
+                    <h3 style="margin-top: 0; margin-bottom: 12px; color: var(--content-text);">各ステップの入力データ</h3>
+                    <p style="font-size: 12px; color: var(--content-text-muted); margin-bottom: 12px;">
                         各ステップに個別の入力を設定できます
                     </p>
                     ${stepSections.map(sec => `
-                        <div style="margin-bottom: 16px; padding: 12px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; border-left: 3px solid #7c3aed;">
+                        <div style="margin-bottom: 16px; padding: 12px; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px; border-left: 3px solid #7c3aed;">
                             <div style="font-size: 12px; font-weight: 600; color: #c4b5fd; margin-bottom: 8px;">${sec.stepLabel}</div>
-                            ${sec.fieldsHTML}
+                            <div class="workflow-step-fields">${sec.fieldsHTML}</div>
                         </div>
                     `).join('')}
                 </div>
@@ -647,7 +756,7 @@ async function generateWorkflowInputFields(detail) {
 
     if (!parts.length) {
         container.innerHTML =
-            '<p style="text-align:center; color: rgba(255,255,255,0.6);">このワークフローに有効なステップがありません</p>';
+            '<p style="text-align:center; color: var(--content-text-muted);">このワークフローに有効なステップがありません</p>';
     } else {
         container.innerHTML = parts.join('');
     }
@@ -656,7 +765,7 @@ async function generateWorkflowInputFields(detail) {
 // ワークフロー共通入力のinput_schemaから入力フィールドHTMLを生成
 function renderInputFieldsForWorkflowGlobal(inputSchema) {
     if (!inputSchema || typeof inputSchema !== 'object') {
-        return '<p style="color: rgba(255,255,255,0.6);">入力スキーマが定義されていません</p>';
+        return '<p style="color: var(--content-text-muted);">入力スキーマが定義されていません</p>';
     }
 
     let properties = {};
@@ -673,7 +782,7 @@ function renderInputFieldsForWorkflowGlobal(inputSchema) {
     }
 
     if (Object.keys(properties).length === 0) {
-        return '<p style="color: rgba(255,255,255,0.6);">入力フィールドが定義されていません</p>';
+        return '<p style="color: var(--content-text-muted);">入力フィールドが定義されていません</p>';
     }
 
     const fieldsHTML = Object.entries(properties)
@@ -694,7 +803,7 @@ function renderInputFieldsForWorkflowGlobal(inputSchema) {
                 return `
                     <div class="form-group">
                         <label for="${fullName}">${label}</label>
-                        ${description ? `<small style="color: rgba(255,255,255,0.6);">${description}</small>` : ''}
+                        ${description ? `<small style="color: var(--content-text-muted);">${description}</small>` : ''}
                         <input type="number" id="${fullName}" name="${fullName}" ${required} ${placeholderAttr}>
                     </div>
                 `;
@@ -704,7 +813,7 @@ function renderInputFieldsForWorkflowGlobal(inputSchema) {
             return `
                 <div class="form-group">
                     <label for="${fullName}">${label}</label>
-                    ${description ? `<small style="color: rgba(255,255,255,0.6);">${description}</small>` : ''}
+                    ${description ? `<small style="color: var(--content-text-muted);">${description}</small>` : ''}
                     <textarea id="${fullName}" name="${fullName}" rows="${rows}" ${required} ${placeholderAttr}></textarea>
                 </div>
             `;
@@ -769,7 +878,7 @@ function renderInputFieldsForSchema(step, inputSchema) {
                 return `
                     <div class="form-group">
                         <label for="${fullName}">${label}</label>
-                        ${description ? `<small style="color: rgba(255,255,255,0.6);">${description}</small>` : ''}
+                        ${description ? `<small style="color: var(--content-text-muted);">${description}</small>` : ''}
                         <input type="number" id="${fullName}" name="${fullName}" ${required} ${placeholderAttr}>
                     </div>
                 `;
@@ -779,7 +888,7 @@ function renderInputFieldsForSchema(step, inputSchema) {
             return `
                 <div class="form-group">
                     <label for="${fullName}">${label}</label>
-                    ${description ? `<small style="color: rgba(255,255,255,0.6);">${description}</small>` : ''}
+                    ${description ? `<small style="color: var(--content-text-muted);">${description}</small>` : ''}
                     <textarea id="${fullName}" name="${fullName}" rows="${rows}" ${required} ${placeholderAttr}></textarea>
                 </div>
             `;
@@ -853,21 +962,21 @@ function renderWorkflowStageSummary(esc) {
     }[nextAction] || '→';
     const actionColor = nextAction === 'completed' ? '#28a745' : nextAction === 'failed' ? '#dc3545' : '#64b5f6';
 
-    let html = `<div style="padding:10px 14px; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12); border-radius:8px; margin-bottom:10px;">`;
+    let html = `<div style="padding:12px 16px; background:#fff; border:1px solid rgba(0,0,0,0.06); border-radius:12px; margin-bottom:12px;">`;
 
     // 1行目: Stage + Verdict + 進捗
     html += `<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:${latestSummary || events.length ? '8px' : '0'};">`;
-    html += `<span style="font-size:11px; color:rgba(255,255,255,0.55);">Stage</span>`;
+    html += `<span style="font-size:11px; color:#999;">Stage</span>`;
     html += `<span style="font-size:12px; font-weight:bold; color:${_profileColor(_wfStageMeta.currentStage || 'default')};">${esc(stage)}</span>`;
     if (verdict !== '-') {
-        html += `<span style="font-size:11px; color:rgba(255,255,255,0.55); margin-left:8px;">Verdict</span>`;
-        html += `<span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : 'rgba(255,255,255,0.7)'};">${esc(verdict)}</span>`;
+        html += `<span style="font-size:11px; color:#999; margin-left:8px;">Verdict</span>`;
+        html += `<span style="font-size:12px; font-weight:bold; color:${verdict === 'PASS' ? '#28a745' : verdict === 'FAIL' ? '#dc3545' : verdict === 'PARTIAL' ? '#ffc107' : '#555'};">${esc(verdict)}</span>`;
     }
     if (totalExecs > 0) {
-        html += `<span style="font-size:10px; color:rgba(255,255,255,0.4); margin-left:auto;">${completedCount}/${totalExecs} steps</span>`;
+        html += `<span style="font-size:10px; color:#aaa; margin-left:auto;">${completedCount}/${totalExecs} steps</span>`;
     }
     if (failedStage) {
-        html += `<span style="font-size:12px; font-weight:bold; color:#ff8a80; margin-left:8px;">${esc(failedStage)} failed</span>`;
+        html += `<span style="font-size:12px; font-weight:bold; color:#dc3545; margin-left:8px;">${esc(failedStage)} failed</span>`;
     }
     html += `</div>`;
 
@@ -875,7 +984,7 @@ function renderWorkflowStageSummary(esc) {
     if (latestSummary) {
         html += `<div style="display:flex; align-items:center; gap:6px; margin-bottom:${events.length > 0 ? '8px' : '0'};">`;
         html += `<span style="color:${actionColor}; font-size:12px;">${actionIcon}</span>`;
-        html += `<span style="font-size:11px; color:rgba(255,255,255,0.8);">${esc(latestSummary)}</span>`;
+        html += `<span style="font-size:11px; color:#555;">${esc(latestSummary)}</span>`;
         html += `</div>`;
     }
 
@@ -891,7 +1000,7 @@ function renderWorkflowStageSummary(esc) {
                 'step_error': '✗', 'debate_judge_error': '⚖✗',
             }[ev.event_type] || '•';
             const evColor = ev.event_type.includes('error') ? '#dc3545' : '#28a745';
-            html += `<span style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.06); border-radius:10px; color:rgba(255,255,255,0.65); display:inline-flex; align-items:center; gap:3px;">`;
+            html += `<span style="font-size:10px; padding:2px 8px; background:rgba(0,0,0,0.04); border-radius:10px; color:#666; display:inline-flex; align-items:center; gap:3px;">`;
             html += `<span style="color:${evColor};">${evIcon}</span>${esc(ev.summary || ev.step_name || '')}`;
             html += `</span>`;
         }
@@ -902,13 +1011,13 @@ function renderWorkflowStageSummary(esc) {
     const cvKeyPoints = cv?.key_points || [];
     if (cvKeyPoints.length > 0) {
         html += `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;">`;
-        cvKeyPoints.forEach(kp => { html += `<span style="font-size:10px; padding:2px 8px; background:rgba(76,175,80,0.12); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(kp)}</span>`; });
+        cvKeyPoints.forEach(kp => { html += `<span style="font-size:10px; padding:2px 8px; background:rgba(76,175,80,0.08); border-radius:10px; color:#555;">${esc(kp)}</span>`; });
         html += `</div>`;
     }
 
     // Blackboard refs
     if (refs.length) {
-        html += `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">${refs.map(ref => `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.15); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(ref)}</span>`).join('')}</div>`;
+        html += `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">${refs.map(ref => `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.08); border-radius:10px; color:#555;">${esc(ref)}</span>`).join('')}</div>`;
     }
 
     html += `</div>`;
@@ -921,7 +1030,6 @@ function renderFlowView(wfDetail, allStepStatuses) {
 
     const wf = wfDetail.workflow || wfDetail;
     const groups = wf.groups || [];
-    const wfName = wf.name || 'ワークフロー';
 
     if (groups.length === 0) {
         flowEl.style.display = 'none';
@@ -929,22 +1037,50 @@ function renderFlowView(wfDetail, allStepStatuses) {
     }
     flowEl.style.display = 'block';
 
+    // Hide the empty placeholder
+    const emptyEl = document.getElementById('workflow-output-content');
+    if (emptyEl) emptyEl.style.display = 'none';
+
     const esc = typeof escapeHtml === 'function' ? escapeHtml : (t => t);
+    const profileColors = { default: '#9c27b0', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
+    // SVG icons — used both in cube (wf-cube-icon-img) and profile tag (wf-tag-icon)
+    function _mkSvg(paths, cls) { return `<svg viewBox="0 0 512 512" class="${cls}">${paths}</svg>`; }
+    const _pathExplore = '<path d="M465.6,24H46.4C20.8,24,0,44.8,0,70.5V441.6c0,25.7,20.8,46.4,46.4,46.4h419.2c25.6,0,46.4-20.7,46.4-46.4V70.5C512,44.8,491.2,24,465.6,24zM464,440H48V120h416V440z"/><path d="M368,348.2H144v52.7h224V348.2zM160,384.8v-20.7h192v20.7H160z"/><circle cx="241.6" cy="225.6" r="30.2" fill="none" stroke-width="20"/><path d="M300.8,268.7l16.7,16.8c7,7,18.4,7,25.4,0c7-7,7-18.5,0-25.5l-17-17L300.8,268.7z"/>';
+    const _pathPlan = '<path d="M473.2,39.6c-5.2-18.2-19.2-32.1-37.1-37.3C431.1,0.8,426,0,420.4,0H91.6c-30.3,0-55,24.7-55,55v403.4c0.9,29.6,24.7,53.2,54.3,53.6h205.1c10.6,0,20.8-2.2,30.6-6.6c8.2-3.8,15.5-8.9,21.7-15.1L453.8,384.8c6.3-6.3,11.6-13.9,15.1-21.9c4.3-9.4,6.5-19.9,6.5-30.5V55C475.4,49.4,474.7,44.3,473.2,39.6zM303.6,356.5V466.5c-2.5,0.7-5,1-7.6,1H91.4c-5.6-0.1-10.2-4.7-10.3-10.2V55c0-5.8,4.7-10.5,10.5-10.5h328.9c1,0,1.6,0.1,2.9,0.5c3.5,0.9,6.3,3.7,7.4,7.9c0.2,0.5,0.3,1.1,0.3,2.1v277.4c0,2.6-0.3,5.2-1,7.7H320C311,340.1,303.6,347.5,303.6,356.5z"/><rect x="166.5" y="115.3" width="178.9" height="19.9" rx="2.2"/><rect x="166.5" y="192.8" width="178.9" height="19.9" rx="2.2"/><rect x="166.5" y="270.3" width="178.9" height="19.7" rx="2.2"/><rect x="166.5" y="347.9" width="94.5" height="19.9" rx="2.2"/>';
+    const _pathImplement = '<path d="M362,300.9v-0.2l-33.3,33.3v78.4c0,12.9-10.5,23.4-23.5,23.4H156c-8.6,0-16.9-0.9-25-2.5V353.2c0-8.4-6.8-15.1-15.1-15.1H35.9c-1.7-8.1-2.5-16.4-2.5-25V99.7c0-12.9,10.5-23.4,23.4-23.4h248.4c13,0,23.5,10.5,23.5,23.4v11l-0.1,7.8l0.1-0.1v0.2l31.8-31.8c-5.9-25-28.4-43.8-55.3-43.8H56.8C25.5,42.9,0,68.4,0,99.7v213.5c0,10.7,1.1,21.4,3.2,31.8c12.7,60.8,60.1,108.3,121.1,120.9c10.3,2.1,21,3.3,31.7,3.3h149.2c31.4,0,56.8-25.5,56.8-56.8v-65.5l0.1-46L362,300.9z"/><path d="M508.4,99.9L455,46.5c-2.8-2.8-6.7-4-10.5-3.5c-0.9-0.1-1.9,0-2.9,0.2c-0.4,0.1-0.8,0.2-1.3,0.3c-1,0.3-1.9,0.6-2.9,1.2c-0.4,0.3-0.9,0.5-1.4,0.9c-0.4,0.3-0.9,0.5-1.3,0.9L202.7,282.1l-28.1,90c-1.3,4.2,2.1,8.4,6.3,8.4c0.6,0,1.2-0.1,1.9-0.3l90-28.1L508.8,116.1C513.2,111.7,513,104.5,508.4,99.9z"/>';
+    const _pathVerification = '<path d="M492.7,41l-5-5.4L250.9,252.3l-39.5-42.3c-13.9-14.8-33.5-23.4-53.8-23.4c-18.7,0-36.6,7-50.3,19.8l-5.3,5L218.2,336c7.9,8.4,19,13.3,30.6,13.3c10.5,0,20.5-3.9,28.2-11L488.1,145.1C518.1,117.7,520.1,71,492.7,41z"/><path d="M454.2,231.7v-0.1l-52,47.6v117.7c0,18.9-15.4,34.2-34.2,34.2H86.2c-18.9,0-34.2-15.3-34.2-34.2V115.1c0-18.8,15.3-34.2,34.2-34.2h281.7c2.9,0,5.7,0.4,8.4,1l40.9-37.4c-14-9.9-31-15.6-49.4-15.6H86.2C38.7,28.9,0,67.6,0,115.1v281.7c0,47.6,38.7,86.2,86.2,86.2h281.7c47.5,0,86.2-38.7,86.2-86.2v-97.6l0.1-67.7L454.2,231.7z"/>';
+    const _pathLeader = '<path d="M484.1,176.9H350.3c-12,0-22.7-7.8-26.4-19.2L282.4,30.4c-8.3-25.6-44.6-25.6-52.9,0l-41.4,127.3c-3.7,11.5-14.4,19.2-26.4,19.2H27.9c-26.9,0-38.1,34.5-16.3,50.3l108.3,78.7c9.7,7.1,13.8,19.6,10.1,31.1L88.6,464.3c-8.3,25.6,21,46.9,42.8,31.1l108.3-78.7c9.7-7.1,22.9-7.1,32.7,0l108.3,78.7c21.8,15.8,51.1-5.5,42.8-31.1L382.1,337c-3.7-11.5,0.4-24,10.1-31.1l108.3-78.7C522.3,211.4,511.1,176.9,484.1,176.9z"/>';
+    // Cube icons (inherit color from .wf-node-icon via CSS)
+    const _svgExplore = _mkSvg(_pathExplore, 'wf-cube-icon-img');
+    const _svgPlan = _mkSvg(_pathPlan, 'wf-cube-icon-img');
+    const _svgImplement = _mkSvg(_pathImplement, 'wf-cube-icon-img');
+    const _svgVerification = _mkSvg(_pathVerification, 'wf-cube-icon-img');
+    const _svgLeader = _mkSvg(_pathLeader, 'wf-cube-icon-img');
+    // Tag icons (inherit color from .wf-node-profile-tag via CSS)
+    const _tagExplore = _mkSvg(_pathExplore, 'wf-tag-icon');
+    const _tagPlan = _mkSvg(_pathPlan, 'wf-tag-icon');
+    const _tagImplement = _mkSvg(_pathImplement, 'wf-tag-icon');
+    const _tagVerification = _mkSvg(_pathVerification, 'wf-tag-icon');
+    const _tagLeader = _mkSvg(_pathLeader, 'wf-tag-icon');
+    const profileTagIcons = { explore: _tagExplore, plan: _tagPlan, implement: _tagImplement, verification: _tagVerification, default: _tagLeader };
+    const profileIcons = {
+        explore: _svgExplore,
+        plan: _svgPlan,
+        implement: _svgImplement,
+        verification: _svgVerification,
+        default: _svgLeader
+    };
 
-    // ステータスカラー・アイコン
-    const sc = (s) => s === 'success' ? '#28a745' : s === 'processing' ? '#7c3aed' : s === 'error' ? '#dc3545' : 'rgba(255,255,255,0.2)';
-    const si = (s) => s === 'success' ? '&#10003;' : s === 'processing' ? '&#9679;' : s === 'error' ? '&#10007;' : '&#9711;';
+    // Collect all steps
+    const allSteps = [];
+    groups.forEach(grp => {
+        (grp.skills || []).forEach(sk => allSteps.push(sk));
+    });
 
-    // stepExecutions からワークフロースキルID→出力データのマップを作成
-    // executionId → stepData のマップも作成（executionIdベースで引けるように）
-    const skillOutputByWsId = {};   // workflow_skill_id -> { output, errorMessage, status }
-    const skillOutputByExecId = {}; // execution_id -> { output, errorMessage, status }
+    // Build skill output lookup from stepExecutions
+    const skillOutputByWsId = {};
     if (stepExecutions && stepExecutions.size > 0) {
-        for (const [stepOrder, data] of stepExecutions.entries()) {
-            if (data.executionId) {
-                skillOutputByExecId[data.executionId] = data;
-            }
-            // workflowSkillId が stepData に含まれていればそれを使う（数値・文字列の両方でセット）
+        for (const [, data] of stepExecutions.entries()) {
             if (data.workflowSkillId) {
                 skillOutputByWsId[data.workflowSkillId] = data;
                 skillOutputByWsId[String(data.workflowSkillId)] = data;
@@ -952,182 +1088,129 @@ function renderFlowView(wfDetail, allStepStatuses) {
         }
     }
 
-    // スキルノードの出力HTML（折りたたみ）— workflow_skill_id で引く
-    function skillOutputHtml(wsId) {
-        const data = skillOutputByWsId[wsId] || skillOutputByWsId[String(wsId)] || skillOutputByWsId[Number(wsId)];
-        if (!data) return '';
-        // Reflectionバッジ
-        const refLoop = data.reflectionLoop || 0;
-        const refBadge = refLoop > 0 ? `<span style="font-size:9px; color:#ffc107; background:rgba(255,193,7,0.15); padding:1px 6px; border-radius:8px; margin-left:4px;">再実行 ${refLoop}回目</span>` : '';
-        if (data.status === 'processing') {
-            const chunkLen = data.output ? data.output.length : 0;
-            const chunkInfo = chunkLen > 0 ? `${chunkLen}文字受信中` : '実行中';
-            return `<div style="margin-top:6px; padding:6px 8px; background:rgba(124,58,237,0.1); border-radius:4px; font-size:11px; color:rgba(255,255,255,0.6); display:flex; align-items:center; gap:6px;"><div style="width:12px; height:12px; border:2px solid rgba(255,255,255,0.1); border-top:2px solid #7c3aed; border-radius:50%; animation:spin 1s linear infinite; flex-shrink:0;"></div><span>${chunkInfo}...${refBadge}</span></div>`;
-        }
-        if (data.status === 'success' && data.output) {
-            return `<details data-ws-id="${wsId}" style="margin-top:6px;"><summary style="font-size:10px; color:rgba(255,255,255,0.5); cursor:pointer; user-select:none;">出力を表示${refBadge}</summary><div style="margin-top:4px; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px; max-height:150px; overflow-y:auto;"><div style="color:rgba(255,255,255,0.8); white-space:pre-wrap; word-wrap:break-word; font-size:11px; line-height:1.5;">${esc(data.output)}</div></div></details>`;
-        }
-        if (data.status === 'error' && data.errorMessage) {
-            return `<div style="margin-top:6px; padding:6px 8px; background:rgba(220,53,69,0.15); border-radius:4px; font-size:11px; color:#dc3545;">${esc(data.errorMessage)}${refBadge}</div>`;
-        }
-        return '';
-    }
-
-    // オーケストレーション状況ノードHTML (ジャッジ/SV/BB)
-    function orchestrationNodesHtml(grpId) {
-        if (!_orchestrationStatuses) return '';
-        const items = _orchestrationStatuses.filter(o => o.groupId === grpId);
-        if (!items.length) return '';
+    function skillOutputHtml(wsId, sk) {
+        const data = skillOutputByWsId[wsId] || skillOutputByWsId[String(wsId)];
         let html = '';
-        for (const item of items) {
-            const roleLabel = item.role === 'debate_judge' ? 'Judge 合議' : item.role === 'supervisor' ? 'Supervisor 判定' : item.role === 'quality_gate' ? '品質ゲート' : item.role;
-            const roleColor = item.role === 'debate_judge' ? '#e91e63' : item.role === 'supervisor' ? '#ff9800' : '#9c27b0';
-            const statusColor = sc(item.status);
-            const statusIcon = si(item.status);
-            html += `<div style="display:flex; justify-content:center; padding:2px 0;"><div style="width:2px; height:10px; background:rgba(255,255,255,0.1);"></div></div>`;
-            html += `
-                <div style="display:flex; align-items:center; gap:8px; padding:8px 14px; background:${roleColor}10; border:1px solid ${roleColor}30; border-radius:6px; margin:2px 0;">
-                    <span style="color:${statusColor}; font-size:12px;">${statusIcon}</span>
-                    <span style="font-size:11px; font-weight:bold; color:${roleColor};">${roleLabel}</span>
-                    ${item.status === 'processing' ? '<div class="spinner" style="display:inline-block; width:10px; height:10px; border-width:1.5px;"></div>' : ''}
-                    ${item.action ? `<span style="font-size:10px; color:rgba(255,255,255,0.5); margin-left:auto;">${esc(item.action)}</span>` : ''}
-                </div>`;
+        if (!data) return html;
+        if (data.status === 'processing') {
+            const len = data.output ? data.output.length : 0;
+            html += `<div class="wf-node-output processing">${len > 0 ? len + '文字受信中...' : '実行中...'}</div>`;
+        } else if (data.status === 'success' && data.output) {
+            const outputId = `wf-output-${wsId}`;
+            html += `<button class="wf-node-output-btn" onclick="showNodeOutputPopup('${esc(sk?.skill_name || 'Step')}', '${outputId}')">出力を表示</button>`;
+            html += `<div id="${outputId}" style="display:none;">${esc(data.output)}</div>`;
+        } else if (data.status === 'error' && data.errorMessage) {
+            html += `<div class="wf-node-output error">${esc(data.errorMessage.substring(0, 80))}</div>`;
         }
         return html;
     }
 
-    // リーダーステータス判定
-    // リーダー以外のスキルステータスで判定
-    const skillStatuses = allStepStatuses ? Object.entries(allStepStatuses).filter(([k]) => k !== 'leader') : [];
-    const anyStarted = skillStatuses.length > 0;
-    const allSkillsDone = skillStatuses.length > 0 && skillStatuses.every(([, s]) => s === 'success');
-    const leaderStartStatus = anyStarted ? 'success' : 'pending';
-    const leaderEndStatus = allStepStatuses?.['leader'] || (allSkillsDone ? 'pending' : 'pending');
-
-    // リーダー（結果統合）の出力
+    const statuses = allStepStatuses || {};
+    const leaderStatus = statuses['leader'] || 'pending';
     const leaderOutput = _flowLeaderOutput || '';
 
     let html = renderWorkflowStageSummary(esc);
+    html += '<div class="wf-pipeline">';
 
-    // --- リーダー開始 ---
+    allSteps.forEach((sk, idx) => {
+        const sName = sk.skill_name || `Step ${idx + 1}`;
+        let sStatus = (statuses['ws_' + sk.workflow_skill_id] || statuses[sk.skill_id]) || 'pending';
+        const profile = sk.agent_profile || 'default';
+        const pColor = profileColors[profile] || '#9e9e9e';
+        const pLabel = formatStageLabel ? formatStageLabel(profile) : profile;
+        const pIcon = profileIcons[profile] || profileIcons.default;
+
+        // 品質ゲート/リトライ検出: orchestrationStatusesから該当ステップの検証状況を確認
+        const stepExecData = stepExecutions.get(sk.skill_order);
+        const reflectionLoop = stepExecData?.reflectionLoop || 0;
+        const orchForStep = _orchestrationStatuses.find(o =>
+            (o.role === 'quality_gate' || o.role === 'supervisor') &&
+            o.status === 'processing'
+        );
+        const isVerifying = orchForStep && sStatus === 'success';  // ステップ完了後に検証中
+        const isRetrying = sStatus === 'processing' && reflectionLoop > 0;  // リトライ実行中
+
+        // 検証中なら特別なステータス表示
+        let displayStatus = sStatus;
+        if (isVerifying) displayStatus = 'verifying';
+        if (isRetrying) displayStatus = 'retrying';
+
+        // キューブ内アイコン: processing/retryingはローダー、それ以外は常にロールアイコン
+        const iconContent = (displayStatus === 'processing' || displayStatus === 'retrying')
+            ? '<div class="wf-node-loader"><span></span><span></span><span></span></div>'
+            : displayStatus === 'verifying'
+            ? '<svg viewBox="0 0 24 24" class="wf-cube-icon-img wf-icon-verifying"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" fill="currentColor"/></svg>'
+            : pIcon;
+
+        const nodeStateClass = displayStatus === 'processing' || displayStatus === 'retrying' ? 'is-processing'
+            : displayStatus === 'verifying' ? 'is-verifying'
+            : sStatus === 'success' ? 'is-success'
+            : sStatus === 'error' ? 'is-error' : '';
+
+        // ラベル補足（検証中/リトライ中の表示）
+        const stepSuffix = isVerifying ? ' <span class="wf-step-badge wf-badge-verify">検証中</span>'
+            : isRetrying ? ` <span class="wf-step-badge wf-badge-retry">再試行 #${reflectionLoop}</span>`
+            : reflectionLoop > 0 && sStatus === 'success' ? ` <span class="wf-step-badge wf-badge-passed">検証済</span>`
+            : '';
+
+        html += `
+            <div class="wf-node ${nodeStateClass}">
+                <div class="wf-node-step"><span class="wf-node-status-indicator status-${sStatus}">${sStatus === 'success' ? '✓' : sStatus === 'error' ? '✗' : ''}</span>STEP ${idx + 1}${stepSuffix}</div>
+                <span class="wf-node-profile-tag" style="color:${pColor}; background:${pColor}12; border:1px solid ${pColor}30;"><span class="wf-profile-icon" style="color:${pColor};">${profileTagIcons[profile] || profileTagIcons.default}</span>${esc(pLabel)}</span>
+                <div class="wf-node-card-wrap status-${displayStatus}" style="--cube-color: ${pColor};">
+                    <div class="wf-node-face-right"></div>
+                    <div class="wf-node-face-top"></div>
+                    <div class="wf-node-card">
+                        <div class="wf-node-icon status-${displayStatus}">
+                            ${iconContent}
+                        </div>
+                    </div>
+                </div>
+                <div class="wf-node-label">
+                    <div class="wf-node-name">${esc(sName)}</div>
+                    <div class="wf-node-model">${typeof formatModelDisplay === 'function' ? formatModelDisplay(sk?.model_type || '', null, sk) : (sk?.model_type || '')}</div>
+                </div>
+                ${skillOutputHtml(sk.workflow_skill_id, sk)}
+            </div>
+        `;
+
+        // Connector — active when done, shimmer when processing
+        const connectorClass = sStatus === 'success' ? 'active' : sStatus === 'processing' ? 'running' : '';
+        html += `<div class="wf-connector"><div class="wf-connector-line ${connectorClass}"></div></div>`;
+    });
+
+    // Leader node — use first step's model as fallback
+    // リーダーキューブ内: processing=ローダー、それ以外=星アイコン
+    const leaderIcon = leaderStatus === 'processing'
+        ? '<div class="wf-node-loader"><span></span><span></span><span></span></div>'
+        : _svgLeader;
+    const leaderModelRaw = wf.parent_model_type || allSteps[0]?.model_type || '';
+    const leaderModelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderModelRaw, null, { enable_deep_think: wf.parent_enable_deep_think }) : leaderModelRaw;
+
+    const leaderStateClass = leaderStatus === 'processing' ? 'is-processing' : leaderStatus === 'success' ? 'is-success' : leaderStatus === 'error' ? 'is-error' : '';
     html += `
-        <div style="display:flex; align-items:center; gap:10px; padding:12px 16px; background:rgba(156,39,176,0.12); border:1px solid rgba(156,39,176,0.3); border-radius:8px; margin-bottom:4px;">
-            <div style="width:28px; height:28px; border-radius:50%; background:${sc(leaderStartStatus)}; display:flex; align-items:center; justify-content:center; font-size:14px; color:white; flex-shrink:0;">${si(leaderStartStatus)}</div>
-            <div>
-                <div style="font-size:13px; font-weight:bold; color:#ce93d8;">親スキル: タスク振り分け</div>
-                <div style="font-size:11px; color:rgba(255,255,255,0.5);">${wfName}</div>
+        <div class="wf-node ${leaderStateClass}">
+            <div class="wf-node-step"><span class="wf-node-status-indicator status-${leaderStatus}">${leaderStatus === 'success' ? '✓' : leaderStatus === 'error' ? '✗' : ''}</span>FINAL</div>
+            <span class="wf-node-profile-tag" style="color:#9c27b0; background:#9c27b012; border:1px solid #9c27b030;"><span class="wf-profile-icon" style="color:#9c27b0;">${_tagLeader}</span>Leader</span>
+            <div class="wf-node-card-wrap status-${leaderStatus}" style="--cube-color: #9c27b0;">
+                <div class="wf-node-face-right"></div>
+                <div class="wf-node-face-top"></div>
+                <div class="wf-node-card">
+                    <div class="wf-node-icon status-${leaderStatus}">
+                        ${leaderIcon}
+                    </div>
+                </div>
+            </div>
+            <div class="wf-node-label">
+                <div class="wf-node-name">結果統合</div>
+                <div class="wf-node-model">${leaderModelDisplay}</div>
             </div>
         </div>
     `;
 
-    // --- 矢印 ---
-    html += `<div style="display:flex; justify-content:center; padding:2px 0;"><div style="width:2px; height:16px; background:rgba(255,255,255,0.15);"></div></div>`;
+    html += '</div>';
 
-    // --- グループ ---
-    groups.forEach((grp, gi) => {
-        const isParallel = grp.execution_type === 'parallel';
-        const skills = grp.skills || [];
-        const gColor = isParallel ? '#2196f3' : '#ff9800';
-        const gLabel = isParallel ? '並列' : '直列';
-        const gName = grp.group_name || ('Group ' + (gi + 1));
-
-        html += `<div style="margin:4px 0; border:1px solid ${gColor}33; border-radius:8px; overflow:hidden;">`;
-
-        // グループヘッダー
-        html += `
-            <div style="padding:8px 14px; background:${gColor}15; display:flex; align-items:center; gap:8px;">
-                <span style="font-size:10px; font-weight:bold; color:${gColor}; background:${gColor}22; padding:2px 8px; border-radius:10px;">${gLabel}</span>
-                <span style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.8);">${gName}</span>
-            </div>
-        `;
-
-        // スキル
-        if (isParallel && skills.length > 1) {
-            html += `<div style="display:flex; gap:6px; padding:10px 14px;">`;
-            skills.forEach((sk) => {
-                const sName = sk.skill_name || '?';
-                const sModel = typeof formatModelDisplay === 'function' ? formatModelDisplay(sk.model_type || '', null, {}) : (sk.model_type || '');
-                const sStatus = (allStepStatuses && (allStepStatuses['ws_' + sk.workflow_skill_id] || allStepStatuses[sk.skill_id])) || 'pending';
-                html += `
-                    <div style="flex:1; padding:10px; background:rgba(0,0,0,0.2); border-radius:6px; border-left:3px solid ${sc(sStatus)}; min-width:0;">
-                        <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
-                            <span style="color:${sc(sStatus)}; font-size:12px;">${si(sStatus)}</span>
-                            <span style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sName}</span>
-                        </div>
-                        <div style="font-size:10px; color:rgba(255,255,255,0.4);">${sModel}</div>
-                        <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:${_profileColor(sk.agent_profile || 'default')}22; border-radius:10px; color:${_profileColor(sk.agent_profile || 'default')};">${esc(formatStageLabel(sk.agent_profile || 'default'))}</span></div>
-                        ${skillOutputHtml(sk.workflow_skill_id)}
-                    </div>
-                `;
-            });
-            html += `</div>`;
-        } else {
-            html += `<div style="padding:8px 14px;">`;
-            skills.forEach((sk, si_idx) => {
-                const sName = sk.skill_name || '?';
-                const sModel = typeof formatModelDisplay === 'function' ? formatModelDisplay(sk.model_type || '', null, {}) : (sk.model_type || '');
-                const sStatus = (allStepStatuses && (allStepStatuses['ws_' + sk.workflow_skill_id] || allStepStatuses[sk.skill_id])) || 'pending';
-                html += `
-                    <div style="padding:8px 10px; background:rgba(0,0,0,0.15); border-radius:6px; border-left:3px solid ${sc(sStatus)}; ${si_idx > 0 ? 'margin-top:6px;' : ''}">
-                        <div style="display:flex; align-items:center; gap:10px;">
-                            <span style="color:${sc(sStatus)}; font-size:12px;">${si(sStatus)}</span>
-                            <div style="flex:1; min-width:0;">
-                                <div style="font-size:12px; font-weight:bold; color:rgba(255,255,255,0.9);">${sName}</div>
-                                <div style="font-size:10px; color:rgba(255,255,255,0.4);">${sModel}</div>
-                                <div style="margin-top:4px;"><span style="font-size:10px; padding:2px 8px; background:${_profileColor(sk.agent_profile || 'default')}22; border-radius:10px; color:${_profileColor(sk.agent_profile || 'default')};">${esc(formatStageLabel(sk.agent_profile || 'default'))}</span></div>
-                            </div>
-                        </div>
-                        ${skillOutputHtml(sk.workflow_skill_id)}
-                    </div>
-                `;
-                if (si_idx < skills.length - 1 && !isParallel) {
-                    html += `<div style="display:flex; justify-content:flex-start; padding:2px 0 2px 20px;"><div style="width:1px; height:10px; background:rgba(255,255,255,0.1);"></div></div>`;
-                }
-            });
-            html += `</div>`;
-        }
-
-        html += `</div>`;
-
-        // オーケストレーション状況 (ジャッジ/SV) をグループ後に表示
-        html += orchestrationNodesHtml(grp.id);
-
-        // グループ間矢印
-        if (gi < groups.length - 1) {
-            html += `<div style="display:flex; justify-content:center; padding:2px 0;"><div style="width:2px; height:16px; background:rgba(255,255,255,0.15);"></div></div>`;
-        }
-    });
-
-    // --- Blackboard パネル（キーがあれば表示） ---
-    if (_blackboardKeys.length > 0) {
-        html += `<div style="display:flex; justify-content:center; padding:2px 0;"><div style="width:2px; height:10px; background:rgba(255,255,255,0.1);"></div></div>`;
-        html += `<div style="padding:8px 14px; background:rgba(33,150,243,0.08); border:1px solid rgba(33,150,243,0.2); border-radius:6px; margin:2px 0;">`;
-        html += `<div style="font-size:10px; font-weight:bold; color:#64b5f6; margin-bottom:4px;">Blackboard (共有メモリ)</div>`;
-        html += `<div style="display:flex; flex-wrap:wrap; gap:4px;">`;
-        for (const key of _blackboardKeys) {
-            html += `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.15); border-radius:10px; color:rgba(255,255,255,0.7);">${esc(key)}</span>`;
-        }
-        html += `</div></div>`;
-    }
-
-    // --- 矢印 ---
-    html += `<div style="display:flex; justify-content:center; padding:2px 0;"><div style="width:2px; height:16px; background:rgba(255,255,255,0.15);"></div></div>`;
-
-    // --- 親スキル統合（最終結果を表示） ---
-    html += `<div id="leader-result-section" style="background:rgba(156,39,176,0.12); border:1px solid rgba(156,39,176,0.3); border-radius:8px; margin-top:4px; overflow:hidden; display:flex; flex-direction:column;">`;
-    html += `<div style="display:flex; align-items:center; gap:10px; padding:12px 16px;">`;
-    html += `<div style="width:28px; height:28px; border-radius:50%; background:${sc(leaderEndStatus)}; display:flex; align-items:center; justify-content:center; font-size:14px; color:white; flex-shrink:0;">${si(leaderEndStatus)}</div>`;
-    html += `<div style="flex:1;"><div style="font-size:13px; font-weight:bold; color:#ce93d8;">親スキル: 結果統合</div><div style="font-size:11px; color:rgba(255,255,255,0.5);">全結果を統合して最終出力を生成</div></div>`;
-    if (leaderOutput) {
-        html += `<button onclick="copyLeaderOutput()" title="出力をコピー" style="display:flex; align-items:center; justify-content:center; padding:6px; background:none; border:none; cursor:pointer; opacity:0.5; transition:opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.5'"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" style="fill:rgba(255,255,255,0.7);"><path d="M16 10c3.469 0 2 4 2 4s4-1.594 4 2v6h-10v-12h4zm.827-2h-6.827v16h14v-8.842c0-2.392-4.011-7.158-7.173-7.158zm-8.827 12h-6v-16h4l2.102 2h3.898l2-2h4v2.145c.656.143 1.327.391 2 .754v-4.899h-3c-1.229 0-2.18-1.084-3-2h-8c-.82.916-1.771 2-3 2h-3v20h8v-2zm2-18c.553 0 1 .448 1 1s-.447 1-1 1-1-.448-1-1 .447-1 1-1zm4 18h6v-1h-6v1zm0-2h6v-1h-6v1zm0-2h6v-1h-6v1z"/></svg></button>`;
-    }
-    html += `</div>`;
-    if (leaderOutput) {
-        html += `<div style="padding:0 16px 12px 16px;"><div id="leader-output-content" style="padding:12px; background:rgba(0,0,0,0.3); border-radius:6px; max-height:60vh; overflow-y:auto;"><div style="color:rgba(255,255,255,0.9); white-space:pre-wrap; word-wrap:break-word; font-size:12px; line-height:1.6;">${esc(leaderOutput)}</div></div></div>`;
-    }
-    html += `</div>`;
-
-    // 再描画前に開いている <details> の data-ws-id を保存
+    // Preserve open <details> state before re-render
     const openDetails = new Set();
     flowEl.querySelectorAll('details[open][data-ws-id]').forEach(d => {
         openDetails.add(d.getAttribute('data-ws-id'));
@@ -1135,14 +1218,44 @@ function renderFlowView(wfDetail, allStepStatuses) {
 
     flowEl.innerHTML = html;
 
-    // 開閉状態を復元
+    // Restore open state
     if (openDetails.size > 0) {
         flowEl.querySelectorAll('details[data-ws-id]').forEach(d => {
-            if (openDetails.has(d.getAttribute('data-ws-id'))) {
-                d.open = true;
-            }
+            if (openDetails.has(d.getAttribute('data-ws-id'))) d.open = true;
         });
     }
+
+    // Update leader output in the bottom output panel
+    const outputEl = document.getElementById('wf-leader-output');
+    if (outputEl) {
+        if (leaderOutput) {
+            outputEl.textContent = leaderOutput;
+            outputEl.style.color = 'var(--content-text)';
+        }
+    }
+}
+
+function showNodeOutputPopup(stepName, outputId) {
+    const el = document.getElementById(outputId);
+    if (!el) return;
+    const text = el.textContent || '';
+    Swal.fire({
+        title: stepName,
+        html: `<div style="text-align:left; max-height:60vh; overflow-y:auto; padding:16px; background:#f8f8f6; border-radius:10px; font-size:12px; line-height:1.6; white-space:pre-wrap; word-wrap:break-word; color:#2d2d2d;">${escapeHtml(text)}</div>`,
+        width: '700px',
+        showConfirmButton: true,
+        confirmButtonText: '閉じる',
+        confirmButtonColor: '#7c3aed',
+        showCancelButton: true,
+        cancelButtonText: 'コピー',
+        cancelButtonColor: '#6c757d',
+    }).then((result) => {
+        if (result.dismiss === Swal.DismissReason.cancel) {
+            navigator.clipboard.writeText(text).then(() => {
+                showAlert('コピーしました', 'success');
+            }).catch(() => {});
+        }
+    });
 }
 
 async function copyLeaderOutput() {
@@ -1559,15 +1672,12 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
             outputLength: s.output.length 
         })));
 
-        // ステータスバーを更新（確実に成功状態で表示）
-        if (typeof PersistentStatusBar !== 'undefined') {
-            // ワークフロー実行IDが一致する場合のみ更新
-            if (PersistentStatusBar.workflowExecutionId === workflowExecutionId) {
-                const allStepsSuccess = allStepResults.every(s => s.status === 'success');
-                const finalStatus = (leaderExecution?.status === 'success' || (!leaderExecution && allStepsSuccess)) ? 'success' : 'error';
-                PersistentStatusBar.markAsCompleted(finalStatus);
-                console.log('Workflow completed, PersistentStatusBar updated:', finalStatus);
-            }
+        // ステータスバーを更新（確実に完了状態にする — ID不一致でもクリア）
+        if (typeof PersistentStatusBar !== 'undefined' && PersistentStatusBar.startTime) {
+            const allStepsSuccess = allStepResults.every(s => s.status === 'success');
+            const finalStatus = (leaderExecution?.status === 'success' || (!leaderExecution && allStepsSuccess)) ? 'success' : 'error';
+            PersistentStatusBar.markAsCompleted(finalStatus);
+            console.log('Workflow completed, PersistentStatusBar updated:', finalStatus);
         }
         const allStepsSuccess = allStepResults.every(s => s.status === 'success');
         const workflowStatus = (leaderExecution?.status === 'success' || (!leaderExecution && allStepsSuccess)) ? 'success' : 'error';
@@ -1579,9 +1689,8 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
         // リーダー出力をフロービュー用に保存（リーダーがなければ最後のステップ出力をフォールバック）
         const lastStepResult = allStepResults.length > 0 ? allStepResults[allStepResults.length - 1].output : '';
         _flowLeaderOutput = leaderExecution?.output_data || lastStepResult || '';
-        if (!leaderExecution?.output_data && _flowLeaderOutput) {
-            _flowStepStatuses['leader'] = 'success';
-        }
+        // リーダーステータスを確実に設定
+        _flowStepStatuses['leader'] = (leaderExecution?.status === 'success' || (!leaderExecution && allStepsSuccess)) ? 'success' : 'error';
 
         // Blackboardキー・オーケストレーション状況を復元
         try {
@@ -1610,11 +1719,20 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
             executeBtn.disabled = false;
         }
         if (executeBtnText) {
-            executeBtnText.textContent = 'ワークフロー実行';
+            executeBtnText.textContent = '実行';
         }
         if (executeBtnSpinner) {
             executeBtnSpinner.style.display = 'none';
         }
+        // 入力パネル再有効化 + 切り抜き円を復元
+        const inputPanel = document.querySelector('.wf-io-input');
+        if (inputPanel) inputPanel.classList.remove('is-disabled');
+        const execCircle = document.getElementById('workflow-execute-circle');
+        const execIcon = document.getElementById('wf-exec-icon');
+        const execSpinner = document.getElementById('wf-exec-spinner');
+        if (execCircle) execCircle.style.pointerEvents = '';
+        if (execIcon) execIcon.style.display = '';
+        if (execSpinner) execSpinner.style.display = 'none';
         if (form) {
             const inputs = form.querySelectorAll('input, textarea, select, button');
             inputs.forEach((el) => {
@@ -1665,6 +1783,10 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
         await loadHistory();
     } catch (error) {
         console.error('Failed to handle workflow complete:', error);
+        // エラーが起きてもステータスバーを確実に完了にする
+        if (typeof PersistentStatusBar !== 'undefined' && PersistentStatusBar.startTime) {
+            PersistentStatusBar.markAsCompleted('error');
+        }
         await showAlert('ワークフロー完了処理に失敗しました', 'error');
     }
 }
@@ -2025,14 +2147,16 @@ function _wfStatusColor(status) {
     if (status === 'error') return '#dc3545';
     if (status === 'cancelled') return '#ffc107';
     if (status === 'pending' || status === 'pending_local' || status === 'processing') return '#7c3aed';
-    return 'rgba(255, 255, 255, 0.6)';
+    return '#999';
 }
 
 function _wfOverallStatus(execs) {
-    if (execs.some(e => e.status === 'error')) return 'error';
-    if (execs.some(e => e.status === 'cancelled')) return 'cancelled';
-    if (execs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
-    if (execs.every(e => e.status === 'success')) return 'success';
+    // 特殊ロール（quality_gate, supervisor等）のエラーはWF全体のエラーとしない
+    const normalExecs = execs.filter(e => !e.execution_role);
+    if (normalExecs.some(e => e.status === 'error')) return 'error';
+    if (normalExecs.some(e => e.status === 'cancelled')) return 'cancelled';
+    if (normalExecs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
+    if (normalExecs.every(e => e.status === 'success')) return 'success';
     return 'pending';
 }
 
@@ -2042,7 +2166,7 @@ function renderHistory() {
     if (!tbody) return;
 
     if (allExecutions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: rgba(255, 255, 255, 0.6);">このワークフローの実行履歴がありません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--content-text-muted);">このワークフローの実行履歴がありません</td></tr>';
         return;
     }
 
@@ -2066,20 +2190,23 @@ function renderHistory() {
         const modelDisplayHist = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModelHist, null, {}) : parentModelHist;
 
         // 各スキルの小さなバー（history.html と同じ形式）
-        const skillBars = stepExecs.map(e => {
+        let skillBars = stepExecs.map((e, i) => {
             const sc = _wfStatusColor(e.status);
-            const name = escapeHtmlCommon(e.skill_name || `Step ${e.skill_order}`);
-            return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px;background:rgba(0,0,0,0.2);border-left:2px solid ${sc};color:rgba(255,255,255,0.8);">${name}</span>`;
-        }).join(' ');
+            const cube = renderMiniCube(e.agent_profile || 'default', { size: 22, borderColor: sc, showLabel: false });
+            return (i > 0 ? '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' : '') + cube;
+        }).join('');
+        // リーダーキューブを追加
+        const leaderSc = _wfStatusColor(overallStatus);
+        skillBars += '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' + renderMiniCube('default', { size: 22, borderColor: leaderSc, showLabel: false });
 
         return `
         <tr>
             <td>${firstAt ? formatDate(firstAt) : '-'}</td>
             <td>
                 <div style="margin-bottom:4px;">
-                    <span style="color: rgba(255,255,255,0.4); font-size: 11px;">${stepExecs.length} steps</span>
+                    <span style="color: var(--content-text-muted); font-size: 11px;">${stepExecs.length} steps</span>
                 </div>
-                <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
+                <div style="display:flex;flex-wrap:wrap;gap:12px;perspective:300px;align-items:center;">${skillBars}</div>
             </td>
             <td>${modelDisplayHist}</td>
             <td>${totalTime ? totalTime + 'ms' : '-'}</td>
@@ -2177,8 +2304,9 @@ async function showWorkflowHistoryDetail(weId) {
             inputData: exec.input_data || null,
         }));
         const finalOutput = leaderExec?.output_data || '';
-        const resultHtml = execDetailModal.buildWorkflowFlowHTML({
-            finalOutput, allStepResults, workflowName, groups,
+        await execDetailModal.showWorkflowDetailPopup({
+            workflowName, allStepResults, leaderExec, groups,
+            leaderModel: leaderExec?.model_used || workflowDetail?.workflow?.parent_model_type || '',
             stageMeta: {
                 currentStage: wfStatus?.current_stage || null,
                 finalVerdict: wfStatus?.final_verdict || null,
@@ -2186,30 +2314,9 @@ async function showWorkflowHistoryDetail(weId) {
                 coordinatorView: wfStatus?.coordinator_view || null,
                 synthesisEvents: wfStatus?.synthesis_events || [],
             },
-        });
-
-        const detailHTML = `
-            <div style="text-align: left;">
-                <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);">
-                    <div style="color: #c4b5fd; font-weight: 600; font-size: 16px; margin-bottom: 6px;">${esc(workflowName)}</div>
-                    <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
-                        <span>${stepExecs.length} ステップ</span>
-                        <span>${typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderExec?.model_used || '', null, {}) : (leaderExec?.model_used || '-')}</span>
-                        <span>合計 ${totalTime}ms</span>
-                        <span>${totalTokens} tokens</span>
-                    </div>
-                </div>
-                ${resultHtml}
-            </div>
-        `;
-
-        await Swal.fire({
-            title: 'ワークフロー実行詳細',
-            html: detailHTML,
-            width: '880px',
-            confirmButtonText: USER_SWAL.btnClose,
-            confirmButtonColor: USER_SWAL.primary,
-            customClass: { popup: 'swal-wide swal-exec-detail' },
+            stepCount: stepExecs.length,
+            totalTime,
+            totalTokens,
         });
     } catch (error) {
         await showAlert('詳細情報の読み込みに失敗しました', 'error');
@@ -2229,7 +2336,7 @@ async function showHistoryDetail(id) {
                 formatJSON,
                 summaryChips: [
                     { label: '実行日時', valueHtml: escapeHtml(formatDate(execution.executed_at)) },
-                    { label: 'モデル', valueHtml: escapeHtml(execution.model_used || '-') },
+                    { label: 'モデル', valueHtml: typeof formatModelDisplay === 'function' ? formatModelDisplay(execution.model_used || '', execution, null) : escapeHtml(execution.model_used || '-') },
                 ],
                 showOutputFormat: true,
                 outputCopyId: String(execution.id),
@@ -2419,11 +2526,19 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
             output_format: outputFormat,
         };
 
-        // ボタン無効化
+        // ボタン無効化 + 入力パネル全体を無効化 + 切り抜き円をスピナーに
         executeBtn.disabled = true;
         executeBtnText.textContent = '実行中...';
         if (executeBtnSpinner) executeBtnSpinner.style.display = 'inline';
         inputs.forEach((el) => { if (el !== executeBtn) el.disabled = true; });
+        const inputPanel = document.querySelector('.wf-io-input');
+        if (inputPanel) inputPanel.classList.add('is-disabled');
+        const execCircle = document.getElementById('workflow-execute-circle');
+        const execIcon = document.getElementById('wf-exec-icon');
+        const execSpinner = document.getElementById('wf-exec-spinner');
+        if (execCircle) execCircle.style.pointerEvents = 'none';
+        if (execIcon) execIcon.style.display = 'none';
+        if (execSpinner) execSpinner.style.display = 'flex';
 
         const isDesktopLocal = window.PPTRuntime?.shouldUseDesktopLocalExecution?.();
         const useOrchestrated = window.PPTRuntime?.shouldUseOrchestratedExecution?.();
@@ -2465,10 +2580,13 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
             _blackboardKeys = [];
             _flowViewDetail = workflowDetail;
             const allSkillsInit = workflowDetail?.skills || [];
-            for (const skill of allSkillsInit) {
-                if (skill.workflow_skill_id) _flowStepStatuses['ws_' + skill.workflow_skill_id] = 'processing';
-                if (skill.skill_id) _flowStepStatuses[skill.skill_id] = 'processing';
+            for (let i = 0; i < allSkillsInit.length; i++) {
+                const skill = allSkillsInit[i];
+                const st = (i === 0) ? 'processing' : 'pending';
+                if (skill.workflow_skill_id) _flowStepStatuses['ws_' + skill.workflow_skill_id] = st;
+                if (skill.skill_id) _flowStepStatuses[skill.skill_id] = st;
             }
+            _flowStepStatuses['leader'] = 'pending';
             if (workflowDetail) renderFlowView(workflowDetail, _flowStepStatuses);
 
             // バックグラウンドパネルを開始
@@ -2491,7 +2609,7 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
             const progressPoll = setInterval(async () => {
                 if (desktopDone) { clearInterval(progressPoll); return; }
                 try {
-                    const execsResp = await apiRequest('/api/user/executions?limit=30');
+                    const execsResp = await apiRequest('/api/user/executions?limit=100');
                     const allExecs = execsResp.items || execsResp;
 
                     // 今回の実行を特定（prevMaxExecIdより新しいもの）
@@ -2566,9 +2684,9 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
                         if (mapped === 'success') _flowLeaderOutput = exec.output_data || _flowLeaderOutput;
                     }
                     // リーダー（workflow_skill_id=null, role=null）
-                    const leaderExec = wfExecs.find(e => !e.workflow_skill_id && !e.execution_role);
+                    const leaderExec = wfExecs.find(e => !e.workflow_skill_id && (!e.execution_role || e.execution_role === null));
                     if (leaderExec) {
-                        const lm = leaderExec.status === 'success' ? 'success' : leaderExec.status === 'error' ? 'error' : 'processing';
+                        const lm = leaderExec.status === 'success' ? 'success' : leaderExec.status === 'error' ? 'error' : (leaderExec.status === 'pending_local' || leaderExec.status === 'processing' || leaderExec.status === 'pending') ? 'processing' : 'pending';
                         if (_flowStepStatuses['leader'] !== lm) {
                             _flowStepStatuses['leader'] = lm;
                             hasChanged = true;
@@ -2638,12 +2756,14 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
             // 進捗ポーリングで設定したステータスを保持（再初期化しない）
             _checkNextStepRetryCount = 0;
 
-            // PersistentStatusBar のIDを確定
+            // PersistentStatusBar のIDを確定 → UIを再描画
             if (typeof PersistentStatusBar !== 'undefined') {
                 PersistentStatusBar.workflowExecutionId = workflowExecutionId;
                 if (resp.execution_ids?.length > 0) {
                     PersistentStatusBar.executionId = resp.execution_ids[0];
                 }
+                PersistentStatusBar.updateUI(true);
+                PersistentStatusBar.renderTasks();
             }
 
             // handleWorkflowComplete を呼んで最終結果を表示
@@ -2728,7 +2848,7 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
                     if (_workflowCompleteHandled) return;
                     pollCount++;
                     try {
-                        const execsResp = await apiRequest('/api/user/executions?limit=50');
+                        const execsResp = await apiRequest('/api/user/executions?limit=100');
                         const execs = (execsResp.items || execsResp).filter(e => e.workflow_execution_id === workflowExecutionId);
 
                         // ステップステータスを更新
@@ -2757,9 +2877,9 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
 
                             // フロービュー用ステータス
                             const status = exec.status;
-                            if (exec.execution_role) {
-                                // リーダー
-                                if (status === 'processing' || status === 'pending') {
+                            if (exec.execution_role || (!exec.workflow_skill_id && !exec.execution_role && !exec.skill_id)) {
+                                // リーダー（execution_role付き OR parent skill: workflow_skill_id=null, skill_id=null）
+                                if (status === 'processing' || status === 'pending' || status === 'pending_local') {
                                     _flowStepStatuses['leader'] = 'processing';
                                     hasProcessing = true;
                                 } else if (status === 'success') {

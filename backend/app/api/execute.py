@@ -235,6 +235,7 @@ async def execute_skill(
         lease_token_hash=lease_token_hash,
         lease_expires_at=lease_expires_at,
         executed_at=now_jst,
+        skill_name_snapshot=skill.name,
     )
     db.add(execution)
     db.commit()
@@ -330,6 +331,7 @@ async def execute_workflow(
         status="pending",
         current_step=1,
         total_steps=len(executable_skills),
+        workflow_name_snapshot=workflow.name,
         global_input_data=json.dumps(request.global_input_data or {}, ensure_ascii=False),
         per_skill_input_data=json.dumps(
             {str(k): v for k, v in (request.per_skill_input or {}).items()},
@@ -429,6 +431,7 @@ async def execute_workflow(
             lease_token_hash=lease_token_hash,
             lease_expires_at=lease_expires_at,
             executed_at=now_jst,
+            skill_name_snapshot=ws_skill.name,
         )
         db.add(execution)
         created_executions.append(execution)

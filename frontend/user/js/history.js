@@ -117,12 +117,15 @@ function renderWorkflowRow(group) {
     const modelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModel, null, {}) : parentModel;
     const weId = group.workflowExecutionId;
 
-    // 各スキルの小さなバー
-    const skillBars = stepExecs.map(e => {
+    // 各スキルのミニキューブ
+    let skillBars = stepExecs.map((e, i) => {
         const sc = getStatusColor(e.status);
-        const name = escapeHtmlCommon(e.skill_name || `Step ${e.skill_order}`);
-        return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px;background:rgba(0,0,0,0.05);border-left:2px solid ${sc};color:#555;">${name}</span>`;
-    }).join(' ');
+        const cube = renderMiniCube(e.agent_profile || 'default', { size: 22, borderColor: sc, showLabel: false });
+        return (i > 0 ? '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' : '') + cube;
+    }).join('');
+    // リーダーキューブを追加
+    const leaderSc = getStatusColor(overallStatus);
+    skillBars += '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' + renderMiniCube('default', { size: 22, borderColor: leaderSc, showLabel: false });
 
     return `
     <tr>
@@ -132,7 +135,7 @@ function renderWorkflowRow(group) {
                 <span style="color: #7c3aed; font-weight: 600; font-size: 13px;">${escapeHtmlCommon(group.workflowName)}</span>
                 <span style="color: #a0a0a0; font-size: 11px; margin-left: 6px;">${stepExecs.length} steps</span>
             </div>
-            <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:12px;perspective:300px;align-items:center;">${skillBars}</div>
         </td>
         <td>${modelDisplay}</td>
         <td>-</td>
@@ -157,10 +160,12 @@ function getStatusColor(status) {
 }
 
 function getOverallStatus(execs) {
-    if (execs.some(e => e.status === 'error')) return 'error';
-    if (execs.some(e => e.status === 'cancelled')) return 'cancelled';
-    if (execs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
-    if (execs.every(e => e.status === 'success')) return 'success';
+    // 特殊ロール（quality_gate, supervisor等）のエラーはWF全体のエラーとしない
+    const normalExecs = execs.filter(e => !e.execution_role);
+    if (normalExecs.some(e => e.status === 'error')) return 'error';
+    if (normalExecs.some(e => e.status === 'cancelled')) return 'cancelled';
+    if (normalExecs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
+    if (normalExecs.every(e => e.status === 'success')) return 'success';
     return 'pending';
 }
 
@@ -258,8 +263,9 @@ async function showWorkflowDetail(weId) {
         try {
             wfStatus = await apiRequest(`/api/user/workflow-executions/${weId}/status`);
         } catch (e) { /* ignore */ }
-        const resultHtml = execDetailModal.buildWorkflowFlowHTML({
-            finalOutput, allStepResults, workflowName, groups,
+        await execDetailModal.showWorkflowDetailPopup({
+            workflowName, allStepResults, leaderExec, groups,
+            leaderModel: leaderExec?.model_used || '',
             stageMeta: {
                 currentStage: wfStatus?.current_stage || null,
                 finalVerdict: wfStatus?.final_verdict || null,
@@ -267,30 +273,9 @@ async function showWorkflowDetail(weId) {
                 coordinatorView: wfStatus?.coordinator_view || null,
                 synthesisEvents: wfStatus?.synthesis_events || [],
             },
-        });
-
-        const detailHTML = `
-            <div style="text-align: left;">
-                <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(0,0,0,0.08);">
-                    <div style="color: #c4b5fd; font-weight: 600; font-size: 16px; margin-bottom: 6px;">${esc(workflowName)}</div>
-                    <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
-                        <span>${stepExecs.length} ステップ</span>
-                        <span>${typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderExec?.model_used || '', null, {}) : (leaderExec?.model_used || '-')}</span>
-                        <span>合計 ${totalTime}ms</span>
-                        <span>${totalTokens} tokens</span>
-                    </div>
-                </div>
-                ${resultHtml}
-            </div>
-        `;
-
-        await Swal.fire({
-            title: 'ワークフロー実行詳細',
-            html: detailHTML,
-            width: '880px',
-            confirmButtonText: USER_SWAL.btnClose,
-            confirmButtonColor: USER_SWAL.primary,
-            customClass: { popup: 'swal-wide swal-exec-detail' },
+            stepCount: stepExecs.length,
+            totalTime,
+            totalTokens,
         });
     } catch (error) {
         await showAlert('詳細情報の読み込みに失敗しました', 'error');

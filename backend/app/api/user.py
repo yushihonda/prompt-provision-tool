@@ -548,6 +548,9 @@ async def get_user_workflow_detail(
         s = ws.skill
         if not s:
             continue
+        edt = getattr(s, "enable_deep_think", True)
+        if edt is None:
+            edt = True
         skills.append(
             UserWorkflowDetailSkill(
                 workflow_skill_id=ws.id,
@@ -556,6 +559,8 @@ async def get_user_workflow_detail(
                 skill_id=s.id,
                 skill_display_name=s.name,
                 agent_profile=getattr(ws, "agent_profile", None),
+                model_type=s.model_type,
+                enable_deep_think=bool(edt),
             )
         )
 
@@ -594,6 +599,9 @@ async def get_user_workflow_detail(
                         input_mapping_parsed = json.loads(ws.input_mapping) if isinstance(ws.input_mapping, str) else ws.input_mapping
                     except (json.JSONDecodeError, TypeError):
                         pass
+                edt = getattr(s, "enable_deep_think", True)
+                if edt is None:
+                    edt = True
                 grp_skills.append({
                     "skill_id": s.id,
                     "skill_name": s.name,
@@ -604,6 +612,7 @@ async def get_user_workflow_detail(
                     "skill_order": ws.skill_order,
                     "input_mapping": input_mapping_parsed,
                     "agent_profile": getattr(ws, "agent_profile", None),
+                    "enable_deep_think": bool(edt),
                 })
         groups_data.append({
             "id": grp.id,
@@ -667,15 +676,17 @@ async def list_my_executions(
 
     items = []
     for execution in executions:
-        skill_name = execution.skill.name if execution.skill else None
+        skill_name = getattr(execution, 'skill_name_snapshot', None) or (execution.skill.name if execution.skill else None)
 
-        # ワークフロー実行情報を取得（eager loaded）
+        # ワークフロー実行情報を取得（スナップショット優先）
         workflow_name = None
         skill_display_name = None
         if execution.workflow_execution:
-            wf = execution.workflow_execution.workflow
-            if wf:
-                workflow_name = wf.name
+            workflow_name = getattr(execution.workflow_execution, 'workflow_name_snapshot', None)
+            if not workflow_name:
+                wf = execution.workflow_execution.workflow
+                if wf:
+                    workflow_name = wf.name
             if execution.workflow_skill:
                 skill_display_name = execution.workflow_skill.skill_name or f"Step {execution.skill_order}"
 
@@ -804,10 +815,10 @@ async def get_execution_detail(
             detail="実行履歴が見つかりません"
         )
 
-    # スキル名
-    skill_name = execution.skill.name if execution.skill else None
+    # スキル名（スナップショット優先、なければ現在のスキル名）
+    skill_name = getattr(execution, 'skill_name_snapshot', None) or (execution.skill.name if execution.skill else None)
 
-    # ワークフロー情報（あれば付与）
+    # ワークフロー情報（スナップショット優先）
     workflow_name = None
     skill_display_name = None
     wf_exec = None
@@ -816,11 +827,13 @@ async def get_execution_detail(
             WorkflowExecution.id == execution.workflow_execution_id
         ).first()
         if wf_exec:
-            workflow = db.query(Workflow).filter(
-                Workflow.id == wf_exec.workflow_id
-            ).first()
-            if workflow:
-                workflow_name = workflow.name
+            workflow_name = getattr(wf_exec, 'workflow_name_snapshot', None)
+            if not workflow_name:
+                workflow = db.query(Workflow).filter(
+                    Workflow.id == wf_exec.workflow_id
+                ).first()
+                if workflow:
+                    workflow_name = workflow.name
         # ステップ名
         if execution.workflow_skill_id:
             wf_skill = db.query(WorkflowSkill).filter(

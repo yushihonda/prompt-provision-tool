@@ -206,6 +206,7 @@ class WorkflowExecution(Base):
     handoff_summary = Column(Text, nullable=True)  # JSON: UI/監査向け派生サマリー
     synthesis_log = Column(Text, nullable=True)  # JSON配列: coordinator synthesis events の時系列記録
     error_message = Column(Text)
+    workflow_name_snapshot = Column(String(255), nullable=True)  # 実行時点のワークフロー名スナップショット
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -270,6 +271,7 @@ class Execution(Base):
     agent_profile = Column(String(30), nullable=True)
     enable_deep_think = Column(Boolean, nullable=True)
     output_format = Column(String(10), nullable=True, default="txt")
+    skill_name_snapshot = Column(String(255), nullable=True)  # 実行時点のスキル名スナップショット
     dispatch_mode = Column(String(30), nullable=False, default="server")
     lease_token_hash = Column(String(128), nullable=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True)
