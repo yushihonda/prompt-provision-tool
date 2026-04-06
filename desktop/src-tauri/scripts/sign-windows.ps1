@@ -3,12 +3,12 @@ param(
     [string]$TargetPath
 )
 
-$thumbprint = $env:PPT_WINDOWS_CERTIFICATE_THUMBPRINT
+$thumbprint = $env:NEXMAGI_WINDOWS_CERTIFICATE_THUMBPRINT
 if ([string]::IsNullOrWhiteSpace($thumbprint)) {
-    throw "PPT_WINDOWS_CERTIFICATE_THUMBPRINT is required for Windows release signing."
+    throw "NEXMAGI_WINDOWS_CERTIFICATE_THUMBPRINT is required for Windows release signing."
 }
 
-$timestampUrl = $env:PPT_WINDOWS_TIMESTAMP_URL
+$timestampUrl = $env:NEXMAGI_WINDOWS_TIMESTAMP_URL
 if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
     $timestampUrl = "https://timestamp.digicert.com"
 }

@@ -5,20 +5,20 @@ let workflowDetail = null;
 let workflowExecutionId = null;
 let stepExecutions = new Map(); // skill_order -> { executionId, status, output, stepName, skillName }
 let allExecutions = []; // 全ての実行履歴
-let displayedHistoryCount = 3; // 表示する履歴の件数
+let displayedHistoryCount = 5; // 表示する履歴の件数
 let streamingWorkers = new Map(); // executionId -> worker
 let _wfStageMeta = { currentStage: null, finalVerdict: null, handoffSummary: null, coordinatorView: null, synthesisEvents: [] };
 let desktopWorkflowRun = null;
 
 async function createDesktopWorkflowRun(workflowExecutionIdValue) {
-    if (!window.PPTRuntime.canRecordDesktopEvents()) {
+    if (!window.NexMAGIRuntime.canRecordDesktopEvents()) {
         return;
     }
 
     const workflowName = workflowDetail?.workflow?.name || `Workflow ${workflowId}`;
     const correlationId = `workflow-execution-${workflowExecutionIdValue}`;
-    const run = await window.PPTRuntime.createWorkflowRun(`Workflow Execution: ${workflowName}`);
-    const recorder = window.PPTRuntime.createDesktopEventRecorder({
+    const run = await window.NexMAGIRuntime.createWorkflowRun(`Workflow Execution: ${workflowName}`);
+    const recorder = window.NexMAGIRuntime.createDesktopEventRecorder({
         runId: run.id,
         correlationId,
     });
@@ -80,7 +80,7 @@ function getDesktopWorkflowNodeState(executionId, stepOrder) {
 }
 
 async function appendDesktopWorkflowNodeEvent(eventType, executionId, stepOrder, payloadJson = {}) {
-    if (!desktopWorkflowRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+    if (!desktopWorkflowRun || !window.NexMAGIRuntime.canRecordDesktopEvents()) {
         return;
     }
 
@@ -108,10 +108,10 @@ async function appendDesktopWorkflowNodeEvent(eventType, executionId, stepOrder,
 }
 
 async function ensureDesktopWorkflowProviderStarted(executionId, stepOrder, payloadJson = {}) {
-    if (!desktopWorkflowRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+    if (!desktopWorkflowRun || !window.NexMAGIRuntime.canRecordDesktopEvents()) {
         return;
     }
-    if (!window.PPTRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
+    if (!window.NexMAGIRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
         return null;
     }
 
@@ -131,7 +131,7 @@ async function ensureDesktopWorkflowProviderStarted(executionId, stepOrder, payl
             workflow_execution_id: desktopWorkflowRun.workflowExecutionId,
             execution_id: executionId,
             step_order: stepOrder,
-            observation_source: window.PPTRuntime.getObservationSource('provider', 'http-api'),
+            observation_source: window.NexMAGIRuntime.getObservationSource('provider', 'http-api'),
             boundary_kind: payloadJson.boundaryKind || 'sse_stream',
             ...payloadJson,
         }
@@ -141,7 +141,7 @@ async function ensureDesktopWorkflowProviderStarted(executionId, stepOrder, payl
 }
 
 async function finishDesktopWorkflowNode(executionId, stepOrder, status, errorMessage = null, details = {}) {
-    if (!desktopWorkflowRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+    if (!desktopWorkflowRun || !window.NexMAGIRuntime.canRecordDesktopEvents()) {
         return null;
     }
 
@@ -154,7 +154,7 @@ async function finishDesktopWorkflowNode(executionId, stepOrder, status, errorMe
 
     let nodeFinishedCausationId = nodeState.nodeStartedEventId || desktopWorkflowRun.workflowCreatedEventId;
 
-    if (window.PPTRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
+    if (window.NexMAGIRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
         const providerFinished = await desktopWorkflowRun.recorder.append('provider_request_finished', {
             nodeId: nodeState.nodeId,
             attemptNo: 1,
@@ -169,13 +169,13 @@ async function finishDesktopWorkflowNode(executionId, stepOrder, status, errorMe
                 status,
                 error_message: errorMessage,
                 error_code: details.errorCode || null,
-                observation_source: window.PPTRuntime.getObservationSource('provider', 'http-api'),
+                observation_source: window.NexMAGIRuntime.getObservationSource('provider', 'http-api'),
                 boundary_kind: details.boundaryKind || 'sse_stream',
             }
         });
         nodeState.providerFinishedEventId = providerFinished.eventId;
 
-        const retryDecision = window.PPTRuntime.classifyRetryDecision({
+        const retryDecision = window.NexMAGIRuntime.classifyRetryDecision({
             status,
             errorCode: details.errorCode || null,
         });
@@ -193,7 +193,7 @@ async function finishDesktopWorkflowNode(executionId, stepOrder, status, errorMe
                 status,
                 error_message: errorMessage,
                 error_code: details.errorCode || null,
-                observation_source: window.PPTRuntime.getObservationSource('retry', 'http-api'),
+                observation_source: window.NexMAGIRuntime.getObservationSource('retry', 'http-api'),
                 ...retryDecision,
             }
         });
@@ -222,7 +222,7 @@ async function finishDesktopWorkflowNode(executionId, stepOrder, status, errorMe
 }
 
 async function finishDesktopWorkflowRun(status, payloadJson = {}, details = {}) {
-    if (!desktopWorkflowRun || !window.PPTRuntime.canRecordDesktopEvents()) {
+    if (!desktopWorkflowRun || !window.NexMAGIRuntime.canRecordDesktopEvents()) {
         return;
     }
 
@@ -246,7 +246,7 @@ async function finishDesktopWorkflowRun(status, payloadJson = {}, details = {}) 
                 ...payloadJson,
             }
         });
-        await window.PPTRuntime.updateWorkflowRunStatus(desktopWorkflowRun.runId, status);
+        await window.NexMAGIRuntime.updateWorkflowRunStatus(desktopWorkflowRun.runId, status);
     } catch (error) {
         console.error('Failed to finish desktop workflow run:', error);
     } finally {
@@ -666,8 +666,8 @@ async function generateWorkflowInputFields(detail) {
         ]);
         const filteredProperties = {};
         for (const [name, cfg] of Object.entries(properties)) {
-            // _ppt_ プレフィックス（内部メタデータ）を除外
-            if (name.startsWith('_ppt_')) continue;
+            // _nexmagi_ プレフィックス（内部メタデータ）を除外
+            if (name.startsWith('_nexmagi_')) continue;
             // 自動注入フィールドを除外
             if (autoInjectedFields.has(name)) continue;
             // ワークフロー共通入力と重複するフィールドを除外
@@ -1308,7 +1308,7 @@ let _blackboardKeys = [];  // Blackboardのキー一覧
 // ステップのストリーミングを開始
 function startStepStreaming(executionId, stepOrder, stepName, skillName) {
     // デスクトップローカル実行ではSSEストリーミング不要
-    if (window.PPTRuntime?.shouldUseDesktopLocalExecution?.()) {
+    if (window.NexMAGIRuntime?.shouldUseDesktopLocalExecution?.()) {
         return;
     }
     // 既にストリーミング中の場合はスキップ
@@ -1337,15 +1337,15 @@ function startStepStreaming(executionId, stepOrder, stepName, skillName) {
     if (matchSkill) updateFlowStatus(stepOrder, matchSkill.skill_id, 'processing');
 
     // Web Workerを作成してストリーミングを開始（execute.htmlと同じWorkerを再利用）
-    const worker = window.PPTRuntime.createWorker();
+    const worker = window.NexMAGIRuntime.createWorker();
     streamingWorkers.set(executionId, worker);
-    void window.PPTRuntime.getAuthToken()
+    void window.NexMAGIRuntime.getAuthToken()
         .then((token) => {
             worker.postMessage({
                 type: 'start',
                 executionId: executionId,
                 token,
-                apiBase: window.PPTRuntime.getApiBase()
+                apiBase: window.NexMAGIRuntime.getApiBase()
             });
         })
         .catch((error) => {
@@ -1369,7 +1369,7 @@ function startStepStreaming(executionId, stepOrder, stepName, skillName) {
             step_name: stepName,
             skill_name: skillName,
             boundaryKind: 'sse_stream',
-            api_base: window.PPTRuntime.getApiBase(),
+            api_base: window.NexMAGIRuntime.getApiBase(),
         }))
         .catch((error) => {
             console.error('Failed to append desktop workflow provider start event:', error);
@@ -2210,7 +2210,7 @@ function renderHistory() {
             </td>
             <td>${modelDisplayHist}</td>
             <td>${totalTime ? totalTime + 'ms' : '-'}</td>
-            <td>${totalTokens || '-'}</td>
+            <td>${formatCompact(totalTokens)}</td>
             <td><span style="color: ${statusColor}">${overallStatus}</span></td>
             <td style="white-space: nowrap;">
                 <button onclick="editWorkflowExecution(${group.workflowExecutionId})" title="入力データを復元" class="icon-btn" style="display: inline-flex; align-items: center; justify-content: center; padding: 6px; background: none; border: none; cursor: pointer;">
@@ -2356,13 +2356,13 @@ async function showHistoryDetail(id) {
 }
 
 async function executeWorkflowWithOrchestration({ workflowId, globalInputData, perSkillInput, outputFormat }) {
-    const token = await window.PPTRuntime.getAuthToken();
+    const token = await window.NexMAGIRuntime.getAuthToken();
     if (!token) {
         throw new Error('ログイン情報が見つかりません');
     }
 
     // Start orchestrated workflow (returns immediately with status)
-    const orchStatus = await window.PPTRuntime.startOrchestratedWorkflow({
+    const orchStatus = await window.NexMAGIRuntime.startOrchestratedWorkflow({
         authToken: token,
         workflowId: parseInt(workflowId),
         workflowName: workflowDetail?.workflow?.name || `Workflow ${workflowId}`,
@@ -2376,7 +2376,7 @@ async function executeWorkflowWithOrchestration({ workflowId, globalInputData, p
     // Poll until orchestration completes (background tick handles actual execution)
     for (let i = 0; i < 1200; i++) {
         await new Promise(r => setTimeout(r, 500));
-        const status = await window.PPTRuntime.getOrchestrationStatus(orchStatus.workflowExecutionId);
+        const status = await window.NexMAGIRuntime.getOrchestrationStatus(orchStatus.workflowExecutionId);
         if (!status || status.status !== 'running') {
             break;
         }
@@ -2398,18 +2398,18 @@ async function executeWorkflowWithOrchestration({ workflowId, globalInputData, p
         status: wfStatus?.status || 'error',
         output: leaderExec?.output_data || '',
     };
-    window.__PPT_LAST_LOCAL_WORKFLOW_RESULT = result;
+    window.__NEXMAGI_LAST_LOCAL_WORKFLOW_RESULT = result;
 
     return result;
 }
 
 async function executeWorkflowWithDesktopLocalEngine({ workflowId, globalInputData, perSkillInput, outputFormat }) {
-    const token = await window.PPTRuntime.getAuthToken();
+    const token = await window.NexMAGIRuntime.getAuthToken();
     if (!token) {
         throw new Error('ログイン情報が見つかりません');
     }
 
-    const result = await window.PPTRuntime.runLocalWorkflowExecution({
+    const result = await window.NexMAGIRuntime.runLocalWorkflowExecution({
         authToken: token,
         workflowId: parseInt(workflowId),
         workflowName: workflowDetail?.workflow?.name || `Workflow ${workflowId}`,
@@ -2417,7 +2417,7 @@ async function executeWorkflowWithDesktopLocalEngine({ workflowId, globalInputDa
         perSkillInput,
         outputFormat,
     });
-    window.__PPT_LAST_LOCAL_WORKFLOW_RESULT = result;
+    window.__NEXMAGI_LAST_LOCAL_WORKFLOW_RESULT = result;
     console.info('[DesktopLocalWorkflowResult]', {
         configuredEngineMode: result.configuredEngineMode,
         effectiveEngineMode: result.effectiveEngineMode,
@@ -2540,8 +2540,8 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
         if (execIcon) execIcon.style.display = 'none';
         if (execSpinner) execSpinner.style.display = 'flex';
 
-        const isDesktopLocal = window.PPTRuntime?.shouldUseDesktopLocalExecution?.();
-        const useOrchestrated = window.PPTRuntime?.shouldUseOrchestratedExecution?.();
+        const isDesktopLocal = window.NexMAGIRuntime?.shouldUseDesktopLocalExecution?.();
+        const useOrchestrated = window.NexMAGIRuntime?.shouldUseOrchestratedExecution?.();
 
         let resp;
         if (useOrchestrated || isDesktopLocal) {
@@ -2771,7 +2771,7 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
             if (!_workflowCompleteHandled) {
                 // リーダー実行を取得
                 let leaderExecution = null;
-                const desktopResult = window.__PPT_LAST_LOCAL_WORKFLOW_RESULT;
+                const desktopResult = window.__NEXMAGI_LAST_LOCAL_WORKFLOW_RESULT;
                 if (desktopResult?.leaderExecutionId) {
                     leaderExecution = await apiRequest(`/api/user/executions/${desktopResult.leaderExecutionId}`).catch(() => null);
                 }
@@ -2789,7 +2789,7 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
             return;
         }
 
-        // --- ここから下はWeb版パスのみ ---
+        // --- 非オーケストレーション実行パス（APIゲートウェイモード） ---
         stepExecutions.clear();
         _checkNextStepRetryCount = 0;
         _workflowCompleteHandled = false;

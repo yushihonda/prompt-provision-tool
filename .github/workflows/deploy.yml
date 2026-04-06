@@ -21,7 +21,7 @@ jobs:
           port: 22
           script: |
             # 1. アプリケーションディレクトリへ移動
-            cd /opt/prompt-provision-tool
+            cd /opt/nexmagi
 
             # 2. 最新のコードを取得
             git fetch origin
@@ -39,8 +39,7 @@ jobs:
 
             # 6. サービスの再起動
             echo "Restarting services..."
-            sudo systemctl restart prompt-tool
-            sudo systemctl restart prompt-tool-celery
+            sudo systemctl restart nexmagi
             sudo systemctl restart nginx
 
             echo "Deployment Finished!"

@@ -22,8 +22,8 @@ use tauri_plugin_updater::UpdaterExt;
 use thiserror::Error;
 
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-const PACKAGED_CLI_PROVIDER_BINARY_ID: &str = "ppt-provider-adapter";
-const PACKAGED_SIDECAR_BINARY_ID: &str = "ppt-sidecar";
+const PACKAGED_CLI_PROVIDER_BINARY_ID: &str = "nexmagi-provider-adapter";
+const PACKAGED_SIDECAR_BINARY_ID: &str = "nexmagi-sidecar";
 const PACKAGED_CLI_PROVIDER_ADAPTER: &str = "local_worker";
 const PACKAGED_CLI_PROVIDER_TRANSPORT: &str = "subprocess";
 const DESKTOP_KEYCHAIN_SERVICE: &str = "com.nexmagi.desktop";
@@ -571,11 +571,11 @@ fn repo_sidecar_script_path() -> PathBuf {
 }
 
 fn python_executable() -> String {
-    env::var("PPT_SIDECAR_PYTHON").unwrap_or_else(|_| "python3".to_string())
+    env::var("NEXMAGI_SIDECAR_PYTHON").unwrap_or_else(|_| "python3".to_string())
 }
 
 pub(crate) fn desktop_api_base() -> String {
-    env::var("PPT_DESKTOP_API_BASE")
+    env::var("NEXMAGI_DESKTOP_API_BASE")
         .or_else(|_| env::var("WORKER_SERVER_URL"))
         .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string())
 }
@@ -637,12 +637,12 @@ fn packaged_resource_binary_path(
 
 pub(crate) fn packaged_cli_provider_binary_path(app: &AppHandle) -> Option<PathBuf> {
     let binary_name = packaged_cli_provider_binary_name();
-    packaged_resource_binary_path(app, "PPT_CLI_PROVIDER_BINARY_PATH", &binary_name)
+    packaged_resource_binary_path(app, "NEXMAGI_CLI_PROVIDER_BINARY_PATH", &binary_name)
 }
 
 fn packaged_sidecar_binary_path(app: &AppHandle) -> Option<PathBuf> {
     let binary_name = packaged_sidecar_binary_name();
-    packaged_resource_binary_path(app, "PPT_SIDECAR_BINARY_PATH", &binary_name)
+    packaged_resource_binary_path(app, "NEXMAGI_SIDECAR_BINARY_PATH", &binary_name)
 }
 
 pub(crate) fn resolve_sidecar_target(app: &AppHandle) -> ResolvedSidecarTarget {
@@ -663,14 +663,14 @@ pub(crate) fn resolve_sidecar_target(app: &AppHandle) -> ResolvedSidecarTarget {
 }
 
 pub(crate) fn cli_provider_adapter() -> String {
-    env::var("PPT_CLI_PROVIDER_ADAPTER")
+    env::var("NEXMAGI_CLI_PROVIDER_ADAPTER")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| PACKAGED_CLI_PROVIDER_ADAPTER.to_string())
 }
 
 fn cli_provider_transport() -> String {
-    env::var("PPT_CLI_PROVIDER_TRANSPORT")
+    env::var("NEXMAGI_CLI_PROVIDER_TRANSPORT")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| PACKAGED_CLI_PROVIDER_TRANSPORT.to_string())
@@ -680,11 +680,11 @@ fn cli_provider_detail_fields(app: &AppHandle) -> (String, String, String, Strin
     // Keep `provider_mode=cli` stable and derive only implementation-detail fields here.
     // This mirrors the Python-side command resolution contract for preview diagnostics.
     if packaged_cli_provider_binary_path(app).is_some() {
-        let provider_runtime = env::var("PPT_CLI_PROVIDER_RUNTIME")
+        let provider_runtime = env::var("NEXMAGI_CLI_PROVIDER_RUNTIME")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "binary".to_string());
-        let provider_impl = env::var("PPT_CLI_PROVIDER_IMPL")
+        let provider_impl = env::var("NEXMAGI_CLI_PROVIDER_IMPL")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| PACKAGED_CLI_PROVIDER_BINARY_ID.to_string());
@@ -780,15 +780,15 @@ fn verification_mode_contracts() -> Vec<VerificationModeContract> {
         VerificationModeContract {
             name: "skill".to_string(),
             required_env: vec![
-                "PPT_VERIFY_AUTH_TOKEN".to_string(),
-                "PPT_VERIFY_SKILL_ID".to_string(),
+                "NEXMAGI_VERIFY_AUTH_TOKEN".to_string(),
+                "NEXMAGI_VERIFY_SKILL_ID".to_string(),
             ],
         },
         VerificationModeContract {
             name: "workflow".to_string(),
             required_env: vec![
-                "PPT_VERIFY_AUTH_TOKEN".to_string(),
-                "PPT_VERIFY_WORKFLOW_ID".to_string(),
+                "NEXMAGI_VERIFY_AUTH_TOKEN".to_string(),
+                "NEXMAGI_VERIFY_WORKFLOW_ID".to_string(),
             ],
         },
         VerificationModeContract {
@@ -804,16 +804,16 @@ fn current_desktop_executable_name() -> String {
         .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
         .unwrap_or_else(|| {
             if cfg!(target_os = "windows") {
-                "prompt-provision-tool-desktop.exe".to_string()
+                "nexmagi-desktop.exe".to_string()
             } else {
-                "prompt-provision-tool-desktop".to_string()
+                "nexmagi-desktop".to_string()
             }
         })
 }
 
 fn desktop_verification_contract() -> DesktopVerificationContract {
     DesktopVerificationContract {
-        // `PPT_VERIFY_MODE` semantics are owned here; helpers must not reinterpret them.
+        // `NEXMAGI_VERIFY_MODE` semantics are owned here; helpers must not reinterpret them.
         truth_owner: "rust_tauri".to_string(),
         // This layer is the canonical source of runtime truth for packaged verification.
         helper_policy: "discover_launch_read_assert_only".to_string(),
@@ -979,8 +979,8 @@ fn verify_secure_storage_contract_internal(
     clear_auth_session_internal(app)?;
 
     let expected_session = AuthSession {
-        token: env_nonempty("PPT_VERIFY_STORAGE_TOKEN").unwrap_or_else(|| unique_token("verify-token")),
-        username: env_nonempty("PPT_VERIFY_STORAGE_USERNAME")
+        token: env_nonempty("NEXMAGI_VERIFY_STORAGE_TOKEN").unwrap_or_else(|| unique_token("verify-token")),
+        username: env_nonempty("NEXMAGI_VERIFY_STORAGE_USERNAME")
             .unwrap_or_else(|| "desktop-storage-proof".to_string()),
     };
 
@@ -1028,7 +1028,7 @@ fn verify_secure_storage_contract_internal(
 }
 
 fn embedded_updater_endpoints() -> Result<Vec<Url>, DesktopError> {
-    let Some(raw) = option_env!("PPT_UPDATER_ENDPOINTS_JSON") else {
+    let Some(raw) = option_env!("NEXMAGI_UPDATER_ENDPOINTS_JSON") else {
         return Ok(Vec::new());
     };
     let trimmed = raw.trim();
@@ -1038,7 +1038,7 @@ fn embedded_updater_endpoints() -> Result<Vec<Url>, DesktopError> {
 
     let raw_endpoints = serde_json::from_str::<Vec<String>>(trimmed).map_err(|err| {
         DesktopError::Message(format!(
-            "PPT_UPDATER_ENDPOINTS_JSON must be a JSON array of strings at build time: {err}"
+            "NEXMAGI_UPDATER_ENDPOINTS_JSON must be a JSON array of strings at build time: {err}"
         ))
     })?;
 
@@ -1047,7 +1047,7 @@ fn embedded_updater_endpoints() -> Result<Vec<Url>, DesktopError> {
         .map(|value| {
             Url::parse(&value).map_err(|err| {
                 DesktopError::Message(format!(
-                    "PPT_UPDATER_ENDPOINTS_JSON contains an invalid URL `{value}`: {err}"
+                    "NEXMAGI_UPDATER_ENDPOINTS_JSON contains an invalid URL `{value}`: {err}"
                 ))
             })
         })
@@ -1055,7 +1055,7 @@ fn embedded_updater_endpoints() -> Result<Vec<Url>, DesktopError> {
 }
 
 fn embedded_updater_pubkey() -> Option<String> {
-    option_env!("PPT_UPDATER_PUBLIC_KEY")
+    option_env!("NEXMAGI_UPDATER_PUBLIC_KEY")
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
@@ -1071,7 +1071,7 @@ fn updater_is_configured() -> bool {
 pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, DesktopError> {
     let base = match app.path().app_data_dir() {
         Ok(path) => path,
-        Err(_) => env::current_dir()?.join(".ppt-desktop"),
+        Err(_) => env::current_dir()?.join(".nexmagi-desktop"),
     };
 
     fs::create_dir_all(&base)?;
@@ -1079,7 +1079,7 @@ pub(crate) fn app_data_dir(app: &AppHandle) -> Result<PathBuf, DesktopError> {
 }
 
 fn desktop_db_path(app: &AppHandle) -> Result<PathBuf, DesktopError> {
-    Ok(app_data_dir(app)?.join("prompt_provision_tool.db"))
+    Ok(app_data_dir(app)?.join("nexmagi.db"))
 }
 
 /// Open a SQLite connection with busy_timeout to avoid lock contention.
@@ -1788,7 +1788,7 @@ fn ensure_sidecar_started(app: &AppHandle, runtime: &mut SidecarRuntime) -> Resu
     // sidecar stderr をファイルにキャプチャ（デバッグ用）
     let sidecar_stderr_path = app_data_dir(app)
         .map(|dir| dir.join("sidecar_stderr.log"))
-        .unwrap_or_else(|_| PathBuf::from("/tmp/ppt_sidecar_stderr.log"));
+        .unwrap_or_else(|_| PathBuf::from("/tmp/nexmagi_sidecar_stderr.log"));
     eprintln!("[sidecar] stderr log: {}", sidecar_stderr_path.display());
     let stderr_file = std::fs::OpenOptions::new()
         .create(true)
@@ -1806,11 +1806,11 @@ fn ensure_sidecar_started(app: &AppHandle, runtime: &mut SidecarRuntime) -> Resu
 
     if let Some(binary_path) = packaged_cli_provider_binary_path(app) {
         child_command
-            .env("PPT_CLI_PROVIDER_BINARY_PATH", binary_path)
-            .env("PPT_CLI_PROVIDER_RUNTIME", "binary")
-            .env("PPT_CLI_PROVIDER_IMPL", PACKAGED_CLI_PROVIDER_BINARY_ID)
-            .env("PPT_CLI_PROVIDER_TRANSPORT", PACKAGED_CLI_PROVIDER_TRANSPORT)
-            .env("PPT_CLI_PROVIDER_ADAPTER", cli_provider_adapter());
+            .env("NEXMAGI_CLI_PROVIDER_BINARY_PATH", binary_path)
+            .env("NEXMAGI_CLI_PROVIDER_RUNTIME", "binary")
+            .env("NEXMAGI_CLI_PROVIDER_IMPL", PACKAGED_CLI_PROVIDER_BINARY_ID)
+            .env("NEXMAGI_CLI_PROVIDER_TRANSPORT", PACKAGED_CLI_PROVIDER_TRANSPORT)
+            .env("NEXMAGI_CLI_PROVIDER_ADAPTER", cli_provider_adapter());
     }
 
     eprintln!("[sidecar] spawning...");
@@ -2060,13 +2060,13 @@ fn run_local_workflow_execution_internal(
 }
 
 fn run_packaged_verification(app: &AppHandle) -> Result<DesktopVerificationReport, DesktopError> {
-    // `PPT_VERIFY_MODE` semantics are owned here; helpers must not reinterpret them.
+    // `NEXMAGI_VERIFY_MODE` semantics are owned here; helpers must not reinterpret them.
     initialize_storage_internal(app)?;
-    if let Some(engine_mode) = env_nonempty("PPT_VERIFY_ENGINE_MODE") {
+    if let Some(engine_mode) = env_nonempty("NEXMAGI_VERIFY_ENGINE_MODE") {
         set_engine_mode_internal(app, engine_mode)?;
     }
 
-    let mode = env_nonempty("PPT_VERIFY_MODE").unwrap_or_else(|| "health".to_string());
+    let mode = env_nonempty("NEXMAGI_VERIFY_MODE").unwrap_or_else(|| "health".to_string());
     let contract = desktop_verification_contract();
     let runtime_config = runtime_config_internal(app);
     let state = app.state::<DesktopState>();
@@ -2092,12 +2092,12 @@ fn run_packaged_verification(app: &AppHandle) -> Result<DesktopVerificationRepor
                 app,
                 &state,
                 LocalSkillExecutionInput {
-                    auth_token: required_env("PPT_VERIFY_AUTH_TOKEN")?,
-                    skill_id: required_i64_env("PPT_VERIFY_SKILL_ID")?,
-                    skill_name: env_nonempty("PPT_VERIFY_SKILL_NAME"),
-                    input_data: env_json("PPT_VERIFY_INPUT_JSON", json!({}))?,
-                    output_format: env_nonempty("PPT_VERIFY_OUTPUT_FORMAT"),
-                    enable_deep_think: env_nonempty("PPT_VERIFY_ENABLE_DEEP_THINK")
+                    auth_token: required_env("NEXMAGI_VERIFY_AUTH_TOKEN")?,
+                    skill_id: required_i64_env("NEXMAGI_VERIFY_SKILL_ID")?,
+                    skill_name: env_nonempty("NEXMAGI_VERIFY_SKILL_NAME"),
+                    input_data: env_json("NEXMAGI_VERIFY_INPUT_JSON", json!({}))?,
+                    output_format: env_nonempty("NEXMAGI_VERIFY_OUTPUT_FORMAT"),
+                    enable_deep_think: env_nonempty("NEXMAGI_VERIFY_ENABLE_DEEP_THINK")
                         .map(|value| value.eq_ignore_ascii_case("true") || value == "1"),
                 },
             )?;
@@ -2109,12 +2109,12 @@ fn run_packaged_verification(app: &AppHandle) -> Result<DesktopVerificationRepor
                 app,
                 &state,
                 LocalWorkflowExecutionInput {
-                    auth_token: required_env("PPT_VERIFY_AUTH_TOKEN")?,
-                    workflow_id: required_i64_env("PPT_VERIFY_WORKFLOW_ID")?,
-                    workflow_name: env_nonempty("PPT_VERIFY_WORKFLOW_NAME"),
-                    global_input_data: env_json("PPT_VERIFY_GLOBAL_INPUT_JSON", json!({}))?,
-                    per_skill_input: Some(env_json("PPT_VERIFY_PER_SKILL_INPUT_JSON", json!({}))?),
-                    output_format: env_nonempty("PPT_VERIFY_OUTPUT_FORMAT"),
+                    auth_token: required_env("NEXMAGI_VERIFY_AUTH_TOKEN")?,
+                    workflow_id: required_i64_env("NEXMAGI_VERIFY_WORKFLOW_ID")?,
+                    workflow_name: env_nonempty("NEXMAGI_VERIFY_WORKFLOW_NAME"),
+                    global_input_data: env_json("NEXMAGI_VERIFY_GLOBAL_INPUT_JSON", json!({}))?,
+                    per_skill_input: Some(env_json("NEXMAGI_VERIFY_PER_SKILL_INPUT_JSON", json!({}))?),
+                    output_format: env_nonempty("NEXMAGI_VERIFY_OUTPUT_FORMAT"),
                 },
             )?;
             run_events = list_workflow_run_events_internal(app, result.run_id)?;
@@ -2122,7 +2122,7 @@ fn run_packaged_verification(app: &AppHandle) -> Result<DesktopVerificationRepor
         }
         other => {
             return Err(DesktopError::Message(format!(
-                "unsupported PPT_VERIFY_MODE `{other}`; expected `health`, `storage`, `skill`, or `workflow`"
+                "unsupported NEXMAGI_VERIFY_MODE `{other}`; expected `health`, `storage`, `skill`, or `workflow`"
             )));
         }
     }
@@ -2762,7 +2762,7 @@ fn main() {
                 }
             });
 
-            if env_nonempty("PPT_VERIFY_MODE").is_some() {
+            if env_nonempty("NEXMAGI_VERIFY_MODE").is_some() {
                 let app_handle = app.handle().clone();
                 let exit_code = match run_packaged_verification(&app_handle) {
                     Ok(report) => {
@@ -2776,7 +2776,7 @@ fn main() {
                         eprintln!(
                             "{}",
                             serde_json::to_string_pretty(&json!({
-                                "mode": env_nonempty("PPT_VERIFY_MODE").unwrap_or_else(|| "health".to_string()),
+                                "mode": env_nonempty("NEXMAGI_VERIFY_MODE").unwrap_or_else(|| "health".to_string()),
                                 "status": "error",
                                 "message": err.to_string(),
                             }))

@@ -106,22 +106,22 @@ def _build_step_metadata(ws, skill, agent_profile: str) -> dict:
 def _augment_skill_input_with_profile(skill_input, wf_exec, workflow, ws, skill, structured_context):
     agent_profile, profile_source = _resolve_agent_profile_with_source(ws, skill)
     blackboard = structured_context.get("blackboard", {}) if isinstance(structured_context, dict) else {}
-    skill_input["_ppt_agent_profile"] = agent_profile
-    skill_input["_ppt_profile_source"] = profile_source  # skill_default / workflow_override / fallback
-    skill_input["_ppt_workflow_name"] = getattr(workflow, "name", "") or ""
-    skill_input["_ppt_workflow_goal"] = getattr(workflow, "description", "") or ""
-    skill_input["_ppt_handoff_context"] = _parse_json_text(getattr(wf_exec, "handoff_summary", None), {})
-    skill_input["_ppt_blackboard_summary"] = {
+    skill_input["_nexmagi_agent_profile"] = agent_profile
+    skill_input["_nexmagi_profile_source"] = profile_source  # skill_default / workflow_override / fallback
+    skill_input["_nexmagi_workflow_name"] = getattr(workflow, "name", "") or ""
+    skill_input["_nexmagi_workflow_goal"] = getattr(workflow, "description", "") or ""
+    skill_input["_nexmagi_handoff_context"] = _parse_json_text(getattr(wf_exec, "handoff_summary", None), {})
+    skill_input["_nexmagi_blackboard_summary"] = {
         "keys": list(blackboard.keys()) if isinstance(blackboard, dict) else [],
         "count": len(blackboard) if isinstance(blackboard, dict) else 0,
     }
     step_metadata = _build_step_metadata(ws, skill, agent_profile)
-    skill_input["_ppt_step_metadata"] = step_metadata
-    skill_input["_ppt_handoff_refs"] = step_metadata.get("handoff_refs", [])
+    skill_input["_nexmagi_step_metadata"] = step_metadata
+    skill_input["_nexmagi_handoff_refs"] = step_metadata.get("handoff_refs", [])
     if agent_profile in READONLY_PROFILES:
-        skill_input["_ppt_readonly_constraints"] = DEFAULT_READONLY_CONSTRAINTS
+        skill_input["_nexmagi_readonly_constraints"] = DEFAULT_READONLY_CONSTRAINTS
     if agent_profile in VERDICT_REQUIRED_PROFILES:
-        skill_input["_ppt_verification_contract"] = DEFAULT_VERIFICATION_CONTRACT
+        skill_input["_nexmagi_verification_contract"] = DEFAULT_VERIFICATION_CONTRACT
     return agent_profile
 
 
@@ -491,7 +491,7 @@ def _handle_quality_gate_result(db, wf_exec, gate_execution):
     skill_input["quality_critique"] = verdict.get("critique", "")
     skill_input["reflection_loop"] = current_loop + 1
     # follow-up continuation メタデータ
-    skill_input["_ppt_continuation"] = {
+    skill_input["_nexmagi_continuation"] = {
         "continuation_of_execution_id": original_exec.id if original_exec else None,
         "continuation_reason": "reflection_retry",
         "delta_instruction": f"品質ゲートが不合格でした: {verdict.get('critique', '')}。この指摘を踏まえて改善してください。",
@@ -1197,7 +1197,7 @@ def _retry_skill(db, wf_exec, ws, failed_ex, per_skill_input,
         skill_input, wf_exec, workflow, ws, skill, structured_context
     )
     # follow-up continuation メタデータ
-    skill_input["_ppt_continuation"] = {
+    skill_input["_nexmagi_continuation"] = {
         "continuation_of_execution_id": failed_ex.id,
         "continuation_reason": "error_retry",
         "delta_instruction": f"前回の実行 (ID:{failed_ex.id}) がエラーで失敗しました: {failed_ex.error_message or 'unknown'}。同じタスクを再試行してください。",
@@ -1255,15 +1255,15 @@ def _start_parent_skill(db, wf_exec, workflow, structured_context,
     merged_input["global_input_data"] = global_input
     merged_input["steps"] = structured_context.get("steps", {})
     merged_input["blackboard"] = structured_context.get("blackboard", {})
-    merged_input["_ppt_agent_profile"] = "default"
-    merged_input["_ppt_workflow_name"] = workflow.name or ""
-    merged_input["_ppt_workflow_goal"] = workflow.description or ""
-    merged_input["_ppt_handoff_context"] = _parse_json_text(getattr(wf_exec, "handoff_summary", None), {})
-    merged_input["_ppt_blackboard_summary"] = {
+    merged_input["_nexmagi_agent_profile"] = "default"
+    merged_input["_nexmagi_workflow_name"] = workflow.name or ""
+    merged_input["_nexmagi_workflow_goal"] = workflow.description or ""
+    merged_input["_nexmagi_handoff_context"] = _parse_json_text(getattr(wf_exec, "handoff_summary", None), {})
+    merged_input["_nexmagi_blackboard_summary"] = {
         "keys": list((structured_context.get("blackboard") or {}).keys()),
         "count": len(structured_context.get("blackboard") or {}),
     }
-    merged_input["_ppt_step_metadata"] = {
+    merged_input["_nexmagi_step_metadata"] = {
         "skill_order": skill_order,
         "skill_name": "親スキル",
         "agent_profile": "default",
@@ -1271,7 +1271,7 @@ def _start_parent_skill(db, wf_exec, workflow, structured_context,
         "verdict_required": False,
         "handoff_refs": [],
     }
-    merged_input["_ppt_handoff_refs"] = []
+    merged_input["_nexmagi_handoff_refs"] = []
 
     first_exec = wf_exec.executions[0] if wf_exec.executions else None
     try:

@@ -89,7 +89,7 @@ def _build_coordinator_view(db, wf_exec):
             if ex.input_data:
                 try:
                     inp = json.loads(ex.input_data)
-                    cont = inp.get("_ppt_continuation")
+                    cont = inp.get("_nexmagi_continuation")
                     if cont:
                         event["continuation_of"] = cont.get("continuation_of_execution_id")
                         event["continuation_reason"] = cont.get("continuation_reason")

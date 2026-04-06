@@ -1,4 +1,4 @@
-# prompt-provision-tool（プロジェクト固有・追記用）
+# NexMAGI（プロジェクト固有・追記用）
 
 ## スタック
 - バックエンド: Python / FastAPI / Uvicorn（`backend/app/`）
@@ -28,7 +28,7 @@
 ```bash
 # サーバー起動
 cd deployment && docker compose -f docker-compose.local.yml up -d
-docker exec ppt-backend alembic upgrade head
+docker exec nexmagi-backend alembic upgrade head
 
 # ローカルワーカー
 pip install -r local_worker/requirements.txt

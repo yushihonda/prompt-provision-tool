@@ -82,16 +82,16 @@ async function resolveReleasePair() {
 }
 
 const outputDir = path.resolve(
-  process.env.PPT_RELEASE_ASSET_DIR || path.join(targetDir(), "release", "updater-artifacts"),
+  process.env.NEXMAGI_RELEASE_ASSET_DIR || path.join(targetDir(), "release", "updater-artifacts"),
 );
-const targetKey = requireEnv("PPT_RELEASE_TARGET_KEY");
+const targetKey = requireEnv("NEXMAGI_RELEASE_TARGET_KEY");
 const pair = await resolveReleasePair();
 
 if (process.platform === "darwin" && !targetKey.startsWith("darwin-")) {
-  throw new Error(`PPT_RELEASE_TARGET_KEY must start with darwin- on macOS, got ${targetKey}`);
+  throw new Error(`NEXMAGI_RELEASE_TARGET_KEY must start with darwin- on macOS, got ${targetKey}`);
 }
 if (process.platform === "win32" && !targetKey.startsWith("windows-")) {
-  throw new Error(`PPT_RELEASE_TARGET_KEY must start with windows- on Windows, got ${targetKey}`);
+  throw new Error(`NEXMAGI_RELEASE_TARGET_KEY must start with windows- on Windows, got ${targetKey}`);
 }
 
 if (!(await pathExists(pair.signaturePath))) {

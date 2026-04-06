@@ -109,7 +109,7 @@ function renderSkillRow(execution) {
         <td>${escapeHtmlAdmin(execution.skill_name || '-')}</td>
         <td>${modelDisplay}</td>
         <td>${execution.execution_time || '-'}${execution.execution_time ? 'ms' : ''}</td>
-        <td>${execution.tokens_used || '-'}</td>
+        <td>${formatCompact(execution.tokens_used)}</td>
         <td>${executionStatusHtml(execution.status)}</td>
         <td>
             <button onclick="showDetail(${execution.id})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer;">
@@ -155,7 +155,7 @@ function renderWorkflowRow(group) {
         </td>
         <td>${modelDisplay}</td>
         <td>${totalTime ? totalTime + 'ms' : '-'}</td>
-        <td>${totalTokens || '-'}</td>
+        <td>${formatCompact(totalTokens)}</td>
         <td>${executionStatusHtml(overallStatus)}</td>
         <td>
             <button onclick="showWorkflowDetail(${weId})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer;">

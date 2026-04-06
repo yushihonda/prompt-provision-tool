@@ -53,17 +53,17 @@ function parseJsonArray(name, rawValue) {
 
 const configPath = path.resolve(
   desktopDir,
-  process.env.PPT_TAURI_CONFIG_PATH?.trim() || "src-tauri/tauri.release.conf.json",
+  process.env.NEXMAGI_TAURI_CONFIG_PATH?.trim() || "src-tauri/tauri.release.conf.json",
 );
 
 if (!(await pathExists(configPath))) {
   throw new Error(`Release config does not exist: ${configPath}`);
 }
 
-const updaterPublicKey = requireEnv("PPT_UPDATER_PUBLIC_KEY");
+const updaterPublicKey = requireEnv("NEXMAGI_UPDATER_PUBLIC_KEY");
 const updaterEndpoints = parseJsonArray(
-  "PPT_UPDATER_ENDPOINTS_JSON",
-  requireEnv("PPT_UPDATER_ENDPOINTS_JSON"),
+  "NEXMAGI_UPDATER_ENDPOINTS_JSON",
+  requireEnv("NEXMAGI_UPDATER_ENDPOINTS_JSON"),
 );
 const signingPrivateKey = requireEnv("TAURI_SIGNING_PRIVATE_KEY");
 const signingPassword = optionalEnv("TAURI_SIGNING_PRIVATE_KEY_PASSWORD");

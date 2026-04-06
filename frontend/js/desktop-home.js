@@ -1,6 +1,6 @@
 (function () {
     const invoke = window.__TAURI__?.core?.invoke;
-    const runtime = window.PPTRuntime;
+    const runtime = window.NexMAGIRuntime;
 
     const appInfoEl = document.getElementById('app-info');
     const runtimeDiagnosticsInfoEl = document.getElementById('runtime-diagnostics-info');
@@ -323,7 +323,7 @@
         await initializeStorage();
     });
 
-    window.addEventListener('ppt-runtime-config-ready', async () => {
+    window.addEventListener('nexmagi-runtime-config-ready', async () => {
         await refreshRuntimeDiagnostics();
     });
 

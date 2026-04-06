@@ -29,7 +29,7 @@ cd deployment
 docker compose -f docker-compose.local.yml up -d
 
 # 2. マイグレーション
-docker exec ppt-backend alembic upgrade head
+docker exec nexmagi-backend alembic upgrade head
 
 # 3. デスクトップアプリ起動
 cd desktop

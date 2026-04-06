@@ -57,7 +57,7 @@ class GeminiService:
                 try:
                     self.genai_client = genai_new.Client(
                         api_key=self.api_key,
-                        http_options={"headers": {"Referer": "https://prompt-provision-tool.local"}},
+                        http_options={"headers": {"Referer": "https://nexmagi.local"}},
                     )
                     logger.info("✓ Gemini Service: 直接Gemini API接続で初期化（新SDK対応）")
                 except Exception as e:

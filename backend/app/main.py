@@ -24,18 +24,18 @@ if settings.is_production:
 # FastAPIアプリケーションの作成（本番はドキュメント無効化）
 if settings.ENVIRONMENT == "production":
     app = FastAPI(
-        title="Skill Provision Tool",
-        description="GPT及びGeminiのスキルを外部に漏らさず、実行機能のみを提供するツール",
-        version="2.0.0",
+        title="NexMAGI",
+        description="次世代AIオーケストレーションデスクトップアプリ — マルチエージェントワークフローを実行・管理",
+        version="3.0.0",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
     )
 else:
     app = FastAPI(
-        title="Skill Provision Tool",
-        description="GPT及びGeminiのスキルを外部に漏らさず、実行機能のみを提供するツール",
-        version="2.0.0"
+        title="NexMAGI",
+        description="次世代AIオーケストレーションデスクトップアプリ — マルチエージェントワークフローを実行・管理",
+        version="3.0.0"
     )
 
 # CORS設定
@@ -69,7 +69,7 @@ async def root():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Skill Provision Tool</title>
+        <title>NexMAGI</title>
         <style>
             body {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -123,9 +123,9 @@ async def root():
     </head>
     <body>
         <div class="container">
-            <h1>🔐 Skill Provision Tool</h1>
+            <h1>NexMAGI</h1>
             <p style="text-align: center; color: #666;">
-                スキルを保護しながらAI機能を提供するツール
+                次世代AIオーケストレーションデスクトップアプリ
             </p>
             <div class="links">
                 <a href="/static/admin/login.html" class="link-button admin">管理者ログイン</a>

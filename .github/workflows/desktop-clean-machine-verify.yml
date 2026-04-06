@@ -76,12 +76,12 @@ jobs:
             cargo_target_dir: ${{ github.workspace }}\desktop\.cargo-target
     env:
       CARGO_TARGET_DIR: ${{ matrix.cargo_target_dir }}
-      PPT_DESKTOP_API_BASE: ${{ secrets[format('{0}', 'PPT_DESKTOP_API_BASE')] }}
-      PPT_VERIFY_AUTH_TOKEN: ${{ secrets[format('{0}', 'PPT_VERIFY_AUTH_TOKEN')] }}
-      PPT_VERIFY_SKILL_ID: ${{ secrets[format('{0}', 'PPT_VERIFY_SKILL_ID')] }}
-      PPT_VERIFY_SKILL_NAME: "Desktop Packaged Verification Skill"
-      PPT_VERIFY_ENABLE_DEEP_THINK: "true"
-      PPT_VERIFY_INPUT_JSON: '{"topic":"clean machine packaged verification","objective":"assert bundled sidecar and cli provider semantics"}'
+      NEXMAGI_DESKTOP_API_BASE: ${{ secrets[format('{0}', 'NEXMAGI_DESKTOP_API_BASE')] }}
+      NEXMAGI_VERIFY_AUTH_TOKEN: ${{ secrets[format('{0}', 'NEXMAGI_VERIFY_AUTH_TOKEN')] }}
+      NEXMAGI_VERIFY_SKILL_ID: ${{ secrets[format('{0}', 'NEXMAGI_VERIFY_SKILL_ID')] }}
+      NEXMAGI_VERIFY_SKILL_NAME: "Desktop Packaged Verification Skill"
+      NEXMAGI_VERIFY_ENABLE_DEEP_THINK: "true"
+      NEXMAGI_VERIFY_INPUT_JSON: '{"topic":"clean machine packaged verification","objective":"assert bundled sidecar and cli provider semantics"}'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

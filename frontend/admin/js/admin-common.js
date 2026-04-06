@@ -1,7 +1,16 @@
 // 共通の管理者用JavaScript関数
 
-const runtimeFetch = (path, options) => window.PPTRuntime.fetchWithRuntime(path, options);
-const navigateToAdmin = (path) => window.PPTRuntime.navigate(path);
+const runtimeFetch = (path, options) => window.NexMAGIRuntime.fetchWithRuntime(path, options);
+const navigateToAdmin = (path) => window.NexMAGIRuntime.navigate(path);
+
+/** 数値をK/M表記に短縮 */
+function formatCompact(n) {
+    if (n == null) return '-';
+    n = Number(n);
+    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(n);
+}
 
 // SweetAlert2のデフォルト設定は swal-defaults.js で共通化
 
@@ -26,8 +35,8 @@ const ADMIN_SWAL = {
 
 // 認証チェック（非同期）
 async function checkAuth() {
-    const token = await window.PPTRuntime.getAuthToken();
-    const username = await window.PPTRuntime.getAuthUsername();
+    const token = await window.NexMAGIRuntime.getAuthToken();
+    const username = await window.NexMAGIRuntime.getAuthUsername();
 
     if (!token) {
         navigateToAdmin('login.html');
@@ -47,7 +56,7 @@ async function checkAuth() {
 
         if (response.status === 401) {
             // トークンが無効な場合
-            await window.PPTRuntime.clearAuthSession();
+            await window.NexMAGIRuntime.clearAuthSession();
             navigateToAdmin('login.html');
             return;
         }
@@ -70,7 +79,7 @@ async function checkAuth() {
         }
     } catch (error) {
         console.error('Auth check error:', error);
-        await window.PPTRuntime.clearAuthSession();
+        await window.NexMAGIRuntime.clearAuthSession();
         navigateToAdmin('login.html');
     }
 }
@@ -89,7 +98,7 @@ async function logout() {
     });
 
     if (result.isConfirmed) {
-        await window.PPTRuntime.clearAuthSession();
+        await window.NexMAGIRuntime.clearAuthSession();
         await Swal.fire({
             title: 'ログアウトしました',
             text: 'ログイン画面に戻ります',
@@ -104,7 +113,7 @@ async function logout() {
 
 // API リクエスト
 async function apiRequest(endpoint, options = {}) {
-    const token = await window.PPTRuntime.getAuthToken();
+    const token = await window.NexMAGIRuntime.getAuthToken();
 
     const defaultOptions = {
         headers: {
@@ -127,7 +136,7 @@ async function apiRequest(endpoint, options = {}) {
 
         // 認証エラーの場合はログイン画面へ
         if (response.status === 401) {
-            await window.PPTRuntime.clearAuthSession();
+            await window.NexMAGIRuntime.clearAuthSession();
             navigateToAdmin('login.html');
             return;
         }
@@ -283,11 +292,11 @@ function initAdminLayout(activePage) {
 
     const navHtml = (extraClass = '') =>
         ADMIN_NAV_ITEMS.map(n =>
-            `<button class="nav-item${n.href === activePage ? ' active' : ''}${extraClass}" onclick="window.PPTRuntime.navigate('${n.href}')">${n.label}</button>`
+            `<button class="nav-item${n.href === activePage ? ' active' : ''}${extraClass}" onclick="window.NexMAGIRuntime.navigate('${n.href}')">${n.label}</button>`
         ).join('\n');
 
     const pillNavHtml = ADMIN_NAV_ITEMS.map(p =>
-        `<button class="nav-pill${p.href === activePage ? ' active' : ''}" onclick="window.PPTRuntime.navigate('${p.href}')">${p.label}</button>`
+        `<button class="nav-pill${p.href === activePage ? ' active' : ''}" onclick="window.NexMAGIRuntime.navigate('${p.href}')">${p.label}</button>`
     ).join('\n');
 
     const headerHtml = `

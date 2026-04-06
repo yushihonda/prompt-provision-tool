@@ -392,12 +392,12 @@ async def _get_execution_bundle_inner(
             workflow_goal=workflow_goal,
             parent_skill_prompt=parent_prompt,
             current_skill_prompt=resolved_skill_prompt,
-            handoff_context=input_data.get("_ppt_handoff_context") or {},
+            handoff_context=input_data.get("_nexmagi_handoff_context") or {},
             resolved_input_data=input_data,
-            readonly_constraints=input_data.get("_ppt_readonly_constraints"),
-            verification_contract=input_data.get("_ppt_verification_contract"),
+            readonly_constraints=input_data.get("_nexmagi_readonly_constraints"),
+            verification_contract=input_data.get("_nexmagi_verification_contract"),
             blackboard_summary=build_blackboard_summary(input_data.get("blackboard") or {}),
-            step_metadata=input_data.get("_ppt_step_metadata") or {},
+            step_metadata=input_data.get("_nexmagi_step_metadata") or {},
         )
     else:
         final_prompt = resolved_skill_prompt

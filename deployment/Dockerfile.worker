@@ -1,0 +1,10 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY local_worker/requirements.txt /tmp/worker-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/worker-requirements.txt
+
+COPY local_worker /app/local_worker
+
+CMD ["python", "-m", "local_worker", "--log-level", "INFO", "daemon"]

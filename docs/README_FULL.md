@@ -71,7 +71,7 @@ flowchart TD
 - `auth_key_source` は `bundle_api_keys` / `local_env` / `bundle_or_local_env` / `not_applicable` / `none` を使う
 - `token_accounting_source` / `provider_error_code` / `retry_reason` は sidecar が canonical source になる
 - `local_worker` は API key path では executor 共有モジュール、CLI path では subprocess adapter として使うが、provider-level failure の意味づけは sidecar に寄せる
-- packaged CLI binary を使う場合も `provider_mode=cli` は維持し、主に `provider_runtime=python -> binary` と `provider_impl=local_worker.provider_adapter -> ppt-provider-adapter` を差し替える
+- packaged CLI binary を使う場合も `provider_mode=cli` は維持し、主に `provider_runtime=python -> binary` と `provider_impl=local_worker.provider_adapter -> nexmagi-provider-adapter` を差し替える
 - bundled executable を subprocess で呼ぶ限り、`provider_transport=subprocess` は不変とする
 - restart recovery は `executions` / `workflow_executions` の再読込で吸収し、desktop 固有 state を正本にしない
 - sidecar crash 前の未返却 event は batch durability の制約上欠落しうる
@@ -92,7 +92,7 @@ field rule table:
 | `provider_transport` | 到達方式 | diagnostic / implementation | `sdk`, `subprocess`, `http`, `grpc`, `ipc` | 何を呼ぶかではなく、どう到達するかで命名する | subprocess -> SDK 直呼び、HTTP 常駐化など接続方式が変わるとき | subprocess 呼び出しのままで target だけが module -> binary に変わるとき |
 | `provider_adapter` | 仲介層 | diagnostic / implementation | `none`, `local_worker`, `embedded_adapter` | sidecar と provider の間にある仲介責務を表す | adapter を追加・削除・差し替えするとき | 仲介層を保ったまま runtime / impl だけが変わるとき |
 | `provider_runtime` | 実行環境 | diagnostic / implementation | `python`, `binary`, `node`, `rust` | 実装対象の runtime 種別を表す | Python -> binary のように runtime が変わるとき | runtime は同じで impl 名だけが変わるとき |
-| `provider_impl` | 具体的実装識別子 | diagnostic / implementation | `sdk_execute_bundle`, `local_worker.provider_adapter`, `ppt-provider-adapter` | 最も具体的な診断用識別子。集計主キーには使わない | 実際に呼ぶ target が変わるとき | 同じ target を呼び続けるとき |
+| `provider_impl` | 具体的実装識別子 | diagnostic / implementation | `sdk_execute_bundle`, `local_worker.provider_adapter`, `nexmagi-provider-adapter` | 最も具体的な診断用識別子。集計主キーには使わない | 実際に呼ぶ target が変わるとき | 同じ target を呼び続けるとき |
 
 short decision rules:
 
@@ -125,7 +125,7 @@ naming anti-patterns:
 - `sdk_execute_bundle`
 - `python_cli_provider`
 - `local_worker_cli`
-- `ppt-provider-adapter`
+- `nexmagi-provider-adapter`
 
 これらは `provider_mode` に入れない。理由は意味ではなく実装詳細だから。
 
@@ -134,7 +134,7 @@ scenario table:
 | Scenario | `provider_mode` | `provider_transport` | `provider_adapter` | `provider_runtime` | `provider_impl` |
 |------|------|------|------|------|------|
 | API key 実行 -> CLI 実行 | change | maybe change | maybe change | maybe change | change |
-| `python -m local_worker.provider_adapter` -> `ppt-provider-adapter`、ただし subprocess 継続 | keep | keep | maybe change | change | change |
+| `python -m local_worker.provider_adapter` -> `nexmagi-provider-adapter`、ただし subprocess 継続 | keep | keep | maybe change | change | change |
 | `local_worker` を撤去し sidecar から packaged binary を直接 subprocess 起動 | keep | keep | change | maybe keep / maybe change | change |
 | subprocess をやめて SDK 直呼び | maybe keep / maybe change | change | maybe change | maybe change | change |
 | subprocess をやめて local HTTP service 化 | keep | change | maybe change | maybe keep | change |
@@ -218,7 +218,7 @@ continuation 検証時の追加 event:
 - sidecar bundling に進む前に、desktop local execution の provider 観測正本が sidecar/local engine へ固定されていること
 - `workflow_run_events` の append 単一路を Tauri command から増やさない
 - bundle.active を有効化しても prompt plaintext を event payload に含めない
-- packaged CLI binary の既定識別子を `ppt-provider-adapter` に固定し、resource path が見つからない場合は Python module fallback に戻れること
+- packaged CLI binary の既定識別子を `nexmagi-provider-adapter` に固定し、resource path が見つからない場合は Python module fallback に戻れること
 - diagnostics と result payload の両方で `configured_engine_mode` / `effective_engine_mode` / `provider_mode` / `auth_key_source` を確認できること
 - diagnostics では `provider_transport` / `provider_adapter` / `provider_runtime` / `provider_impl` も確認でき、集計軸の `provider_mode` と混同しないこと
 - CLI real path で `token_accounting_source` / `provider_error_code` / `retry_reason` が result payload と event payload の両方で確認できること
@@ -268,17 +268,17 @@ npm --prefix desktop run verify:packaged:storage
 - keep: `provider_transport=subprocess`
 - maybe keep/change: `provider_adapter`
 - change: `provider_runtime=python -> binary`
-- change: `provider_impl=local_worker.provider_adapter -> ppt-provider-adapter`
+- change: `provider_impl=local_worker.provider_adapter -> nexmagi-provider-adapter`
 
 packaged executable 自体の verification mode:
 
 ```bash
-PPT_DESKTOP_API_BASE="<backend base url>" \
-PPT_VERIFY_AUTH_TOKEN="<dev-login or user token>" \
-PPT_VERIFY_SKILL_ID=17 \
-PPT_VERIFY_SKILL_NAME="総合リサーチ＆戦略立案（単体版）" \
-PPT_VERIFY_ENABLE_DEEP_THINK=true \
-PPT_VERIFY_INPUT_JSON='{"topic":"clean machine packaged verification","objective":"assert bundled sidecar and cli provider semantics"}' \
+NEXMAGI_DESKTOP_API_BASE="<backend base url>" \
+NEXMAGI_VERIFY_AUTH_TOKEN="<dev-login or user token>" \
+NEXMAGI_VERIFY_SKILL_ID=17 \
+NEXMAGI_VERIFY_SKILL_NAME="総合リサーチ＆戦略立案（単体版）" \
+NEXMAGI_VERIFY_ENABLE_DEEP_THINK=true \
+NEXMAGI_VERIFY_INPUT_JSON='{"topic":"clean machine packaged verification","objective":"assert bundled sidecar and cli provider semantics"}' \
 CARGO_TARGET_DIR="$PWD/desktop/.cargo-target" \
 npm --prefix desktop run verify:packaged:skill
 ```
@@ -290,8 +290,8 @@ verification mode の設計意図:
 - GUI 手動確認に依存せず、`O(1)` の再現可能な packaged runtime 検証手段になる
 - `desktop/scripts/run_packaged_verification.mjs` が macOS `.app` と Windows `.exe` の packaged executable path を吸収する
 - `Rust/Tauri = runtime truth`、`Node helper = discover / launch / read / assert only` を守り、mode semantics や fallback semantics を helper 側へ複製しない
-- `PPT_VERIFY_EXECUTABLE_PATH` を与えると artifact path を手動 override できる
-- real skill verification の最小 fixture contract は `PPT_DESKTOP_API_BASE`, `PPT_VERIFY_AUTH_TOKEN`, `PPT_VERIFY_SKILL_ID`
+- `NEXMAGI_VERIFY_EXECUTABLE_PATH` を与えると artifact path を手動 override できる
+- real skill verification の最小 fixture contract は `NEXMAGI_DESKTOP_API_BASE`, `NEXMAGI_VERIFY_AUTH_TOKEN`, `NEXMAGI_VERIFY_SKILL_ID`
 - `verify:packaged:storage` は `auth_session.json` が set 直後に存在すること、ラウンドトリップが取れること、token / username が SQLite に保存されていないことを packaged app 自身に証明させる（keychain はベストエフォート）
 - `verify:packaged:storage:strict` は signed release workflow 専用で、上記に加えて `authSessionRoundTripOk=true` を要求する
 
@@ -306,10 +306,10 @@ verification mode の設計意図:
 - unsigned/local packaged build では `authSessionRoundTripOk` が false になり得るため、secure storage の最終 round-trip 確認は signed release run で行う
 - release artifact sanity check は `metadata.json` / asset / `.sig` の存在と targetKey 重複を fail-fast する
 - packaged verification report は `contract.truthOwner=rust_tauri`, `contract.helperPolicy=discover_launch_read_assert_only` を返す
-- packaged app は `Contents/Resources/resources/bin/ppt-provider-adapter` を自動解決
-- packaged app は `Contents/Resources/resources/bin/ppt-sidecar` を自動解決
-- packaged `runtime_config.sidecarScriptPath` と verification report の `resolvedSidecarPath` は bundle 内の `ppt-sidecar` を返す
-- packaged `runtime_config` / `sidecar_health` は `provider_mode=cli`, `provider_transport=subprocess`, `provider_runtime=binary`, `provider_impl=ppt-provider-adapter`
+- packaged app は `Contents/Resources/resources/bin/nexmagi-provider-adapter` を自動解決
+- packaged app は `Contents/Resources/resources/bin/nexmagi-sidecar` を自動解決
+- packaged `runtime_config.sidecarScriptPath` と verification report の `resolvedSidecarPath` は bundle 内の `nexmagi-sidecar` を返す
+- packaged `runtime_config` / `sidecar_health` は `provider_mode=cli`, `provider_transport=subprocess`, `provider_runtime=binary`, `provider_impl=nexmagi-provider-adapter`
 - packaged real skill 1 本は `success`
 - result payload は `token_accounting_source=provider_usage`, `provider_error_code=null`, `retry_reason=null`
 - `workflow_run_events` は 7 件で、少なくとも以下を確認済み:
@@ -320,13 +320,13 @@ verification mode の設計意図:
   - `retry_decision_made`
   - `node_execution_finished`
   - `workflow_run_finished`
-- 上記 7 event の payload でも `provider_mode=cli`, `provider_transport=subprocess`, `provider_runtime=binary`, `provider_impl=ppt-provider-adapter` が一致
+- 上記 7 event の payload でも `provider_mode=cli`, `provider_transport=subprocess`, `provider_runtime=binary`, `provider_impl=nexmagi-provider-adapter` が一致
 
 補足:
 
 - `tauri:build` は Rust toolchain (`cargo`) が入っていることが前提
 - `cargo` が無い環境では artifact build までは確認できても packaged app build で止まる
-- repo 相対の `sidecar/main.py` ではなく bundled `ppt-sidecar` を優先して起動する
+- repo 相対の `sidecar/main.py` ではなく bundled `nexmagi-sidecar` を優先して起動する
 - verification mode は sidecar も CLI provider も bundle 内 resource path を出力できる
 - mode ごとの required env names と expected packaged/runtime contract は Rust が返し、helper / CI / docs はそれを参照する
 - `.github/workflows/desktop-clean-machine-verify.yml` は macOS / Windows clean machine 向けの packaged health verification を required gate、real skill verification を optional gate として持つ
@@ -567,7 +567,7 @@ dedupe key の材料:
 ### ツリー（主要ディレクトリのみ）
 
 ```
-prompt-provision-tool/
+NexMAGI/
 ├── backend/                         # 【バックエンド】
 │   ├── app/
 │   │   ├── api/                     # auth, admin, user, execute, worker
@@ -605,9 +605,9 @@ prompt-provision-tool/
 # DB
 DB_HOST=localhost
 DB_PORT=3306
-DB_USER=prompt_tool_user
+DB_USER=nexmagi_user
 DB_PASSWORD=your_password
-DB_NAME=prompt_provision_db
+DB_NAME=nexmagi_db
 
 # Security
 SECRET_KEY=your-secret-hex
@@ -669,9 +669,9 @@ sudo systemctl start redis-server
 
 3) DB作成（MySQL 8.0）
 ```
-CREATE DATABASE prompt_provision_db CHARACTER SET utf8mb4;
-CREATE USER 'prompt_tool_user'@'localhost' IDENTIFIED BY 'your_password';
-GRANT ALL PRIVILEGES ON prompt_provision_db.* TO 'prompt_tool_user'@'localhost';
+CREATE DATABASE nexmagi_db CHARACTER SET utf8mb4;
+CREATE USER 'nexmagi_user'@'localhost' IDENTIFIED BY 'your_password';
+GRANT ALL PRIVILEGES ON nexmagi_db.* TO 'nexmagi_user'@'localhost';
 ```
 
 4) マイグレーション
@@ -690,14 +690,14 @@ python -m app.init_admin
 systemdサービスを使用する場合（推奨）：
 ```bash
 # FastAPIアプリケーション
-sudo systemctl start prompt-tool
+sudo systemctl start nexmagi
 
 # Celery Worker
-sudo systemctl start prompt-tool-celery
+sudo systemctl start nexmagi-celery
 
 # 自動起動を有効化
-sudo systemctl enable prompt-tool
-sudo systemctl enable prompt-tool-celery
+sudo systemctl enable nexmagi
+sudo systemctl enable nexmagi-celery
 ```
 
 手動起動する場合：
@@ -1200,31 +1200,31 @@ pip install -r requirements.txt
 
 ```bash
 # サービス状態の確認
-sudo systemctl status prompt-tool          # FastAPIアプリケーション
-sudo systemctl status prompt-tool-celery   # Celery Worker
+sudo systemctl status nexmagi              # FastAPIアプリケーション
+sudo systemctl status nexmagi-celery       # Celery Worker
 sudo systemctl status redis-server         # Redis
 sudo systemctl status nginx                # Nginx
 
 # サービスの再起動
-sudo systemctl restart prompt-tool
-sudo systemctl restart prompt-tool-celery
+sudo systemctl restart nexmagi
+sudo systemctl restart nexmagi-celery
 
 # サービスの停止
-sudo systemctl stop prompt-tool
-sudo systemctl stop prompt-tool-celery
+sudo systemctl stop nexmagi
+sudo systemctl stop nexmagi-celery
 
 # サービスの起動
-sudo systemctl start prompt-tool
-sudo systemctl start prompt-tool-celery
+sudo systemctl start nexmagi
+sudo systemctl start nexmagi-celery
 ```
 
 ### ログ確認
 
 - ヘルスチェック: GET /health
 - ログ: systemdやNginx設定は `deployment/` 参照
-- アプリケーションログ: `/var/log/prompt-tool/app.log`
-- Celery Workerログ: `/var/log/prompt-tool/celery.log`
-- エラーログ: `/var/log/prompt-tool/error.log`, `/var/log/prompt-tool/celery-error.log`
+- アプリケーションログ: `/var/log/nexmagi/app.log`
+- Celery Workerログ: `/var/log/nexmagi/celery.log`
+- エラーログ: `/var/log/nexmagi/error.log`, `/var/log/nexmagi/celery-error.log`
 
 ### 本番要件
 
@@ -1290,13 +1290,13 @@ GitHub Actionsによる自動デプロイを推奨します。手動でデプロ
 
 ```bash
 # 本番サーバー上で実行
-cd /opt/prompt-provision-tool/backend
-source /opt/prompt-provision-tool/venv/bin/activate
+cd /opt/NexMAGI/backend
+source /opt/NexMAGI/venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 alembic upgrade head
-sudo systemctl restart prompt-tool.service
-sudo systemctl restart prompt-tool-celery.service
+sudo systemctl restart nexmagi.service
+sudo systemctl restart nexmagi-celery.service
 ```
 
 ### デプロイ前の確認事項
@@ -1311,18 +1311,18 @@ sudo systemctl restart prompt-tool-celery.service
 
 ```bash
 # アプリケーションログ
-sudo tail -f /var/log/prompt-tool/app.log
+sudo tail -f /var/log/nexmagi/app.log
 
 # エラーログ
-sudo tail -f /var/log/prompt-tool/error.log
+sudo tail -f /var/log/nexmagi/error.log
 
 # Celery Workerログ
-sudo tail -f /var/log/prompt-tool/celery.log
-sudo tail -f /var/log/prompt-tool/celery-error.log
+sudo tail -f /var/log/nexmagi/celery.log
+sudo tail -f /var/log/nexmagi/celery-error.log
 
 # systemdサービスの状態
-sudo systemctl status prompt-tool
-sudo systemctl status prompt-tool-celery
+sudo systemctl status nexmagi
+sudo systemctl status nexmagi-celery
 sudo systemctl status redis-server
 ```
 
@@ -1331,7 +1331,7 @@ sudo systemctl status redis-server
 ### リポジトリの初期化（初回のみ）
 
 ```bash
-cd /Users/hondayushi/workspaece/poifull/prompt-provision-tool
+cd /Users/hondayushi/workspaece/poifull/NexMAGI
 git init
 git add .
 git commit -m "Initial commit: NexMAGI"
@@ -1341,10 +1341,10 @@ git commit -m "Initial commit: NexMAGI"
 
 ```bash
 # リモートリポジトリを追加（例：GitHub）
-git remote add origin https://github.com/your-username/prompt-provision-tool.git
+git remote add origin https://github.com/your-username/NexMAGI.git
 
 # またはSSHを使用する場合
-git remote add origin git@github.com:your-username/prompt-provision-tool.git
+git remote add origin git@github.com:your-username/NexMAGI.git
 ```
 
 ### 変更のコミットとプッシュ
@@ -1398,7 +1398,7 @@ Thumbs.db
 
 # その他
 *.zip
-prompt-provision-tool.zip
+NexMAGI.zip
 
 ## 構成
 
@@ -1450,7 +1450,7 @@ CELERY_RESULT_BACKEND=redis://redis:6379/0
 
 ### 動作確認サマリー
 
-Docker Compose 環境（`ppt-backend` / `ppt-celery-worker` / `ppt-redis` / `ppt-mysql` / `ppt-web`）上で、以下を確認済みです（元の `VERIFICATION_REPORT.md` の内容を要約）:
+Docker Compose 環境（`nexmagi-backend` / `nexmagi-celery-worker` / `nexmagi-redis` / `nexmagi-mysql` / `nexmagi-web`）上で、以下を確認済みです（元の `VERIFICATION_REPORT.md` の内容を要約）:
 
 - Celery アプリ初期化・Worker 起動・Redis 接続が正常に動作
 - `execute_prompt_task` の登録と実行（タスク名: `app.tasks.execution_tasks.execute_prompt_task`）
@@ -1478,9 +1478,9 @@ Docker Compose 環境（`ppt-backend` / `ppt-celery-worker` / `ppt-redis` / `ppt
 # ===== Backend (Settings)
 DB_HOST=db
 DB_PORT=3306
-DB_USER=prompt
-DB_PASSWORD=promptpass
-DB_NAME=prompttool
+DB_USER=nexmagi
+DB_PASSWORD=nexmagipass
+DB_NAME=nexmagi
 
 SECRET_KEY=replace-with-long-secret
 ENCRYPTION_KEY=replace-with-32-byte-base64
@@ -1517,7 +1517,7 @@ docker compose -f docker-compose.local.yml down
 5) 初期管理者アカウントの作成
 ```
 # コンテナ内で実行
-docker exec -it ppt-backend bash
+docker exec -it nexmagi-backend bash
 python -m app.init_admin
 ```
 
@@ -1562,7 +1562,7 @@ python -m app.init_admin
 クローン先でグローバルスクリプトを使わない場合:
 
 ```bash
-cd /path/to/prompt-provision-tool
+cd /path/to/NexMAGI
 npm install
 ./audit.sh
 # または

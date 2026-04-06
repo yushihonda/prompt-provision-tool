@@ -28,7 +28,7 @@ flowchart TD
     F1 --> F2[local_worker 実行<br/>break-it mindset]
     F2 --> F3[品質ゲート<br/>regex: VERDICT 行チェック]
     F3 -->|PASS| F4[verdict 正規化 → final_verdict 保存]
-    F3 -->|FAIL| F3R[Reflection: critique 付き再実行<br/>_ppt_continuation メタデータ]
+    F3 -->|FAIL| F3R[Reflection: critique 付き再実行<br/>_nexmagi_continuation メタデータ]
     F3R --> F1
     F4 --> F5[synthesis_log: step_complete + group_complete]
     F5 --> G[synthesis_log: leader_start]

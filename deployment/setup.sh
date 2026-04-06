@@ -6,14 +6,14 @@
 set -e
 
 echo "=========================================="
-echo "Prompt Provision Tool セットアップ"
+echo "NexMAGI セットアップ"
 echo "=========================================="
 
 # 変数設定
-APP_DIR="/opt/prompt-provision-tool"
+APP_DIR="/opt/nexmagi"
 VENV_DIR="$APP_DIR/venv"
-DB_NAME="prompt_provision_db"
-DB_USER="prompt_tool_user"
+DB_NAME="nexmagi_db"
+DB_USER="nexmagi_user"
 DB_PASSWORD="YOUR_DB_PASSWORD_HERE"  # 実際のパスワードに変更してください
 
 # システムの更新
@@ -105,20 +105,20 @@ python -m app.init_admin
 
 # ログディレクトリの作成
 echo "ログディレクトリを作成中..."
-sudo mkdir -p /var/log/prompt-tool
-sudo chown www-data:www-data /var/log/prompt-tool
+sudo mkdir -p /var/log/nexmagi
+sudo chown www-data:www-data /var/log/nexmagi
 
 # systemdサービスの設定
 echo "systemdサービスを設定中..."
-sudo cp $APP_DIR/deployment/prompt-tool.service /etc/systemd/system/
+sudo cp $APP_DIR/deployment/nexmagi.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable prompt-tool
-sudo systemctl start prompt-tool
+sudo systemctl enable nexmagi
+sudo systemctl start nexmagi
 
 # Nginx設定
 echo "Nginxを設定中..."
-sudo cp $APP_DIR/deployment/nginx.conf /etc/nginx/sites-available/prompt-tool
-sudo ln -sf /etc/nginx/sites-available/prompt-tool /etc/nginx/sites-enabled/
+sudo cp $APP_DIR/deployment/nginx.conf /etc/nginx/sites-available/nexmagi
+sudo ln -sf /etc/nginx/sites-available/nexmagi /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl restart nginx
@@ -136,16 +136,16 @@ echo "2. deployment/nginx.conf のドメイン名を実際のドメインに変�
 echo "3. SSL証明書の取得:"
 echo "   sudo certbot --nginx -d your-domain.com"
 echo "4. サービスの再起動:"
-echo "   sudo systemctl restart prompt-tool"
+echo "   sudo systemctl restart nexmagi"
 echo "   sudo systemctl restart nginx"
 echo ""
 echo "サービス状態の確認:"
-echo "   sudo systemctl status prompt-tool"
+echo "   sudo systemctl status nexmagi"
 echo "   sudo systemctl status redis-server"
 echo "   sudo systemctl status nginx"
 echo ""
 echo "ログの確認:"
-echo "   sudo tail -f /var/log/prompt-tool/app.log"
-echo "   sudo tail -f /var/log/nginx/prompt-tool-error.log"
+echo "   sudo tail -f /var/log/nexmagi/app.log"
+echo "   sudo tail -f /var/log/nginx/nexmagi-error.log"
 echo ""
 

@@ -17,7 +17,7 @@ DEFAULT_CLI_PROVIDER_IMPL = "local_worker.provider_adapter"
 DEFAULT_CLI_PROVIDER_ADAPTER = "local_worker"
 DEFAULT_CLI_PROVIDER_RUNTIME = "python"
 DEFAULT_CLI_PROVIDER_TRANSPORT = "subprocess"
-PACKAGED_CLI_PROVIDER_BINARY_ID = "ppt-provider-adapter"
+PACKAGED_CLI_PROVIDER_BINARY_ID = "nexmagi-provider-adapter"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,11 +66,11 @@ def resolve_cli_invocation() -> CliInvocation:
     # - change `provider_adapter` only when the intermediary layer changes
     # - change `provider_runtime` only when the execution environment changes
     # - change `provider_impl` when the concrete target changes
-    command = os.getenv("PPT_CLI_PROVIDER_COMMAND")
-    binary_path = os.getenv("PPT_CLI_PROVIDER_BINARY_PATH")
-    provider_runtime = _env_or_default("PPT_CLI_PROVIDER_RUNTIME", DEFAULT_CLI_PROVIDER_RUNTIME)
-    provider_adapter = _env_or_default("PPT_CLI_PROVIDER_ADAPTER", DEFAULT_CLI_PROVIDER_ADAPTER)
-    provider_impl = _env_or_default("PPT_CLI_PROVIDER_IMPL", DEFAULT_CLI_PROVIDER_IMPL)
+    command = os.getenv("NEXMAGI_CLI_PROVIDER_COMMAND")
+    binary_path = os.getenv("NEXMAGI_CLI_PROVIDER_BINARY_PATH")
+    provider_runtime = _env_or_default("NEXMAGI_CLI_PROVIDER_RUNTIME", DEFAULT_CLI_PROVIDER_RUNTIME)
+    provider_adapter = _env_or_default("NEXMAGI_CLI_PROVIDER_ADAPTER", DEFAULT_CLI_PROVIDER_ADAPTER)
+    provider_impl = _env_or_default("NEXMAGI_CLI_PROVIDER_IMPL", DEFAULT_CLI_PROVIDER_IMPL)
     env = os.environ.copy()
 
     if command:
@@ -92,7 +92,7 @@ def resolve_cli_invocation() -> CliInvocation:
             provider_transport=DEFAULT_CLI_PROVIDER_TRANSPORT,
             provider_adapter=provider_adapter,
             provider_runtime="binary",
-            provider_impl=_env_or_default("PPT_CLI_PROVIDER_IMPL", PACKAGED_CLI_PROVIDER_BINARY_ID),
+            provider_impl=_env_or_default("NEXMAGI_CLI_PROVIDER_IMPL", PACKAGED_CLI_PROVIDER_BINARY_ID),
         )
 
     env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
@@ -119,7 +119,7 @@ class CliProvider(LLMProvider):
             "model_override": request.metadata.get("model_override"),
         }
         invocation = resolve_cli_invocation()
-        timeout_seconds = float(os.getenv("PPT_CLI_PROVIDER_TIMEOUT_SECONDS", "120"))
+        timeout_seconds = float(os.getenv("NEXMAGI_CLI_PROVIDER_TIMEOUT_SECONDS", "120"))
 
         try:
             completed = subprocess.run(

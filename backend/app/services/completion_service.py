@@ -144,7 +144,7 @@ def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
 
     handoff_refs = []
     parsed_input = _safe_json_loads(getattr(execution, "input_data", None), {})
-    raw_refs = parsed_input.get("_ppt_handoff_refs") if isinstance(parsed_input, dict) else None
+    raw_refs = parsed_input.get("_nexmagi_handoff_refs") if isinstance(parsed_input, dict) else None
     if isinstance(raw_refs, list):
         handoff_refs = [str(ref) for ref in raw_refs if ref]
 

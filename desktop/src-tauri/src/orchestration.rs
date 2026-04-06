@@ -399,7 +399,7 @@ impl OrchestrationManager {
 
         let stderr_path = app_data_dir(app)
             .map(|dir| dir.join(format!("worker_{}_stderr.log", execution_id)))
-            .unwrap_or_else(|_| PathBuf::from(format!("/tmp/ppt_worker_{}_stderr.log", execution_id)));
+            .unwrap_or_else(|_| PathBuf::from(format!("/tmp/nexmagi_worker_{}_stderr.log", execution_id)));
 
         let stderr_file = std::fs::OpenOptions::new()
             .create(true)
@@ -421,11 +421,11 @@ impl OrchestrationManager {
 
         // Packaged CLI provider env vars
         if let Some(binary_path) = packaged_cli_provider_binary_path(app) {
-            cmd.env("PPT_CLI_PROVIDER_BINARY_PATH", binary_path)
-                .env("PPT_CLI_PROVIDER_RUNTIME", "binary")
-                .env("PPT_CLI_PROVIDER_IMPL", PACKAGED_CLI_PROVIDER_BINARY_ID)
-                .env("PPT_CLI_PROVIDER_TRANSPORT", PACKAGED_CLI_PROVIDER_TRANSPORT)
-                .env("PPT_CLI_PROVIDER_ADAPTER", crate::cli_provider_adapter());
+            cmd.env("NEXMAGI_CLI_PROVIDER_BINARY_PATH", binary_path)
+                .env("NEXMAGI_CLI_PROVIDER_RUNTIME", "binary")
+                .env("NEXMAGI_CLI_PROVIDER_IMPL", PACKAGED_CLI_PROVIDER_BINARY_ID)
+                .env("NEXMAGI_CLI_PROVIDER_TRANSPORT", PACKAGED_CLI_PROVIDER_TRANSPORT)
+                .env("NEXMAGI_CLI_PROVIDER_ADAPTER", crate::cli_provider_adapter());
         }
 
         let mut child = cmd.spawn().map_err(|e| {

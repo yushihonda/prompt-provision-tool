@@ -16,8 +16,8 @@ async function loadDashboardStats() {
         document.getElementById('total-executions').textContent = (stats.total_executions || 0).toLocaleString();
         document.getElementById('executions-month').textContent = (stats.executions_this_month || 0).toLocaleString();
 
-        document.getElementById('total-tokens').textContent = (stats.total_tokens || 0).toLocaleString();
-        document.getElementById('total-tokens-month').textContent = (stats.total_tokens_this_month || 0).toLocaleString();
+        document.getElementById('total-tokens').textContent = formatCompact(stats.total_tokens || 0);
+        document.getElementById('total-tokens-month').textContent = formatCompact(stats.total_tokens_this_month || 0);
 
         const cost = stats.total_cost_this_month || 0;
         document.getElementById('total-cost-month').textContent = `$${cost.toFixed(2)}`;
@@ -92,7 +92,7 @@ function renderUserWorkflows() {
                 <article class="card-wrapper" data-workflow-id="${wf.id}">
                     <div class="card-circle">
                         <button class="btn btn-primary card-execute-btn"
-                                onclick="window.PPTRuntime.navigate('workflow-execute.html?id=${wf.id}')">
+                                onclick="window.NexMAGIRuntime.navigate('workflow-execute.html?id=${wf.id}')">
                             実行
                         </button>
                     </div>
@@ -130,7 +130,7 @@ function renderSkills() {
         <article class="card-wrapper ${isExecuting ? 'card-executing' : ''}" data-skill-id="${skill.id}">
             <div class="card-circle">
                 <button class="btn btn-primary card-execute-btn"
-                        onclick="window.PPTRuntime.navigate('execute.html?id=${skill.id}')">
+                        onclick="window.NexMAGIRuntime.navigate('execute.html?id=${skill.id}')">
                     ${isExecuting ? '実行中' : '実行'}
                 </button>
             </div>

@@ -1,7 +1,7 @@
 // ユーザー ログイン画面 JavaScript
 
-const runtimeFetch = (path, options) => window.PPTRuntime.fetchWithRuntime(path, options);
-const navigateTo = (path) => window.PPTRuntime.navigate(path);
+const runtimeFetch = (path, options) => window.NexMAGIRuntime.fetchWithRuntime(path, options);
+const navigateTo = (path) => window.NexMAGIRuntime.navigate(path);
 
 function _loginEsc(s) {
     if (s == null) return '';
@@ -98,7 +98,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
             }
 
             // desktop では secure storage、browser では sessionStorage に保存
-            await window.PPTRuntime.saveAuthSession({
+            await window.NexMAGIRuntime.saveAuthSession({
                 token: data.access_token,
                 username,
             });

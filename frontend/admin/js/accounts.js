@@ -15,15 +15,6 @@ const ACC_S = {
     secTitle: 'style="display:block; font-weight:700; margin-bottom:8px; color:var(--content-text); font-size:14px;"',
 };
 
-/** 大きな数値を K/M 表記に短縮 */
-function formatCompact(n) {
-    if (n == null) return '-';
-    n = Number(n);
-    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-    if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-    return String(n);
-}
-
 let currentPage = 1;
 const itemsPerPage = 10;
 let totalItems = 0;

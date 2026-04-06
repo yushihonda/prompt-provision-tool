@@ -22,7 +22,7 @@
     };
     let runtimeConfig = normalizeRuntimeConfig({
         ...fallbackConfig,
-        ...(window.__PPT_RUNTIME || {}),
+        ...(window.__NEXMAGI_RUNTIME || {}),
     });
     let runtimeConfigPromise = null;
     let authSession = null;
@@ -53,8 +53,8 @@
 
     function commitRuntimeConfig(nextConfig) {
         runtimeConfig = normalizeRuntimeConfig(nextConfig);
-        window.__PPT_RUNTIME = { ...runtimeConfig };
-        window.dispatchEvent(new CustomEvent('ppt-runtime-config-ready', {
+        window.__NEXMAGI_RUNTIME = { ...runtimeConfig };
+        window.dispatchEvent(new CustomEvent('nexmagi-runtime-config-ready', {
             detail: { ...runtimeConfig },
         }));
         return getRuntimeConfig();
@@ -588,7 +588,7 @@
         return Boolean(tauriInvoke) && isDesktopRuntime();
     }
 
-    window.PPTRuntime = {
+    window.NexMAGIRuntime = {
         getRuntimeConfig,
         isDesktopRuntime,
         getApiBase,

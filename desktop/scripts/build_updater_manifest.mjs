@@ -26,17 +26,17 @@ async function walkForMetadata(rootDir, matches = []) {
   return matches;
 }
 
-const assetDir = path.resolve(process.env.PPT_RELEASE_ASSET_DIR || process.cwd());
-const releaseTag = requireEnv("PPT_RELEASE_TAG").replace(/^refs\/tags\//, "");
-const releaseVersion = requireEnv("PPT_RELEASE_VERSION").replace(/^v/, "");
-const releaseRepository = requireEnv("PPT_RELEASE_REPOSITORY");
+const assetDir = path.resolve(process.env.NEXMAGI_RELEASE_ASSET_DIR || process.cwd());
+const releaseTag = requireEnv("NEXMAGI_RELEASE_TAG").replace(/^refs\/tags\//, "");
+const releaseVersion = requireEnv("NEXMAGI_RELEASE_VERSION").replace(/^v/, "");
+const releaseRepository = requireEnv("NEXMAGI_RELEASE_REPOSITORY");
 const manifestPath = path.resolve(
-  process.env.PPT_RELEASE_MANIFEST_PATH || path.join(assetDir, "latest.json"),
+  process.env.NEXMAGI_RELEASE_MANIFEST_PATH || path.join(assetDir, "latest.json"),
 );
-const releaseNotes = process.env.PPT_RELEASE_NOTES?.trim() || "";
+const releaseNotes = process.env.NEXMAGI_RELEASE_NOTES?.trim() || "";
 
 if (!(await pathExists(assetDir))) {
-  throw new Error(`PPT_RELEASE_ASSET_DIR does not exist: ${assetDir}`);
+  throw new Error(`NEXMAGI_RELEASE_ASSET_DIR does not exist: ${assetDir}`);
 }
 
 const metadataFiles = await walkForMetadata(assetDir);

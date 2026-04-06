@@ -8,11 +8,11 @@ const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 
 export const desktopDir = path.resolve(scriptsDir, "..");
 export const tauriDir = path.join(desktopDir, "src-tauri");
-export const productName = "Prompt Provision Tool Desktop";
+export const productName = "NexMAGI";
 export const binaryName =
   process.platform === "win32"
-    ? "prompt-provision-tool-desktop.exe"
-    : "prompt-provision-tool-desktop";
+    ? "nexmagi-desktop.exe"
+    : "nexmagi-desktop";
 
 export function npmCommand() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
@@ -69,7 +69,7 @@ export async function runCommand(command, args, options = {}) {
 }
 
 export async function detectPythonCommand() {
-  const configured = process.env.PPT_PYTHON?.trim();
+  const configured = process.env.NEXMAGI_PYTHON?.trim();
   const candidates = configured
     ? [configured]
     : process.platform === "win32"
@@ -87,7 +87,7 @@ export async function detectPythonCommand() {
   }
 
   throw new Error(
-    "Python executable not found. Set PPT_PYTHON, or install python3/python.",
+    "Python executable not found. Set NEXMAGI_PYTHON, or install python3/python.",
   );
 }
 
@@ -100,7 +100,7 @@ export function pythonScriptArgs(pythonCommandName, scriptPath, extraArgs = []) 
 
 export function targetDir() {
   return path.resolve(
-    process.env.PPT_TAURI_TARGET_DIR ||
+    process.env.NEXMAGI_TAURI_TARGET_DIR ||
       process.env.CARGO_TARGET_DIR ||
       path.join(tauriDir, "target"),
   );
@@ -124,13 +124,13 @@ async function walkFiles(rootDir, predicate, matches = []) {
 }
 
 export async function resolvePackagedExecutablePath() {
-  const explicitPath = process.env.PPT_VERIFY_EXECUTABLE_PATH?.trim();
+  const explicitPath = process.env.NEXMAGI_VERIFY_EXECUTABLE_PATH?.trim();
   if (explicitPath) {
     const resolved = path.resolve(explicitPath);
     if (await pathExists(resolved)) {
       return resolved;
     }
-    throw new Error(`PPT_VERIFY_EXECUTABLE_PATH does not exist: ${resolved}`);
+    throw new Error(`NEXMAGI_VERIFY_EXECUTABLE_PATH does not exist: ${resolved}`);
   }
 
   const releaseDir = path.join(targetDir(), "release");
@@ -144,13 +144,13 @@ export async function resolvePackagedExecutablePath() {
             `${productName}.app`,
             "Contents",
             "MacOS",
-            "prompt-provision-tool-desktop",
+            "nexmagi-desktop",
           ),
-          path.join(releaseDir, "prompt-provision-tool-desktop"),
+          path.join(releaseDir, "nexmagi-desktop"),
         ]
       : process.platform === "win32"
-        ? [path.join(releaseDir, "prompt-provision-tool-desktop.exe")]
-        : [path.join(releaseDir, "prompt-provision-tool-desktop")];
+        ? [path.join(releaseDir, "nexmagi-desktop.exe")]
+        : [path.join(releaseDir, "nexmagi-desktop")];
 
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {
@@ -162,7 +162,7 @@ export async function resolvePackagedExecutablePath() {
     const base = path.basename(entryPath);
     if (process.platform === "darwin") {
       return (
-        base === "prompt-provision-tool-desktop" &&
+        base === "nexmagi-desktop" &&
         entryPath.includes(path.join(".app", "Contents", "MacOS"))
       );
     }
@@ -173,7 +173,7 @@ export async function resolvePackagedExecutablePath() {
   }
 
   throw new Error(
-    `Unable to find packaged executable under ${releaseDir}. Set PPT_VERIFY_EXECUTABLE_PATH if needed.`,
+    `Unable to find packaged executable under ${releaseDir}. Set NEXMAGI_VERIFY_EXECUTABLE_PATH if needed.`,
   );
 }
 

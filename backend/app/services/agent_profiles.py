@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 VALID_AGENT_PROFILES = ["default", "explore", "plan", "implement", "verification"]
 READONLY_PROFILES = ["explore", "plan"]
 VERDICT_REQUIRED_PROFILES = ["verification"]
-INPUT_META_PREFIX = "_ppt_"
+INPUT_META_PREFIX = "_nexmagi_"
 READONLY_FORBIDDEN_PATTERNS = [
     r"(?m)^diff --git ",
     r"(?m)^\*\*\* Begin Patch",

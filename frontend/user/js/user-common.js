@@ -1,9 +1,9 @@
 // 共通のユーザー用JavaScript関数
 
 // runtime adapter を唯一の読取窓口にする
-const getApiBase = () => window.PPTRuntime.getApiBase();
-const runtimeFetch = (path, options) => window.PPTRuntime.fetchWithRuntime(path, options);
-const navigateTo = (path) => window.PPTRuntime.navigate(path);
+const getApiBase = () => window.NexMAGIRuntime.getApiBase();
+const runtimeFetch = (path, options) => window.NexMAGIRuntime.fetchWithRuntime(path, options);
+const navigateTo = (path) => window.NexMAGIRuntime.navigate(path);
 
 // SweetAlert2のデフォルト設定は swal-defaults.js で共通化
 
@@ -17,6 +17,15 @@ function escapeHtmlCommon(text) {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
 }
+/** 数値をK/M表記に短縮 */
+function formatCompact(n) {
+    if (n == null) return '-';
+    n = Number(n);
+    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(n);
+}
+
 // renderMiniCube は mini-cube.js に統一（共通ファイル）
 
 /** escapeHtml のエイリアス — 各ページ JS から参照 */
@@ -32,8 +41,8 @@ const USER_SWAL = {
 
 // 認証チェック（非同期）
 async function checkAuth() {
-    const token = await window.PPTRuntime.getAuthToken();
-    const username = await window.PPTRuntime.getAuthUsername();
+    const token = await window.NexMAGIRuntime.getAuthToken();
+    const username = await window.NexMAGIRuntime.getAuthUsername();
 
     if (!token) {
         navigateTo('login.html');
@@ -61,7 +70,7 @@ async function checkAuth() {
                 response: errorText,
                 timestamp: new Date().toISOString()
             }));
-            await window.PPTRuntime.clearAuthSession();
+            await window.NexMAGIRuntime.clearAuthSession();
             navigateTo('login.html');
             return;
         }
@@ -102,7 +111,7 @@ async function checkAuth() {
             stack: error.stack,
             timestamp: new Date().toISOString()
         }));
-        await window.PPTRuntime.clearAuthSession();
+        await window.NexMAGIRuntime.clearAuthSession();
         navigateTo('login.html');
     }
 }
@@ -121,7 +130,7 @@ async function logout() {
     });
 
     if (result.isConfirmed) {
-        await window.PPTRuntime.clearAuthSession();
+        await window.NexMAGIRuntime.clearAuthSession();
         await Swal.fire({
             title: 'ログアウトしました',
             text: 'ログイン画面に戻ります',
@@ -136,7 +145,7 @@ async function logout() {
 
 // API リクエスト
 async function apiRequest(endpoint, options = {}) {
-    const token = await window.PPTRuntime.getAuthToken();
+    const token = await window.NexMAGIRuntime.getAuthToken();
 
     const defaultOptions = {
         headers: {
@@ -159,7 +168,7 @@ async function apiRequest(endpoint, options = {}) {
 
         // 認証エラーの場合はログイン画面へ
         if (response.status === 401) {
-            await window.PPTRuntime.clearAuthSession();
+            await window.NexMAGIRuntime.clearAuthSession();
             navigateTo('login.html');
             return;
         }
@@ -277,7 +286,7 @@ function initUserLayout(activePage) {
     if (!container) return;
 
     const pillNavHtml = USER_NAV_ITEMS.map(n =>
-        `<button class="nav-pill${n.href === activePage ? ' active' : ''}" onclick="window.PPTRuntime.navigate('${n.href}')">${n.label}</button>`
+        `<button class="nav-pill${n.href === activePage ? ' active' : ''}" onclick="window.NexMAGIRuntime.navigate('${n.href}')">${n.label}</button>`
     ).join('\n');
 
     const headerHtml = `

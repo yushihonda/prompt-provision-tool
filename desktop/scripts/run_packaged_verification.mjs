@@ -193,8 +193,8 @@ async function launchVerification(executablePath, mode) {
   const { stdout } = await runCommand(executablePath, [], {
     captureOutput: true,
     env: {
-      PPT_VERIFY_MODE: mode,
-      PPT_VERIFY_ENGINE_MODE: process.env.PPT_VERIFY_ENGINE_MODE || "cli",
+      NEXMAGI_VERIFY_MODE: mode,
+      NEXMAGI_VERIFY_ENGINE_MODE: process.env.NEXMAGI_VERIFY_ENGINE_MODE || "cli",
     },
   });
   return JSON.parse(stdout.trim());

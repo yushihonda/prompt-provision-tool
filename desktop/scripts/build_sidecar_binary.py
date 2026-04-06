@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-ARTIFACT_NAME = "ppt-sidecar"
+ARTIFACT_NAME = "nexmagi-sidecar"
 
 
 def _repo_root() -> Path:

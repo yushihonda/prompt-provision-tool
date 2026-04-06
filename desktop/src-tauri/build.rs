@@ -8,23 +8,23 @@ fn main() {
     println!("cargo:rerun-if-changed=../scripts/sidecar_entry.py");
     println!("cargo:rerun-if-changed=../../local_worker/provider_adapter.py");
     println!("cargo:rerun-if-changed=../../sidecar");
-    println!("cargo:rerun-if-env-changed=PPT_CLI_PROVIDER_COMMAND");
-    println!("cargo:rerun-if-env-changed=PPT_CLI_PROVIDER_BINARY_PATH");
-    println!("cargo:rerun-if-env-changed=PPT_CLI_PROVIDER_RUNTIME");
-    println!("cargo:rerun-if-env-changed=PPT_CLI_PROVIDER_IMPL");
-    println!("cargo:rerun-if-env-changed=PPT_CLI_PROVIDER_ADAPTER");
-    println!("cargo:rerun-if-env-changed=PPT_CLI_PROVIDER_TRANSPORT");
-    println!("cargo:rerun-if-env-changed=PPT_REQUIRE_CLI_PROVIDER_BINARY");
-    println!("cargo:rerun-if-env-changed=PPT_SIDECAR_BINARY_PATH");
-    println!("cargo:rerun-if-env-changed=PPT_REQUIRE_SIDECAR_BINARY");
+    println!("cargo:rerun-if-env-changed=NEXMAGI_CLI_PROVIDER_COMMAND");
+    println!("cargo:rerun-if-env-changed=NEXMAGI_CLI_PROVIDER_BINARY_PATH");
+    println!("cargo:rerun-if-env-changed=NEXMAGI_CLI_PROVIDER_RUNTIME");
+    println!("cargo:rerun-if-env-changed=NEXMAGI_CLI_PROVIDER_IMPL");
+    println!("cargo:rerun-if-env-changed=NEXMAGI_CLI_PROVIDER_ADAPTER");
+    println!("cargo:rerun-if-env-changed=NEXMAGI_CLI_PROVIDER_TRANSPORT");
+    println!("cargo:rerun-if-env-changed=NEXMAGI_REQUIRE_CLI_PROVIDER_BINARY");
+    println!("cargo:rerun-if-env-changed=NEXMAGI_SIDECAR_BINARY_PATH");
+    println!("cargo:rerun-if-env-changed=NEXMAGI_REQUIRE_SIDECAR_BINARY");
 
-    let require_binary = env::var("PPT_REQUIRE_CLI_PROVIDER_BINARY")
+    let require_binary = env::var("NEXMAGI_REQUIRE_CLI_PROVIDER_BINARY")
         .ok()
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if require_binary {
-        let unix_artifact = Path::new("resources/bin/ppt-provider-adapter");
-        let windows_artifact = Path::new("resources/bin/ppt-provider-adapter.exe");
+        let unix_artifact = Path::new("resources/bin/nexmagi-provider-adapter");
+        let windows_artifact = Path::new("resources/bin/nexmagi-provider-adapter.exe");
         if !unix_artifact.exists() && !windows_artifact.exists() {
             panic!(
                 "required packaged CLI binary is missing. Run `npm run cli-provider:build` before building."
@@ -32,13 +32,13 @@ fn main() {
         }
     }
 
-    let require_sidecar_binary = env::var("PPT_REQUIRE_SIDECAR_BINARY")
+    let require_sidecar_binary = env::var("NEXMAGI_REQUIRE_SIDECAR_BINARY")
         .ok()
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if require_sidecar_binary {
-        let unix_artifact = Path::new("resources/bin/ppt-sidecar");
-        let windows_artifact = Path::new("resources/bin/ppt-sidecar.exe");
+        let unix_artifact = Path::new("resources/bin/nexmagi-sidecar");
+        let windows_artifact = Path::new("resources/bin/nexmagi-sidecar.exe");
         if !unix_artifact.exists() && !windows_artifact.exists() {
             panic!(
                 "required packaged sidecar binary is missing. Run `npm run sidecar:build` before building."

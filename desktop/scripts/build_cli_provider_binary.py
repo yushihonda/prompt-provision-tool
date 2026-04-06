@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-ARTIFACT_NAME = "ppt-provider-adapter"
+ARTIFACT_NAME = "nexmagi-provider-adapter"
 
 
 def _repo_root() -> Path:

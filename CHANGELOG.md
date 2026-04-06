@@ -70,7 +70,7 @@
 - **Starter Seed** — ワークフロー初回実行時のみ適用される初期記憶
 - **Coordinator View** — リアルタイム進捗表示（waiting_on, next_expected_action, latest_summary, why）
 - **Synthesis Events** — 各ステップ完了・エラー・ジャッジ・品質ゲートのタイムラインをDB保存
-- **Follow-up Continuation** — retry/reflection 時の継続メタデータ（_ppt_continuation）
+- **Follow-up Continuation** — retry/reflection 時の継続メタデータ（_nexmagi_continuation）
 - **Structured Result Envelope** — 出力から summary/key_points/next_action_hint を抽出
 - **Profile 固定色** — Explore=青, Plan=橙, Implement=緑, Verification=桃, Leader=紫
 - **Override 可視化** — profile 解決元（skill_default/workflow_override）を詳細モーダルに表示

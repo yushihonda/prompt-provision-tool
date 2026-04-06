@@ -1,7 +1,7 @@
 import { desktopDir, npmCommand, runCommand } from "./common.mjs";
 
 const npm = npmCommand();
-const configPath = process.env.PPT_TAURI_CONFIG_PATH?.trim();
+const configPath = process.env.NEXMAGI_TAURI_CONFIG_PATH?.trim();
 const tauriBuildArgs = ["exec", "--", "tauri", "build"];
 
 if (configPath) {
@@ -14,7 +14,7 @@ await runCommand(npm, tauriBuildArgs, {
   cwd: desktopDir,
   env: {
     CI: "true",
-    PPT_REQUIRE_CLI_PROVIDER_BINARY: "1",
-    PPT_REQUIRE_SIDECAR_BINARY: "1",
+    NEXMAGI_REQUIRE_CLI_PROVIDER_BINARY: "1",
+    NEXMAGI_REQUIRE_SIDECAR_BINARY: "1",
   },
 });

@@ -28,7 +28,7 @@ async function walkForMetadata(rootDir, matches = []) {
 }
 
 function parseExpectedTargetKeys() {
-  const raw = process.env.PPT_RELEASE_EXPECTED_TARGET_KEYS_JSON?.trim();
+  const raw = process.env.NEXMAGI_RELEASE_EXPECTED_TARGET_KEYS_JSON?.trim();
   if (!raw) {
     return null;
   }
@@ -37,25 +37,25 @@ function parseExpectedTargetKeys() {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`PPT_RELEASE_EXPECTED_TARGET_KEYS_JSON must be valid JSON: ${error.message}`);
+    throw new Error(`NEXMAGI_RELEASE_EXPECTED_TARGET_KEYS_JSON must be valid JSON: ${error.message}`);
   }
 
   if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string" || !value.trim())) {
-    throw new Error("PPT_RELEASE_EXPECTED_TARGET_KEYS_JSON must be a JSON array of non-empty strings");
+    throw new Error("NEXMAGI_RELEASE_EXPECTED_TARGET_KEYS_JSON must be a JSON array of non-empty strings");
   }
 
   return parsed.map((value) => value.trim()).sort();
 }
 
-const assetDir = path.resolve(requireEnv("PPT_RELEASE_ASSET_DIR"));
+const assetDir = path.resolve(requireEnv("NEXMAGI_RELEASE_ASSET_DIR"));
 if (!(await pathExists(assetDir))) {
-  throw new Error(`PPT_RELEASE_ASSET_DIR does not exist: ${assetDir}`);
+  throw new Error(`NEXMAGI_RELEASE_ASSET_DIR does not exist: ${assetDir}`);
 }
 
-const expectedCountRaw = process.env.PPT_RELEASE_EXPECTED_COUNT?.trim();
+const expectedCountRaw = process.env.NEXMAGI_RELEASE_EXPECTED_COUNT?.trim();
 const expectedCount = expectedCountRaw ? Number.parseInt(expectedCountRaw, 10) : null;
 if (expectedCountRaw && Number.isNaN(expectedCount)) {
-  throw new Error(`PPT_RELEASE_EXPECTED_COUNT must be an integer, got ${expectedCountRaw}`);
+  throw new Error(`NEXMAGI_RELEASE_EXPECTED_COUNT must be an integer, got ${expectedCountRaw}`);
 }
 
 const expectedTargetKeys = parseExpectedTargetKeys();
