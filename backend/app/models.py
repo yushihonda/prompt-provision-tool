@@ -205,6 +205,7 @@ class WorkflowExecution(Base):
     final_verdict = Column(String(10), nullable=True)
     handoff_summary = Column(Text, nullable=True)  # JSON: UI/監査向け派生サマリー
     synthesis_log = Column(Text, nullable=True)  # JSON配列: coordinator synthesis events の時系列記録
+    coordinator_plan_id = Column(String(64), nullable=True, index=True)  # 紐付く CoordinatorPlan.plan_id
     error_message = Column(Text)
     workflow_name_snapshot = Column(String(255), nullable=True)  # 実行時点のワークフロー名スナップショット
     started_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -314,6 +315,205 @@ class DailyExecutionCount(Base):
 
     # リレーション
     account = relationship("Account", back_populates="daily_execution_counts")
+
+
+class CoordinatorPlan(Base):
+    """Coordinator が実行前に生成する事前計画スナップショット
+    複雑度・タスク・ロール・provider policy などを保持し、
+    実行を観測する基準として使う (実行を駆動するわけではない)。
+    """
+    __tablename__ = "coordinator_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(String(64), nullable=False, unique=True, index=True)  # UUID
+    workflow_execution_id = Column(Integer, ForeignKey("workflow_executions.id", ondelete="CASCADE"), nullable=False, index=True)
+    goal = Column(Text, nullable=True)
+    complexity_level = Column(String(20), nullable=False, default="medium")  # low | medium | high
+    max_parallelism = Column(Integer, nullable=False, default=4)
+    roles = Column(Text, nullable=True)  # JSON: RoleSpec[]
+    tasks = Column(Text(length=16777215), nullable=True)  # JSON: TaskSpec[]
+    artifact_policy = Column(Text, nullable=True)  # JSON
+    review_policy = Column(Text, nullable=True)  # JSON
+    stop_conditions = Column(Text, nullable=True)  # JSON
+    provider_policy = Column(Text, nullable=True)  # JSON: ProviderPolicy
+    schema_version = Column(String(20), nullable=False, default="1.0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    workflow_execution = relationship("WorkflowExecution")
+
+
+class CoordinatorArtifact(Base):
+    """Coordinator が管理する成果物 (Execution の出力を構造化して保持)
+    artifact_type で notes / draft / review / score / final などを区別する。
+    """
+    __tablename__ = "coordinator_artifacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    artifact_id = Column(String(64), nullable=False, unique=True, index=True)  # UUID
+    plan_id = Column(String(64), ForeignKey("coordinator_plans.plan_id", ondelete="CASCADE"), nullable=False, index=True)
+    task_id = Column(String(64), nullable=False, index=True)
+    execution_id = Column(Integer, ForeignKey("executions.id", ondelete="SET NULL"), nullable=True)
+    role = Column(String(30), nullable=False)  # researcher | writer | reviewer | judge
+    artifact_type = Column(String(30), nullable=False)  # notes | evidence | draft | review | score | final
+    schema_version = Column(String(20), nullable=False, default="1.0")
+    summary = Column(Text, nullable=True)
+    inline_content = Column(Text(length=16777215), nullable=True)  # MEDIUMTEXT
+    content_ref = Column(Text, nullable=True)
+    provider_mode = Column(String(30), nullable=True)  # remote_only | local_only | local_preferred | hybrid_auto
+    model_hint = Column(String(100), nullable=True)
+    extra_metadata = Column(Text, nullable=True)  # JSON
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    plan = relationship("CoordinatorPlan")
+    execution = relationship("Execution")
+
+
+class CoordinatorWorker(Base):
+    """名前付きの論理ワーカー
+    実際の実行は Tauri 側の OrchestrationManager (worker pool) が担い、
+    本テーブルは「どの role の誰がどのタスクを担当しているか」を表す投影。
+    観測・可視化・将来の特定ワーカーへの割当に使う。
+    """
+    __tablename__ = "coordinator_workers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    worker_id = Column(String(64), nullable=False, unique=True, index=True)  # UUID
+    plan_id = Column(String(64), ForeignKey("coordinator_plans.plan_id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)  # "researcher-1", "writer-A" 等
+    role = Column(String(30), nullable=False)
+    status = Column(String(20), nullable=False, default="idle")  # idle | running | blocked | failed | done
+    task_queue = Column(Text, nullable=True)  # JSON: task_id[]
+    artifact_refs = Column(Text, nullable=True)  # JSON: artifact_id[]
+    provider_mode = Column(String(30), nullable=True)
+    current_task_id = Column(String(64), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    plan = relationship("CoordinatorPlan")
+
+
+class CoordinatorFollowUpTask(Base):
+    """既存タスクの output を参照して発行する派生タスク
+    parent_task_id があれば派生関係、なければ独立。
+    reason は clarify / expand / fix / verify / merge を想定。
+    """
+    __tablename__ = "coordinator_followup_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(String(64), nullable=False, unique=True, index=True)  # UUID
+    plan_id = Column(String(64), ForeignKey("coordinator_plans.plan_id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_task_id = Column(String(64), nullable=True, index=True)
+    target_role = Column(String(30), nullable=False)
+    target_worker_name = Column(String(100), nullable=True)
+    objective = Column(Text, nullable=False)
+    input_artifact_refs = Column(Text, nullable=True)  # JSON: artifact_id[]
+    output_schema = Column(Text, nullable=True)
+    requires_review = Column(Boolean, default=False, nullable=False)
+    reason = Column(String(30), nullable=True)  # clarify | expand | fix | verify | merge
+    status = Column(String(20), nullable=False, default="pending")  # pending | running | done | failed | cancelled
+    depends_on = Column(Text, nullable=True)  # JSON: task_id[]
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    plan = relationship("CoordinatorPlan")
+
+
+class CoordinatorAdapter(Base):
+    """coordinator が呼び出せる実行バックエンドのレジストリ
+    internal_sidecar / local_llm / remote_api / external_cli の4種類を統一管理する。
+    role と provider_mode で検索可能。
+    """
+    __tablename__ = "coordinator_adapters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    adapter_id = Column(String(64), nullable=False, unique=True, index=True)  # UUID
+    name = Column(String(100), nullable=False, unique=True)  # human readable
+    adapter_type = Column(String(30), nullable=False)  # internal | external_cli | hybrid | local_llm | remote_api
+    provider_mode = Column(String(30), nullable=False)  # remote_only | local_only | local_preferred | hybrid_auto
+    transport = Column(String(30), nullable=False, default="process_stdio")  # process_stdio | http | pty
+    runtime = Column(String(50), nullable=True)  # python | node | binary | http
+    impl = Column(String(255), nullable=True)  # 実装識別子（モジュール名/バイナリパス/エンドポイントURL等）
+    supported_roles = Column(Text, nullable=True)  # JSON: role[]
+    capabilities = Column(Text, nullable=True)  # JSON: ["streaming","files","tools",...]
+    input_schema = Column(Text, nullable=True)  # JSON Schema
+    output_schema = Column(Text, nullable=True)  # JSON Schema
+    config = Column(Text, nullable=True)  # JSON: adapter固有設定
+    is_enabled = Column(Boolean, default=True, nullable=False)
+    health_status = Column(String(20), nullable=True)  # healthy | degraded | down | unknown
+    last_health_check = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class CoordinatorEvalRun(Base):
+    """品質評価ハーネスのランレコード
+    plan の完成度・修正率・local 利用率などのメトリクスを時系列で記録する。
+    """
+    __tablename__ = "coordinator_eval_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    eval_id = Column(String(64), nullable=False, unique=True, index=True)
+    plan_id = Column(String(64), ForeignKey("coordinator_plans.plan_id", ondelete="CASCADE"), nullable=False, index=True)
+    workflow_execution_id = Column(Integer, nullable=True, index=True)
+    completeness = Column(Numeric(5, 2), nullable=True)  # 0-100
+    factuality = Column(Numeric(5, 2), nullable=True)
+    revision_rate = Column(Numeric(5, 2), nullable=True)
+    judge_pass_rate = Column(Numeric(5, 2), nullable=True)
+    overhead_ms = Column(Integer, nullable=True)
+    artifact_reuse_rate = Column(Numeric(5, 2), nullable=True)
+    local_usage_rate = Column(Numeric(5, 2), nullable=True)
+    remote_escalation_rate = Column(Numeric(5, 2), nullable=True)
+    metrics_extra = Column(Text, nullable=True)  # JSON
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    plan = relationship("CoordinatorPlan")
+
+
+class CoordinatorWorkspace(Base):
+    """worker ごとに分離されたワークスペースのメタデータ
+    coding 系 task で安全に並列作業できるようにするための分離単位。
+    実体（ディレクトリ等）はクライアント側 (Tauri) で管理し、
+    バックエンドはメタデータと promote/cleanup の状態のみ保持する。
+    """
+    __tablename__ = "coordinator_workspaces"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(String(64), nullable=False, unique=True, index=True)  # UUID
+    plan_id = Column(String(64), ForeignKey("coordinator_plans.plan_id", ondelete="CASCADE"), nullable=False, index=True)
+    worker_id = Column(String(64), nullable=True, index=True)
+    task_id = Column(String(64), nullable=True, index=True)
+    mode = Column(String(20), nullable=False, default="temp_dir")  # shared | temp_dir | worktree
+    workspace_path = Column(Text, nullable=True)  # クライアント側で確定後に書き戻す
+    cleanup_on_finish = Column(Boolean, default=True, nullable=False)
+    promoted = Column(Boolean, default=False, nullable=False)  # promote 済みか
+    status = Column(String(20), nullable=False, default="reserved")  # reserved | active | promoted | cleaned
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    promoted_at = Column(DateTime(timezone=True), nullable=True)
+    cleaned_at = Column(DateTime(timezone=True), nullable=True)
+
+    plan = relationship("CoordinatorPlan")
+
+
+class CoordinatorEvent(Base):
+    """Coordinator のオーケストレーションイベントログ
+    plan_created / task_finished / artifact_created / judge_decision_made など
+    coordinator 層で発生する全イベントを時系列で記録する。
+    """
+    __tablename__ = "coordinator_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(String(64), ForeignKey("coordinator_plans.plan_id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(50), nullable=False, index=True)
+    # plan_created | task_enqueued | task_started | task_finished
+    # | artifact_created | review_requested | judge_decision_made | run_completed
+    task_id = Column(String(64), nullable=True, index=True)
+    artifact_id = Column(String(64), nullable=True)
+    payload = Column(Text(length=16777215), nullable=True)  # JSON
+    schema_version = Column(String(20), nullable=False, default="1.0")
+    occurred_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    plan = relationship("CoordinatorPlan")
 
 
 class WorkerAPIKey(Base):

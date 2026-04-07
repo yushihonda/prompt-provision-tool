@@ -167,7 +167,7 @@
      * @param {Array}   [opts.groups]          ワークフローのグループ構造（あれば並列表示対応）
      */
     function buildWorkflowFlowHTML(opts) {
-        const { finalOutput, allStepResults, workflowName, groups, stageMeta, leaderModel } = opts;
+        const { finalOutput, allStepResults, workflowName, groups, stageMeta, leaderModel, coordinatorData } = opts;
         const esc = escapeHtml;
         const sc = (s) => s === 'success' ? '#28a745' : s === 'processing' ? '#7c3aed' : s === 'error' ? '#dc3545' : '#ccc';
         const si = (s) => s === 'success' ? '&#10003;' : s === 'processing' ? '&#9679;' : s === 'error' ? '&#10007;' : '&#9711;';
@@ -183,6 +183,33 @@
             default: '#9c27b0', explore: '#2196f3', plan: '#ff9800',
             implement: '#4caf50', verification: '#e91e63',
         }[(profile || '').toLowerCase()] || '#9e9e9e');
+
+        // Coordinator メタを workflow_skill_id でマップ
+        const coordTaskByWsId = {};
+        const coordJudgedTasks = new Set();
+        if (coordinatorData?.plan?.tasks) {
+            for (const t of coordinatorData.plan.tasks) {
+                if (t.workflow_skill_id != null) coordTaskByWsId[t.workflow_skill_id] = t;
+            }
+        }
+        if (coordinatorData?.events) {
+            for (const e of coordinatorData.events) {
+                if (e.event_type === 'judge_decision_made' && e.task_id) coordJudgedTasks.add(e.task_id);
+            }
+        }
+        const coordRoleColor = (r) => ({
+            researcher: '#2196f3', writer: '#4caf50', reviewer: '#e91e63', judge: '#9c27b0'
+        }[r] || null);
+        const coordModeColor = (m) => ({
+            local_preferred: '#28a745', local_only: '#28a745',
+            remote_only: '#dc3545', hybrid_auto: '#fd7e14',
+        }[m] || null);
+        function coordRoleBadge(_role) { return ''; }
+        function coordProviderBadge(mode) {
+            if (!mode) return '';
+            const c = coordModeColor(mode);
+            return `<span style="display:inline-block; font-size:7px; padding:1px 5px; border-radius:3px; font-weight:700; text-transform:uppercase; background:${c}18; color:${c}; margin-top:2px;">${mode.replace('_', ' ')}</span>`;
+        }
 
         // stepOrder → stepResult のマップ
         const stepByOrder = {};
@@ -309,23 +336,24 @@
             _cubeSvgs[k] = v.replace(/width:12px;height:12px/g, 'width:22px;height:22px');
         }
 
-        // ミニキューブ用CSS変数のオーバーライド
-        html += `<div class="wf-pipeline wf-pipeline-mini" style="perspective:600px; padding:20px 8px 30px; justify-content:center; margin:0 auto; --cube-size:50px;">`;
-
-        allSteps.forEach((sk, idx) => {
+        // ミニノードHTMLヘルパー
+        function renderMiniNode(sk, stepIdx) {
             const step = stepByWsId[sk.workflow_skill_id] || stepBySkillId[sk.skill_id] || stepByOrder[sk.skill_order];
             const sStatus = step?.status || 'pending';
             const profile = sk.agent_profile || 'default';
             const pColor = profileColor(profile);
             const pLabel = formatProfile(profile);
-            // キューブ内は常にロールアイコン（processing時のみローダー）
             const cubeIcon = sStatus === 'processing' ? '<div class="wf-node-loader"><span></span><span></span><span></span></div>' : (_cubeSvgs[profile] || _cubeSvgs.default);
-
-            html += `
+            // Coordinator メタを参照
+            const coordTask = coordTaskByWsId[sk.workflow_skill_id];
+            const roleBadge = coordTask?.role ? coordRoleBadge(coordTask.role) : '';
+            const provBadge = coordTask?.resolved_provider_mode ? coordProviderBadge(coordTask.resolved_provider_mode) : '';
+            const dataProviderAttr = coordTask?.resolved_provider_mode ? ` data-provider-mode="${coordTask.resolved_provider_mode}"` : '';
+            return { sStatus, html: `
                 <div class="wf-node" style="padding:4px 8px; width:110px;">
-                    <div class="wf-node-step" style="margin-bottom:3px; font-size:9px;"><span class="wf-node-status-indicator status-${sStatus}" style="font-size:9px;">${sStatus === 'success' ? '✓' : sStatus === 'error' ? '✗' : ''}</span>STEP ${idx + 1}</div>
+                    <div class="wf-node-step" style="margin-bottom:3px; font-size:9px;"><span class="wf-node-status-indicator status-${sStatus}" style="font-size:9px;">${sStatus === 'success' ? '✓' : sStatus === 'error' ? '✗' : ''}</span>STEP ${stepIdx + 1}${roleBadge}</div>
                     <span class="wf-node-profile-tag" style="color:${pColor}; background:${pColor}12; border:1px solid ${pColor}30; margin-bottom:8px; font-size:9px; padding:1px 6px 1px 3px;"><span class="wf-profile-icon" style="color:${pColor};">${_tagSvgs[profile] || _tagSvgs.default}</span>${esc(pLabel)}</span>
-                    <div class="wf-node-card-wrap status-${sStatus}" style="--cube-color:${pColor}; --cube-size:50px; width:50px; height:50px;">
+                    <div class="wf-node-card-wrap status-${sStatus}"${dataProviderAttr} style="--cube-color:${pColor}; --cube-size:50px; width:50px; height:50px;">
                         <div class="wf-node-face-right"></div>
                         <div class="wf-node-face-top"></div>
                         <div class="wf-node-card">
@@ -333,16 +361,78 @@
                         </div>
                     </div>
                     <div class="wf-node-label" style="margin-top:10px;">
-                        <div class="wf-node-name" style="font-size:10px; max-width:100px;">${esc(sk.skill_name || 'Step ' + (idx+1))}</div>
+                        <div class="wf-node-name" style="font-size:10px; max-width:100px;">${esc(sk.skill_name || 'Step ' + (stepIdx+1))}</div>
                         <div class="wf-node-model" style="font-size:9px;">${typeof formatModelDisplay === 'function' ? formatModelDisplay(sk.model_type || '', null, sk) : esc(sk.model_type || '')}</div>
+                        ${provBadge}
                     </div>
-                    ${cubeIOHtml(step, sk.skill_name || 'Step ' + (idx+1))}
+                    ${cubeIOHtml(step, sk.skill_name || 'Step ' + (stepIdx+1))}
                 </div>
-            `;
+            ` };
+        }
 
-            if (idx < allSteps.length - 1) {
-                const connCls = sStatus === 'success' ? 'active' : '';
-                html += `<div class="wf-connector" style="width:24px; margin-top:calc(4px + 12px + 3px + 18px + 8px + 25px);"><div class="wf-connector-line ${connCls}"></div></div>`;
+        const connStyle = 'width:24px;';
+
+        // SVGコネクターヘルパー (ミニ版)
+        function miniSvgArrow(cls) {
+            return `<div class="wf-connector ${cls}" style="${connStyle}">
+                <svg width="24" height="12" viewBox="0 0 24 12">
+                    <path d="M0,6 Q12,6 18,6" class="wf-connector-path"/>
+                    <path d="M15,3 L22,6 L15,9" class="wf-connector-arrow-head"/>
+                </svg>
+            </div>`;
+        }
+
+
+        // ミニキューブ用CSS変数のオーバーライド
+        html += `<div class="wf-pipeline wf-pipeline-mini" style="perspective:600px; padding:20px 8px 30px; justify-content:center; margin:0 auto; --cube-size:50px;">`;
+
+        // Build rendering groups: use original groups if available, else wrap allSteps as serial
+        const renderGroups = (groups && groups.length > 0)
+            ? groups
+            : [{ execution_type: 'serial', skills: allSteps }];
+
+        let miniStepCounter = 0;
+        renderGroups.forEach((grp) => {
+            const skills = grp.skills || [];
+            if (skills.length === 0) return;
+            const isParallel = grp.execution_type === 'parallel' && skills.length > 1;
+
+            if (isParallel) {
+                let groupWorstStatus = 'pending';
+                let nodesHtml = '';
+                const groupSkillIds = [];
+                skills.forEach((sk) => {
+                    const result = renderMiniNode(sk, miniStepCounter);
+                    nodesHtml += result.html;
+                    if (result.sStatus === 'error') groupWorstStatus = 'error';
+                    else if (result.sStatus === 'processing' && groupWorstStatus !== 'error') groupWorstStatus = 'processing';
+                    else if (result.sStatus === 'success' && groupWorstStatus === 'pending') groupWorstStatus = 'success';
+                    groupSkillIds.push(sk.workflow_skill_id);
+                    miniStepCounter++;
+                });
+                // Coordinator: judge バッジ
+                const allDone = groupWorstStatus === 'success';
+                const judged = groupSkillIds.some(id => coordJudgedTasks.has(`task_${id}`));
+                const judgeBadge = judged
+                    ? '<span class="wf-parallel-judge-badge wf-parallel-judge-done">JUDGED ✓</span>'
+                    : (allDone ? '<span class="wf-parallel-judge-badge wf-parallel-judge-ready">JUDGE READY</span>' : '');
+                html += `<div class="wf-parallel-group" style="padding:6px 6px 8px;">`
+                    + `<div class="wf-parallel-label" style="font-size:8px; padding:1px 8px;">並列${judgeBadge}</div>`
+                    + `<div class="wf-parallel-nodes">${nodesHtml}</div>`
+                    + `</div>`;
+                const connCls = groupWorstStatus === 'success' ? 'active' : '';
+                html += miniSvgArrow(connCls);
+            } else {
+                skills.forEach((sk, i) => {
+                    const result = renderMiniNode(sk, miniStepCounter);
+                    html += result.html;
+                    const isLastStep = (miniStepCounter === allSteps.length - 1);
+                    if (!isLastStep) {
+                        const connCls = result.sStatus === 'success' ? 'active' : '';
+                        html += miniSvgArrow(connCls);
+                    }
+                    miniStepCounter++;
+                });
             }
         });
 
@@ -355,7 +445,7 @@
         if (allSteps.length > 0) {
             const lastStep = stepByWsId[allSteps[allSteps.length-1]?.workflow_skill_id] || stepByOrder[allSteps[allSteps.length-1]?.skill_order];
             const connCls = (lastStep?.status === 'success') ? 'active' : '';
-            html += `<div class="wf-connector" style="width:24px; margin-top:calc(4px + 12px + 3px + 18px + 8px + 25px);"><div class="wf-connector-line ${connCls}"></div></div>`;
+            html += miniSvgArrow(connCls);
         }
 
         html += `
@@ -438,54 +528,57 @@
         const text = el.textContent || '';
         const content = el.innerHTML;
 
-        // 既存のオーバーレイがあれば削除
+        // Swalの上に表示するためDOMオーバーレイを使用（親ポップアップを閉じない）
         const existing = document.getElementById('io-overlay-modal');
         if (existing) existing.remove();
 
         const overlay = document.createElement('div');
         overlay.id = 'io-overlay-modal';
-        overlay.style.cssText = 'position:fixed; inset:0; z-index:100000; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.3);';
+        overlay.style.cssText = 'position:fixed; inset:0; z-index:200000; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.35);';
 
         const modal = document.createElement('div');
-        modal.style.cssText = 'background:var(--content-bg, #DFDFD7); border-radius:16px; width:min(90vw,700px); max-height:80vh; display:flex; flex-direction:column; box-shadow:0 8px 32px rgba(0,0,0,0.15); border:1px solid rgba(0,0,0,0.08); overflow:hidden;';
+        modal.style.cssText = 'background:var(--content-bg, #DFDFD7); border-radius:16px; width:min(90vw,700px); max-height:80vh; display:flex; flex-direction:column; box-shadow:0 8px 32px rgba(0,0,0,0.18); border:1px solid rgba(0,0,0,0.08); overflow:hidden; position:relative;';
+
+        // ×ボタン（左上、Swalと同じ位置）
+        const closeBtn = document.createElement('button');
+        closeBtn.style.cssText = 'position:absolute; left:14px; top:14px; background:none; border:none; cursor:pointer; font-size:22px; color:var(--content-text-muted, #888); line-height:1; z-index:1; width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:50%; transition:background 0.15s;';
+        closeBtn.innerHTML = '&#10005;';
+        closeBtn.onmouseover = () => closeBtn.style.background = 'rgba(0,0,0,0.06)';
+        closeBtn.onmouseout = () => closeBtn.style.background = 'none';
+        closeBtn.onclick = () => overlay.remove();
 
         // タイトル
         const titleEl = document.createElement('div');
-        titleEl.style.cssText = 'padding:18px 24px 0; font-size:18px; font-weight:600; color:var(--content-text); text-align:center;';
+        titleEl.style.cssText = 'padding:20px 24px 0; font-size:18px; font-weight:600; color:var(--content-text); text-align:center;';
         titleEl.textContent = title;
 
-        // コンテンツ — showNodeOutputPopup と同じデザイン
+        // コンテンツ
         const body = document.createElement('div');
         body.style.cssText = 'padding:16px 24px; overflow-y:auto; flex:1;';
         body.innerHTML = `<div style="text-align:left; max-height:60vh; overflow-y:auto; padding:16px; background:#f8f8f6; border-radius:10px; font-size:12px; line-height:1.6; white-space:pre-wrap; word-wrap:break-word; color:#2d2d2d;">${content}</div>`;
 
-        // ボタン — showNodeOutputPopup と同じレイアウト
+        // コピーボタン（フッター）
         const footer = document.createElement('div');
-        footer.style.cssText = 'padding:12px 24px 18px; display:flex; justify-content:center; gap:10px;';
-        footer.innerHTML = `
-            <button id="io-modal-copy-btn" style="padding:8px 24px; font-size:14px; font-weight:600; background:#6c757d; border:none; border-radius:8px; cursor:pointer; color:#fff; min-width:80px;">コピー</button>
-            <button id="io-modal-close-btn" style="padding:8px 24px; font-size:14px; font-weight:600; background:#7c3aed; border:none; border-radius:8px; cursor:pointer; color:#fff; min-width:80px;">閉じる</button>
-        `;
+        footer.style.cssText = 'padding:10px 24px 18px; text-align:center;';
+        const copyBtn = document.createElement('button');
+        copyBtn.style.cssText = 'padding:6px 20px; font-size:13px; font-weight:500; background:var(--accent, #7c3aed); border:none; border-radius:8px; cursor:pointer; color:#fff;';
+        copyBtn.textContent = 'コピー';
+        copyBtn.onclick = () => {
+            navigator.clipboard.writeText(text).then(() => {
+                if (typeof showAlert === 'function') showAlert('コピーしました', 'success');
+            }).catch(() => {});
+        };
+        footer.appendChild(copyBtn);
 
+        modal.appendChild(closeBtn);
         modal.appendChild(titleEl);
         modal.appendChild(body);
         modal.appendChild(footer);
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
 
-        // 閉じるボタン
-        document.getElementById('io-modal-close-btn').onclick = () => overlay.remove();
-
-        // オーバーレイクリックで閉じる
+        // オーバーレイクリックで閉じる（モーダル本体以外）
         overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-
-        // コピーボタン
-        document.getElementById('io-modal-copy-btn').onclick = () => {
-            navigator.clipboard.writeText(text).then(() => {
-                if (typeof showAlert === 'function') showAlert('コピーしました', 'success');
-            }).catch(() => {});
-        };
-
         // Escで閉じる
         const escHandler = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); } };
         document.addEventListener('keydown', escHandler);
@@ -511,7 +604,8 @@
         const {
             workflowName, allStepResults, leaderExec, groups,
             stageMeta, leaderModel,
-            stepCount, totalTime, totalTokens, extraInfo
+            stepCount, totalTime, totalTokens, extraInfo,
+            coordinatorData, coordinatorEval,
         } = opts;
         const esc = escapeHtml;
         const finalOutput = leaderExec?.output_data || '';
@@ -519,11 +613,27 @@
             finalOutput, allStepResults, workflowName, groups,
             leaderModel: leaderModel || leaderExec?.model_used || '',
             stageMeta: stageMeta || {},
+            coordinatorData,
         });
 
         const modelHtml = typeof formatModelDisplay === 'function'
             ? formatModelDisplay(leaderExec?.model_used || '', null, {})
             : esc(leaderExec?.model_used || '-');
+
+        // Eval メトリクスチップ (完了時のみ)
+        let evalHtml = '';
+        if (coordinatorEval && (coordinatorEval.completeness ?? 0) >= 100) {
+            const m = coordinatorEval;
+            evalHtml = `
+                <div class="wf-eval-metrics" style="display:flex; margin-top:14px;">
+                    <div class="wf-eval-chip"><div class="wf-eval-label">完成度</div><strong>${m.completeness ?? 0}%</strong></div>
+                    <div class="wf-eval-chip"><div class="wf-eval-label">修正率</div><strong>${m.revision_rate ?? 0}%</strong></div>
+                    <div class="wf-eval-chip"><div class="wf-eval-label">judge通過</div><strong>${m.judge_pass_rate ?? 0}%</strong></div>
+                    <div class="wf-eval-chip"><div class="wf-eval-label">local使用</div><strong>${m.local_usage_rate ?? 0}%</strong></div>
+                    <div class="wf-eval-chip"><div class="wf-eval-label">overhead</div><strong>${m.overhead_ms ?? 0}ms</strong></div>
+                </div>
+            `;
+        }
 
         const detailHTML = `
             <div style="text-align: left;">
@@ -538,6 +648,7 @@
                     </div>
                 </div>
                 ${resultHtml}
+                ${evalHtml}
             </div>
         `;
 

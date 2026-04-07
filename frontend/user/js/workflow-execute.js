@@ -308,6 +308,12 @@ async function restoreActiveWorkflowExecution() {
         if (wfExecs.length === 0) return;
 
         workflowExecutionId = weId;
+
+        // 詳細遷移時: Coordinator データを先にロードしてキューブに反映
+        try { await loadCoordinatorPlan(weId); } catch (_) {}
+        // 再レンダーハッシュをクリアして強制再描画
+        _lastFlowRenderHash = null;
+        _lastFlowDataKey = null;
         wfExecs.sort((a, b) => (a.skill_order || 0) - (b.skill_order || 0));
 
         // ワークフロー全体が完了しているかチェック
@@ -1024,6 +1030,42 @@ function renderWorkflowStageSummary(esc) {
     return html;
 }
 
+// Coordinator 観測層の状態 (renderFlowView から参照されるため上で宣言)
+let _coordinatorData = null;
+let _coordinatorTaskByWsId = {};   // workflow_skill_id → task
+let _coordinatorArtifactByWsId = {}; // workflow_skill_id → artifact[]
+let _coordinatorJudgedGroups = new Set(); // judged 済み task_id
+let _coordinatorEvalMetrics = null; // 完了時の評価メトリクス
+
+// 直近のレンダーハッシュ (ちらつき抑制)
+let _lastFlowRenderHash = null;
+let _lastFlowDataKey = null;
+
+function _computeFlowRenderHash(wfDetail, statuses) {
+    const wf = wfDetail.workflow || wfDetail;
+    const groups = wf.groups || [];
+    const skillIds = [];
+    for (const g of groups) {
+        for (const s of (g.skills || [])) skillIds.push(s.workflow_skill_id || s.id);
+    }
+    const taskIds = Object.keys(_coordinatorTaskByWsId).sort().join(',');
+    const artifactCounts = Object.keys(_coordinatorArtifactByWsId)
+        .sort()
+        .map(k => `${k}:${_coordinatorArtifactByWsId[k].length}`)
+        .join('|');
+    const judgedCount = _coordinatorJudgedGroups.size;
+    const orchHash = (_orchestrationStatuses || []).map(o => `${o.role}:${o.status}`).join(',');
+    return JSON.stringify({
+        wfId: wf.id,
+        skillIds,
+        statuses: statuses || {},
+        taskIds,
+        artifactCounts,
+        judgedCount,
+        orchHash,
+    });
+}
+
 function renderFlowView(wfDetail, allStepStatuses) {
     const flowEl = document.getElementById('workflow-flow-view');
     if (!flowEl) return;
@@ -1036,6 +1078,15 @@ function renderFlowView(wfDetail, allStepStatuses) {
         return;
     }
     flowEl.style.display = 'block';
+
+    // 再レンダー最適化: ステータスや coordinator データに変化が無ければスキップ
+    const dataKey = `${wf.id}`;
+    const renderHash = _computeFlowRenderHash(wfDetail, allStepStatuses);
+    if (dataKey === _lastFlowDataKey && renderHash === _lastFlowRenderHash) {
+        return;  // 変化なし → DOM 操作スキップ
+    }
+    _lastFlowDataKey = dataKey;
+    _lastFlowRenderHash = renderHash;
 
     // Hide the empty placeholder
     const emptyEl = document.getElementById('workflow-output-content');
@@ -1071,7 +1122,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
         default: _svgLeader
     };
 
-    // Collect all steps
+    // Collect all steps (for output lookup)
     const allSteps = [];
     groups.forEach(grp => {
         (grp.skills || []).forEach(sk => allSteps.push(sk));
@@ -1109,33 +1160,28 @@ function renderFlowView(wfDetail, allStepStatuses) {
     const leaderStatus = statuses['leader'] || 'pending';
     const leaderOutput = _flowLeaderOutput || '';
 
-    let html = renderWorkflowStageSummary(esc);
-    html += '<div class="wf-pipeline">';
-
-    allSteps.forEach((sk, idx) => {
-        const sName = sk.skill_name || `Step ${idx + 1}`;
+    // Helper: render a single node HTML
+    function renderNodeHtml(sk, stepIdx) {
+        const sName = sk.skill_name || `Step ${stepIdx + 1}`;
         let sStatus = (statuses['ws_' + sk.workflow_skill_id] || statuses[sk.skill_id]) || 'pending';
         const profile = sk.agent_profile || 'default';
         const pColor = profileColors[profile] || '#9e9e9e';
         const pLabel = formatStageLabel ? formatStageLabel(profile) : profile;
         const pIcon = profileIcons[profile] || profileIcons.default;
 
-        // 品質ゲート/リトライ検出: orchestrationStatusesから該当ステップの検証状況を確認
         const stepExecData = stepExecutions.get(sk.skill_order);
         const reflectionLoop = stepExecData?.reflectionLoop || 0;
         const orchForStep = _orchestrationStatuses.find(o =>
             (o.role === 'quality_gate' || o.role === 'supervisor') &&
             o.status === 'processing'
         );
-        const isVerifying = orchForStep && sStatus === 'success';  // ステップ完了後に検証中
-        const isRetrying = sStatus === 'processing' && reflectionLoop > 0;  // リトライ実行中
+        const isVerifying = orchForStep && sStatus === 'success';
+        const isRetrying = sStatus === 'processing' && reflectionLoop > 0;
 
-        // 検証中なら特別なステータス表示
         let displayStatus = sStatus;
         if (isVerifying) displayStatus = 'verifying';
         if (isRetrying) displayStatus = 'retrying';
 
-        // キューブ内アイコン: processing/retryingはローダー、それ以外は常にロールアイコン
         const iconContent = (displayStatus === 'processing' || displayStatus === 'retrying')
             ? '<div class="wf-node-loader"><span></span><span></span><span></span></div>'
             : displayStatus === 'verifying'
@@ -1147,17 +1193,28 @@ function renderFlowView(wfDetail, allStepStatuses) {
             : sStatus === 'success' ? 'is-success'
             : sStatus === 'error' ? 'is-error' : '';
 
-        // ラベル補足（検証中/リトライ中の表示）
         const stepSuffix = isVerifying ? ' <span class="wf-step-badge wf-badge-verify">検証中</span>'
             : isRetrying ? ` <span class="wf-step-badge wf-badge-retry">再試行 #${reflectionLoop}</span>`
             : reflectionLoop > 0 && sStatus === 'success' ? ` <span class="wf-step-badge wf-badge-passed">検証済</span>`
             : '';
 
-        html += `
-            <div class="wf-node ${nodeStateClass}">
-                <div class="wf-node-step"><span class="wf-node-status-indicator status-${sStatus}">${sStatus === 'success' ? '✓' : sStatus === 'error' ? '✗' : ''}</span>STEP ${idx + 1}${stepSuffix}</div>
+        // Coordinator メタを参照: 役割バッジ・provider枠色・artifact チップ
+        const coordTask = _coordinatorTaskByWsId[sk.workflow_skill_id];
+        const coordRole = coordTask?.role;
+        const coordProviderMode = coordTask?.resolved_provider_mode || coordTask?.provider_mode_hint;
+        const roleBadgeHtml = coordRole ? _coordRoleBadge(coordRole) : '';
+        const providerBadgeHtml = coordProviderMode ? _coordProviderBadge(coordProviderMode) : '';
+        const artifactChipHtml = _coordArtifactChip(sk.workflow_skill_id);
+        const dataProviderAttr = coordProviderMode ? ` data-provider-mode="${coordProviderMode}"` : '';
+        const tooltipText = coordTask
+            ? `${coordTask.objective || ''} | impact:${coordTask.impact_level || '-'} | provider:${coordProviderMode || '-'}`
+            : '';
+
+        return { sStatus, html: `
+            <div class="wf-node ${nodeStateClass}"${tooltipText ? ` title="${esc(tooltipText)}"` : ''}>
+                <div class="wf-node-step"><span class="wf-node-status-indicator status-${sStatus}">${sStatus === 'success' ? '✓' : sStatus === 'error' ? '✗' : ''}</span>STEP ${stepIdx + 1}${roleBadgeHtml}${stepSuffix}</div>
                 <span class="wf-node-profile-tag" style="color:${pColor}; background:${pColor}12; border:1px solid ${pColor}30;"><span class="wf-profile-icon" style="color:${pColor};">${profileTagIcons[profile] || profileTagIcons.default}</span>${esc(pLabel)}</span>
-                <div class="wf-node-card-wrap status-${displayStatus}" style="--cube-color: ${pColor};">
+                <div class="wf-node-card-wrap status-${displayStatus}"${dataProviderAttr} style="--cube-color: ${pColor};">
                     <div class="wf-node-face-right"></div>
                     <div class="wf-node-face-top"></div>
                     <div class="wf-node-card">
@@ -1165,18 +1222,74 @@ function renderFlowView(wfDetail, allStepStatuses) {
                             ${iconContent}
                         </div>
                     </div>
+                    ${artifactChipHtml}
                 </div>
                 <div class="wf-node-label">
                     <div class="wf-node-name">${esc(sName)}</div>
                     <div class="wf-node-model">${typeof formatModelDisplay === 'function' ? formatModelDisplay(sk?.model_type || '', null, sk) : (sk?.model_type || '')}</div>
+                    ${providerBadgeHtml ? `<div class="wf-node-provider-line">${providerBadgeHtml}</div>` : ''}
                 </div>
                 ${skillOutputHtml(sk.workflow_skill_id, sk)}
             </div>
-        `;
+        ` };
+    }
 
-        // Connector — active when done, shimmer when processing
-        const connectorClass = sStatus === 'success' ? 'active' : sStatus === 'processing' ? 'running' : '';
-        html += `<div class="wf-connector"><div class="wf-connector-line ${connectorClass}"></div></div>`;
+    // SVG connector helper — 丸い1本矢印（通常・並列共通）
+    function svgArrow(cls) {
+        return `<div class="wf-connector ${cls}">
+            <svg width="40" height="16" viewBox="0 0 40 16">
+                <path d="M0,8 Q20,8 32,8" class="wf-connector-path"/>
+                <path d="M28,4 L36,8 L28,12" class="wf-connector-arrow-head"/>
+            </svg>
+        </div>`;
+    }
+
+    let html = renderWorkflowStageSummary(esc);
+    html += '<div class="wf-pipeline">';
+
+    let stepCounter = 0;
+    groups.forEach((grp, grpIdx) => {
+        const skills = grp.skills || [];
+        if (skills.length === 0) return;
+        const isParallel = grp.execution_type === 'parallel' && skills.length > 1;
+
+        if (isParallel) {
+            // Parallel group: stack nodes vertically in one column
+            let groupWorstStatus = 'pending';
+            let nodesHtml = '';
+            const groupSkillIds = [];
+            skills.forEach((sk) => {
+                const result = renderNodeHtml(sk, stepCounter);
+                nodesHtml += result.html;
+                if (result.sStatus === 'error') groupWorstStatus = 'error';
+                else if (result.sStatus === 'processing' && groupWorstStatus !== 'error') groupWorstStatus = 'processing';
+                else if (result.sStatus === 'success' && groupWorstStatus === 'pending') groupWorstStatus = 'success';
+                groupSkillIds.push(sk.workflow_skill_id);
+                stepCounter++;
+            });
+            // Coordinator: ジャッジ状態を判定
+            const allDone = groupSkillIds.every(id => (statuses['ws_' + id] || 'pending') === 'success');
+            const judgedTaskIds = groupSkillIds.map(id => `task_${id}`);
+            const judged = judgedTaskIds.some(tid => _coordinatorJudgedGroups.has(tid));
+            const judgeBadge = judged
+                ? '<span class="wf-parallel-judge-badge wf-parallel-judge-done">JUDGED ✓</span>'
+                : (allDone ? '<span class="wf-parallel-judge-badge wf-parallel-judge-ready">JUDGE READY</span>' : '');
+            html += `<div class="wf-parallel-group">`
+                + `<div class="wf-parallel-label">並列${judgeBadge}</div>`
+                + `<div class="wf-parallel-nodes">${nodesHtml}</div>`
+                + `</div>`;
+            const connCls = groupWorstStatus === 'success' ? 'active' : groupWorstStatus === 'processing' ? 'running' : '';
+            html += svgArrow(connCls);
+        } else {
+            // Serial group: render each node with its own connector
+            skills.forEach((sk) => {
+                const result = renderNodeHtml(sk, stepCounter);
+                html += result.html;
+                const connCls = result.sStatus === 'success' ? 'active' : result.sStatus === 'processing' ? 'running' : '';
+                html += svgArrow(connCls);
+                stepCounter++;
+            });
+        }
     });
 
     // Leader node — use first step's model as fallback
@@ -1218,6 +1331,9 @@ function renderFlowView(wfDetail, allStepStatuses) {
 
     flowEl.innerHTML = html;
 
+    // Coordinator eval メトリクスを描画 (完了後のみ表示)
+    try { _renderEvalMetrics(); } catch (_) {}
+
     // Restore open state
     if (openDetails.size > 0) {
         flowEl.querySelectorAll('details[data-ws-id]').forEach(d => {
@@ -1243,18 +1359,16 @@ function showNodeOutputPopup(stepName, outputId) {
         title: stepName,
         html: `<div style="text-align:left; max-height:60vh; overflow-y:auto; padding:16px; background:#f8f8f6; border-radius:10px; font-size:12px; line-height:1.6; white-space:pre-wrap; word-wrap:break-word; color:#2d2d2d;">${escapeHtml(text)}</div>`,
         width: '700px',
-        showConfirmButton: true,
-        confirmButtonText: '閉じる',
-        confirmButtonColor: '#7c3aed',
-        showCancelButton: true,
-        cancelButtonText: 'コピー',
-        cancelButtonColor: '#6c757d',
-    }).then((result) => {
-        if (result.dismiss === Swal.DismissReason.cancel) {
-            navigator.clipboard.writeText(text).then(() => {
-                showAlert('コピーしました', 'success');
-            }).catch(() => {});
-        }
+        showCloseButton: true,
+        showConfirmButton: false,
+        footer: `<button id="node-swal-copy-btn" style="padding:6px 20px; font-size:13px; font-weight:500; background:var(--accent, #7c3aed); border:none; border-radius:8px; cursor:pointer; color:#fff;">コピー</button>`,
+        didOpen: () => {
+            document.getElementById('node-swal-copy-btn')?.addEventListener('click', () => {
+                navigator.clipboard.writeText(text).then(() => {
+                    if (typeof showAlert === 'function') showAlert('コピーしました', 'success');
+                }).catch(() => {});
+            });
+        },
     });
 }
 
@@ -1794,13 +1908,17 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
 
 // ワークフロー結果を出力パネルに表示
 function displayWorkflowResult(finalOutput, allStepResults, leaderExecution) {
-    // フロービューが全て担当（各スキル出力 + 結果統合）するので、下の出力パネルは非表示
-    const resultContainer = document.getElementById('workflow-result-container');
-    if (resultContainer) {
-        resultContainer.style.display = 'none';
+    // 出力パネルにリーダー結果を反映（詳細遷移時にも見えるよう）
+    const outputEl = document.getElementById('wf-leader-output');
+    if (outputEl && finalOutput) {
+        outputEl.textContent = finalOutput;
+        outputEl.classList.remove('wf-flow-placeholder');
+        outputEl.style.color = 'var(--content-text)';
     }
 
-    // フロービューを更新（スキルの出力 + リーダー最終結果をフローに反映）
+    // フロービューを更新（再レンダーハッシュをクリアして強制反映）
+    _lastFlowRenderHash = null;
+    _lastFlowDataKey = null;
     if (_flowViewDetail) {
         renderFlowView(_flowViewDetail, _flowStepStatuses);
     }
@@ -2626,6 +2744,9 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
                         PersistentStatusBar.workflowExecutionId = progressPollWfExecId;
                     }
 
+                    // ポーリング毎に CoordinatorPlan を再取得して観測値を反映 (await して renderFlowView に反映)
+                    try { await loadCoordinatorPlan(progressPollWfExecId); } catch (_) {}
+
                     // 同じ workflow_skill_id に複数execution がある場合（再実行）、最新IDのみ使用
                     const latestByWsId = {};
                     for (const exec of wfExecs) {
@@ -2750,6 +2871,9 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
         } catch (error) {
             console.error('Failed to create desktop workflow run:', error);
         }
+
+        // ワークフロー実行開始直後に CoordinatorPlan を取得して可視化
+        try { loadCoordinatorPlan(workflowExecutionId); } catch (_) {}
 
         if (isDesktopLocal) {
             // デスクトップパス: sidecar完了済み → handleWorkflowComplete で結果表示
@@ -3017,6 +3141,105 @@ document.getElementById('workflow-execute-form').addEventListener('submit', asyn
         });
     }
 });
+
+// ───────────────────────────────────────────────
+//  Coordinator integration
+//  バックエンドの coordinator 観測層を取得して、3Dキューブパイプラインに
+//  直接統合する。独立した coordinator-plan-section は使わず、
+//  各キューブに役割バッジ・provider枠色・artifact チップを注入する。
+//  (状態変数の宣言は renderFlowView より前 = ファイル上部にある)
+// ───────────────────────────────────────────────
+
+function _buildCoordinatorMaps(data) {
+    _coordinatorTaskByWsId = {};
+    _coordinatorArtifactByWsId = {};
+    _coordinatorJudgedGroups = new Set();
+
+    if (!data || !data.plan) return;
+
+    for (const t of (data.plan.tasks || [])) {
+        if (t.workflow_skill_id != null) {
+            _coordinatorTaskByWsId[t.workflow_skill_id] = t;
+        }
+    }
+    for (const a of (data.artifacts || [])) {
+        // task_id は "task_${workflow_skill_id}" 形式
+        const m = (a.task_id || '').match(/^task_(\d+)$/);
+        if (m) {
+            const wsId = parseInt(m[1], 10);
+            (_coordinatorArtifactByWsId[wsId] = _coordinatorArtifactByWsId[wsId] || []).push(a);
+        }
+    }
+    for (const e of (data.events || [])) {
+        if (e.event_type === 'judge_decision_made' && e.payload?.execution_id) {
+            // ジャッジが完了したことだけ記録（task_id ベース）
+            if (e.task_id) _coordinatorJudgedGroups.add(e.task_id);
+        }
+    }
+    if (data._eval && data._eval.current) {
+        _coordinatorEvalMetrics = data._eval.current;
+    }
+}
+
+async function loadCoordinatorPlan(wfExecId) {
+    if (!wfExecId) return null;
+    try {
+        const [planData, evalData] = await Promise.all([
+            apiRequest(`/api/user/coordinator/plans/${wfExecId}`).catch(() => null),
+            apiRequest(`/api/user/coordinator/eval/${wfExecId}`).catch(() => null),
+        ]);
+        if (!planData || !planData.plan) return null;
+        if (evalData) planData._eval = evalData;
+        _coordinatorData = planData;
+        _buildCoordinatorMaps(planData);
+        return planData;
+    } catch (e) {
+        console.warn('loadCoordinatorPlan failed:', e);
+        return null;
+    }
+}
+
+// 役割の表示名と色
+const _COORD_ROLE_INFO = {
+    researcher: { label: 'Researcher', color: '#2196f3' },
+    writer:     { label: 'Writer',     color: '#4caf50' },
+    reviewer:   { label: 'Reviewer',   color: '#e91e63' },
+    judge:      { label: 'Judge',      color: '#9c27b0' },
+};
+
+function _coordRoleBadge(_role) { return ''; }
+
+function _coordProviderBadge(mode) {
+    if (!mode) return '';
+    const cls = mode.startsWith('local') ? 'wf-badge-local'
+        : mode === 'hybrid_auto' ? 'wf-badge-hybrid'
+        : 'wf-badge-remote';
+    const label = mode.replace('_', ' ');
+    return `<span class="wf-step-badge ${cls}">${label}</span>`;
+}
+
+function _coordArtifactChip(_wsId) { return ''; }
+
+function _renderEvalMetrics() {
+    const target = document.getElementById('wf-eval-metrics');
+    if (!target) return;
+    const m = _coordinatorEvalMetrics;
+    // 完成度100%のときだけ表示 (ワークフロー完了相当)
+    if (!m || (m.completeness ?? 0) < 100) {
+        target.style.display = 'none';
+        return;
+    }
+    target.style.display = 'flex';
+    target.innerHTML = `
+        <div class="wf-eval-chip"><div class="wf-eval-label">完成度</div><strong>${m.completeness ?? 0}%</strong></div>
+        <div class="wf-eval-chip"><div class="wf-eval-label">修正率</div><strong>${m.revision_rate ?? 0}%</strong></div>
+        <div class="wf-eval-chip"><div class="wf-eval-label">judge通過</div><strong>${m.judge_pass_rate ?? 0}%</strong></div>
+        <div class="wf-eval-chip"><div class="wf-eval-label">local使用</div><strong>${m.local_usage_rate ?? 0}%</strong></div>
+        <div class="wf-eval-chip"><div class="wf-eval-label">overhead</div><strong>${(m.overhead_ms ?? 0)}ms</strong></div>
+    `;
+}
+
+// 旧 renderCoordinatorPlan は撤去 (キューブ統合に置き換え)
 
 // ページ読み込み時に実行
 (async () => {

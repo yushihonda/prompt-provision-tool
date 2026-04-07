@@ -80,13 +80,33 @@ function renderUserWorkflows() {
                 ? formatModelDisplay(wf.parent_model_type || '', null, {})
                 : (wf.parent_model_type || '-');
             const profiles = item.step_profiles || [];
+            const stepGroups = item.step_groups || [];
             let flowHtml = '';
             if (profiles.length > 0) {
-                flowHtml = profiles.map((p, i) => {
-                    return (i > 0 ? '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' : '') + renderMiniCube(p, { size: 28, showLabel: false });
-                }).join('');
+                const arrow = '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>';
+                let pi = 0;
+                const groupHtmls = [];
+                if (stepGroups.length > 0) {
+                    for (const sg of stepGroups) {
+                        const groupProfiles = profiles.slice(pi, pi + sg.count);
+                        pi += sg.count;
+                        if (sg.execution_type === 'parallel' && groupProfiles.length > 1) {
+                            const cubes = groupProfiles.map(p => renderMiniCube(p, { size: 22, showLabel: false })).join('');
+                            groupHtmls.push(`<span style="display:inline-flex;flex-direction:column;gap:2px;align-items:center;vertical-align:middle;">${cubes}</span>`);
+                        } else {
+                            for (const p of groupProfiles) {
+                                groupHtmls.push(renderMiniCube(p, { size: 28, showLabel: false }));
+                            }
+                        }
+                    }
+                } else {
+                    for (const p of profiles) {
+                        groupHtmls.push(renderMiniCube(p, { size: 28, showLabel: false }));
+                    }
+                }
+                flowHtml = groupHtmls.join(arrow);
                 // リーダーキューブを追加
-                flowHtml += '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' + renderMiniCube('default', { size: 28, showLabel: false });
+                flowHtml += arrow + renderMiniCube('default', { size: 28, showLabel: false });
             }
             return `
                 <article class="card-wrapper" data-workflow-id="${wf.id}">

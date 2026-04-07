@@ -446,14 +446,6 @@ async def _get_execution_bundle_inner(
             except Exception:
                 logger.warning(f"Failed to decrypt Anthropic API key for account {execution.account_id}")
 
-    # サーバーのデフォルトキーもフォールバックとして含める
-    if "openai" not in api_keys and settings.OPENAI_API_KEY:
-        api_keys["openai"] = settings.OPENAI_API_KEY
-    if "gemini" not in api_keys and settings.GEMINI_API_KEY:
-        api_keys["gemini"] = settings.GEMINI_API_KEY
-    if "anthropic" not in api_keys and settings.ANTHROPIC_API_KEY:
-        api_keys["anthropic"] = settings.ANTHROPIC_API_KEY
-
     # ステータスを processing に
     execution.status = "processing"
     db.commit()

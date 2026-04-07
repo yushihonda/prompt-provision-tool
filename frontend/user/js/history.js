@@ -117,15 +117,45 @@ function renderWorkflowRow(group) {
     const modelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModel, null, {}) : parentModel;
     const weId = group.workflowExecutionId;
 
-    // 各スキルのミニキューブ
-    let skillBars = stepExecs.map((e, i) => {
-        const sc = getStatusColor(e.status);
-        const cube = renderMiniCube(e.agent_profile || 'default', { size: 22, borderColor: sc, showLabel: false });
-        return (i > 0 ? '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' : '') + cube;
-    }).join('');
+    // 各スキルのミニキューブ（並列グループは縦並べ・小さめ）
+    const arrow = '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>';
+
+    // parallel_group_id でグルーピングして並列検出
+    const groupMap = new Map();
+    const orderedGroups = [];
+    for (const e of stepExecs) {
+        const gid = e.parallel_group_id;
+        if (gid) {
+            if (!groupMap.has(gid)) {
+                const g = { type: 'parallel', execs: [] };
+                groupMap.set(gid, g);
+                orderedGroups.push(g);
+            }
+            groupMap.get(gid).execs.push(e);
+        } else {
+            orderedGroups.push({ type: 'serial', execs: [e] });
+        }
+    }
+
+    const groupHtmls = [];
+    for (const g of orderedGroups) {
+        if (g.type === 'parallel') {
+            const cubes = g.execs.map(e => {
+                const sc = getStatusColor(e.status);
+                return renderMiniCube(e.agent_profile || 'default', { size: 18, borderColor: sc, showLabel: false });
+            }).join('');
+            groupHtmls.push(`<span style="display:inline-flex;flex-direction:column;gap:2px;align-items:center;vertical-align:middle;">${cubes}</span>`);
+        } else {
+            for (const e of g.execs) {
+                const sc = getStatusColor(e.status);
+                groupHtmls.push(renderMiniCube(e.agent_profile || 'default', { size: 22, borderColor: sc, showLabel: false }));
+            }
+        }
+    }
+    let skillBars = groupHtmls.join(arrow);
     // リーダーキューブを追加
     const leaderSc = getStatusColor(overallStatus);
-    skillBars += '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>' + renderMiniCube('default', { size: 22, borderColor: leaderSc, showLabel: false });
+    skillBars += arrow + renderMiniCube('default', { size: 22, borderColor: leaderSc, showLabel: false });
 
     return `
     <tr>
@@ -263,6 +293,18 @@ async function showWorkflowDetail(weId) {
         try {
             wfStatus = await apiRequest(`/api/user/workflow-executions/${weId}/status`);
         } catch (e) { /* ignore */ }
+
+        // Coordinator plan + eval を取得して渡す
+        let coordinatorData = null;
+        let coordinatorEval = null;
+        try {
+            coordinatorData = await apiRequest(`/api/user/coordinator/plans/${weId}`);
+        } catch (e) { /* ignore */ }
+        try {
+            const ev = await apiRequest(`/api/user/coordinator/eval/${weId}`);
+            coordinatorEval = ev?.current || null;
+        } catch (e) { /* ignore */ }
+
         await execDetailModal.showWorkflowDetailPopup({
             workflowName, allStepResults, leaderExec, groups,
             leaderModel: leaderExec?.model_used || '',
@@ -276,6 +318,8 @@ async function showWorkflowDetail(weId) {
             stepCount: stepExecs.length,
             totalTime,
             totalTokens,
+            coordinatorData,
+            coordinatorEval,
         });
     } catch (error) {
         await showAlert('詳細情報の読み込みに失敗しました', 'error');

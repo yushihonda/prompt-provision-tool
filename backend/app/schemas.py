@@ -469,12 +469,113 @@ class WorkflowCreateWithParentSkill(BaseModel):
     groups: Optional[List[WorkflowGroupItem]] = None
 
 
+class UserAPIConfigResponse(BaseModel):
+    """ユーザー向けAPI設定レスポンス（キーはマスク済み）"""
+    openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    is_enabled: bool = True
+    rate_limit_per_hour: int = 100
+    rate_limit_per_day: int = 1000
+
+class UserAPIConfigUpdate(BaseModel):
+    """ユーザーによるAPIキー更新（キーのみ、rate_limit/is_enabledは管理者権限）"""
+    openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+
+
+# ───────────────────────────────────────────────
+#  Coordinator Layer
+#  Plan / Role / Task / Artifact / Provider Policy のレスポンス型
+# ───────────────────────────────────────────────
+
+class CoordinatorRoleSpec(BaseModel):
+    role: str  # researcher | writer | reviewer | judge
+    label: Optional[str] = None
+    default_provider_mode: str = "remote_only"
+
+
+class CoordinatorTaskSpec(BaseModel):
+    task_id: str
+    role: str
+    objective: str
+    input_refs: List[str] = []
+    expected_artifact_type: str = "draft"
+    impact_level: str = "medium"  # low | medium | high
+    budget_class: str = "standard"  # cheap | standard | premium
+    requires_review: bool = False
+    writes_files: bool = False
+    retry_budget: int = 1
+    provider_mode_hint: Optional[str] = None
+    depends_on: List[str] = []
+    workflow_skill_id: Optional[int] = None
+
+
+class CoordinatorEscalationRule(BaseModel):
+    when: Dict[str, Any] = {}
+    switch_to: str  # provider mode
+
+
+class CoordinatorProviderPolicy(BaseModel):
+    default_mode: str = "remote_only"
+    local_model: Optional[str] = None
+    remote_model: Optional[str] = None
+    escalation_rules: List[CoordinatorEscalationRule] = []
+
+
+class CoordinatorPlanResponse(BaseModel):
+    plan_id: str
+    workflow_execution_id: int
+    goal: Optional[str] = None
+    complexity_level: str = "medium"
+    max_parallelism: int = 4
+    roles: List[CoordinatorRoleSpec] = []
+    tasks: List[CoordinatorTaskSpec] = []
+    artifact_policy: Optional[Dict[str, Any]] = None
+    review_policy: Optional[Dict[str, Any]] = None
+    stop_conditions: Optional[Dict[str, Any]] = None
+    provider_policy: Optional[CoordinatorProviderPolicy] = None
+    schema_version: str = "1.0"
+    created_at: Optional[datetime] = None
+
+
+class CoordinatorArtifactResponse(BaseModel):
+    artifact_id: str
+    plan_id: str
+    task_id: str
+    execution_id: Optional[int] = None
+    role: str
+    artifact_type: str
+    schema_version: str = "1.0"
+    summary: Optional[str] = None
+    inline_content: Optional[str] = None
+    content_ref: Optional[str] = None
+    provider_mode: Optional[str] = None
+    model_hint: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class CoordinatorEventResponse(BaseModel):
+    event_type: str
+    task_id: Optional[str] = None
+    artifact_id: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+    occurred_at: Optional[datetime] = None
+
+
+class StepGroupInfo(BaseModel):
+    """グループの実行タイプとステップ数"""
+    execution_type: str = "serial"
+    count: int = 1
+
 class UserWorkflowSummary(BaseModel):
     """ユーザー用ワークフロー一覧の1件"""
 
     workflow: WorkflowListItem
     skills: List[SkillListResponse]
     step_profiles: List[str] = []  # ステップ順の agent_profile 一覧
+    step_groups: List[StepGroupInfo] = []  # グループごとの実行タイプとステップ数
 
 
 class UserWorkflowDetailSkill(BaseModel):

@@ -1342,10 +1342,6 @@ body:not(.login-page) {
     overflow: visible !important;
     width: 100%;
 }
-.card-content-graph:hover,
-.card-content-graph:hover * {
-    color: #fff;
-}
 
 /* -----------------------------------------------------------------------
    Item Cards — CodePen shape() inspired design for skills-grid items
@@ -1556,7 +1552,7 @@ body:not(.login-page) {
     border-radius: 16px;
     position: relative;
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     padding: 10px 16px;
     gap: 8px;
     flex-wrap: wrap;
@@ -2492,7 +2488,7 @@ span.executing-badge { color: var(--accent) !important; background: rgba(124, 58
     --wf-connector-size: 40px;
     --wf-card-width: 200px;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: center;
     gap: 0;
     min-width: max-content;
@@ -2557,6 +2553,144 @@ span.executing-badge { color: var(--accent) !important; background: rgba(124, 58
 @keyframes wf-badge-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
+}
+
+/* ─────────────────────────────────────────────
+   Coordinator integration on cubes
+   ───────────────────────────────────────────── */
+
+/* Role badges */
+.wf-badge-role {
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    font-size: 7.5px;
+    padding: 1px 5px;
+}
+.wf-badge-role-researcher { background: rgba(33,150,243,0.14); color: #2196f3; }
+.wf-badge-role-writer     { background: rgba(76,175,80,0.14);  color: #4caf50; }
+.wf-badge-role-reviewer   { background: rgba(233,30,99,0.14);  color: #e91e63; }
+.wf-badge-role-judge      { background: rgba(156,39,176,0.14); color: #9c27b0; }
+
+/* Provider mode badges (cube label下) */
+.wf-badge-local  { background: rgba(40,167,69,0.12);  color: #28a745; font-size: 7.5px; padding: 1px 5px; text-transform: uppercase; }
+.wf-badge-remote { background: rgba(220,53,69,0.10);  color: #dc3545; font-size: 7.5px; padding: 1px 5px; text-transform: uppercase; }
+.wf-badge-hybrid { background: rgba(253,126,20,0.12); color: #fd7e14; font-size: 7.5px; padding: 1px 5px; text-transform: uppercase; }
+.wf-node-provider-line { margin-top: 3px; }
+
+/* Provider mode glow on cube wrap */
+.wf-node-card-wrap[data-provider-mode] {
+    position: relative;
+}
+.wf-node-card-wrap[data-provider-mode="local_preferred"]::before,
+.wf-node-card-wrap[data-provider-mode="local_only"]::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px 1px rgba(40,167,69,0.35);
+    pointer-events: none;
+    z-index: -1;
+}
+.wf-node-card-wrap[data-provider-mode="hybrid_auto"]::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px 1px rgba(253,126,20,0.35);
+    pointer-events: none;
+    z-index: -1;
+}
+
+/* Artifact 完了チップ (cube右上) */
+.wf-node-artifact-chip {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #28a745;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+    z-index: 5;
+    animation: wf-chip-pop 0.3s ease;
+}
+@keyframes wf-chip-pop {
+    0%   { transform: scale(0); opacity: 0; }
+    60%  { transform: scale(1.2); opacity: 1; }
+    100% { transform: scale(1); }
+}
+
+/* 並列グループの judge バッジ */
+.wf-parallel-judge-badge {
+    display: inline-block;
+    font-size: 7.5px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 6px;
+    margin-left: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.wf-parallel-judge-ready {
+    background: rgba(255,152,0,0.14);
+    color: #ff9800;
+    animation: wf-badge-pulse 1.5s ease-in-out infinite;
+}
+.wf-parallel-judge-done {
+    background: rgba(40,167,69,0.14);
+    color: #28a745;
+}
+
+/* eval メトリクスチップ (card-cutout-wrapper 内、出力カードの下に配置) */
+.wf-eval-metrics {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 12px 14px;
+    margin-top: 12px;
+    background: rgba(124,58,237,0.05);
+    border: 1px solid rgba(124,58,237,0.12);
+    border-radius: 12px;
+    width: 100%;
+}
+.wf-eval-chip {
+    flex: 0 0 auto;
+    min-width: 96px;
+    padding: 8px 14px;
+    background: var(--card-bg, #fff);
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    text-align: center;
+}
+.wf-eval-chip .wf-eval-label {
+    font-size: 10px;
+    color: var(--content-text-muted, #888);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+}
+.wf-eval-chip strong {
+    display: block;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--accent, #7c3aed);
+    line-height: 1.2;
+}
+
+/* レンダリング安定化: 状態遷移を滑らかに */
+.wf-node-step,
+.wf-node-icon {
+    transition: color 0.25s ease;
+}
+.wf-parallel-nodes .wf-node {
+    min-height: 200px;
 }
 
 /* Verifying cube — orange border */
@@ -2835,71 +2969,101 @@ span.executing-badge { color: var(--accent) !important; background: rgba(124, 58
 }
 
 /* --- Connector — glass style line + arrow between cubes --- */
+/* --- Parallel group: nodes stacked vertically in one pipeline column --- */
+.wf-parallel-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+    flex-shrink: 0;
+    align-self: center;
+    border: 1.5px dashed rgba(124, 58, 237, 0.3);
+    border-radius: 12px;
+    padding: 8px 8px 12px;
+    margin: 0 12px;
+    background: rgba(124, 58, 237, 0.03);
+}
+.wf-parallel-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--accent, #7c3aed);
+    background: rgba(124, 58, 237, 0.08);
+    padding: 1px 10px;
+    border-radius: 8px;
+    margin-bottom: 4px;
+}
+.wf-parallel-nodes {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+.wf-parallel-nodes .wf-node {
+    width: 140px;
+}
+/* Connectors next to parallel groups: vertically centered */
+/* --- SVG-based rounded connectors --- */
 .wf-connector {
     display: flex;
     align-items: center;
     width: var(--wf-connector-size);
     flex-shrink: 0;
-    /* node-pad(8) + step-label(16) + step-mb(5) + profile-tag(14) + profile-mb(15) + cube-half(34) */
-    margin-top: calc(8px + 16px + 5px + 14px + 15px + 34px);
     position: relative;
-    align-self: flex-start;
 }
-.wf-connector-line {
-    width: 100%;
-    height: 2px;
-    background: rgba(0,0,0,0.1);
-    position: relative;
-    transition: background 0.5s ease;
-    border-radius: 1px;
+.wf-connector svg {
+    display: block;
+    overflow: visible;
 }
-/* Completed — glass gradient fill */
-.wf-connector-line.active {
-    height: 3px;
-    background: linear-gradient(90deg, var(--accent), var(--accent-light, #a78bfa));
-    box-shadow: 0 0 6px rgba(124,58,237,0.25);
+/* Shared SVG path styles */
+.wf-connector-path {
+    fill: none;
+    stroke: rgba(0,0,0,0.15);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: stroke 0.5s ease, filter 0.3s;
 }
-/* Arrow tip — glass style */
-.wf-connector-line::after {
-    content: '';
-    position: absolute;
-    right: -1px;
-    top: -4px;
-    border: 5px solid transparent;
-    border-left: 6px solid rgba(0,0,0,0.12);
-    transition: border-color 0.5s ease, filter 0.3s;
+.wf-connector-arrow-head {
+    fill: none;
+    stroke: rgba(0,0,0,0.15);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: stroke 0.5s ease, filter 0.3s;
 }
-.wf-connector-line.active::after {
-    border-left-color: var(--accent);
+/* Completed — accent glow */
+.wf-connector.active .wf-connector-path {
+    stroke: var(--accent, #7c3aed);
+    stroke-width: 2.5;
+    filter: drop-shadow(0 0 4px rgba(124,58,237,0.25));
+}
+.wf-connector.active .wf-connector-arrow-head {
+    stroke: var(--accent, #7c3aed);
+    stroke-width: 2.5;
     filter: drop-shadow(0 0 3px rgba(124,58,237,0.3));
 }
-/* Running shimmer — glowing pulse through the line */
-.wf-connector-line.running {
-    height: 3px;
-    background: rgba(0,0,0,0.08);
-    overflow: hidden;
+/* Running shimmer */
+.wf-connector.running .wf-connector-path {
+    stroke: rgba(124,58,237,0.35);
+    stroke-width: 2.5;
+    stroke-dasharray: 6 4;
+    animation: wf-dash-flow 0.8s linear infinite;
 }
-.wf-connector-line.running::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, var(--accent), rgba(124,58,237,0.3), transparent);
-    animation: wf-shimmer 1.5s ease-in-out infinite;
+.wf-connector.running .wf-connector-arrow-head {
+    stroke: rgba(124,58,237,0.5);
+    stroke-width: 2.5;
+    animation: wf-arrow-head-pulse 1.5s ease-in-out infinite;
 }
-.wf-connector-line.running::after {
-    border-left-color: rgba(124,58,237,0.3);
-    animation: wf-arrow-pulse 1.5s ease-in-out infinite;
+@keyframes wf-dash-flow {
+    to { stroke-dashoffset: -10; }
 }
-@keyframes wf-shimmer {
-    to { left: 100%; }
+@keyframes wf-arrow-head-pulse {
+    0%, 100% { stroke: rgba(124,58,237,0.25); }
+    50%      { stroke: rgba(124,58,237,0.7); }
 }
-@keyframes wf-arrow-pulse {
-    0%, 100% { border-left-color: rgba(124,58,237,0.2); }
-    50%      { border-left-color: rgba(124,58,237,0.6); }
-}
+
 
 /* --- Node output area (absolutely positioned, doesn't affect layout) --- */
 .wf-node-output {
@@ -2941,6 +3105,14 @@ span.executing-badge { color: var(--accent) !important; background: rgba(124, 58
 .wf-node-output-btn:hover {
     color: var(--accent-dark);
     text-decoration: underline;
+}
+
+/* Inside parallel groups: keep output in flow so it doesn't overflow the border */
+.wf-parallel-nodes .wf-node-output,
+.wf-parallel-nodes .wf-node-output-btn {
+    position: static;
+    transform: none;
+    margin-top: 4px;
 }
 
 /* Dot loader (inside glass cube when processing) */

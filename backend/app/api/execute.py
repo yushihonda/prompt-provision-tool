@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
 from app.auth import get_current_user
-from app.models import Account, APIConfig, Skill, AccountSkill, Execution, Workflow, WorkflowSkill, WorkflowExecution
+from app.models import Account, APIConfig, Skill, AccountSkill, Execution, Workflow, WorkflowSkill, WorkflowExecution, WorkflowGroup
 from app.schemas import (
     ExecuteSkillRequest,
     ExecuteSkillResponse,
@@ -331,7 +331,7 @@ async def execute_workflow(
         status="pending",
         current_step=1,
         total_steps=len(executable_skills),
-        workflow_name_snapshot=workflow.name,
+        workflow_name_snapshot=wf.name,
         global_input_data=json.dumps(request.global_input_data or {}, ensure_ascii=False),
         per_skill_input_data=json.dumps(
             {str(k): v for k, v in (request.per_skill_input or {}).items()},
@@ -344,6 +344,20 @@ async def execute_workflow(
     db.add(wf_execution)
     db.commit()
     db.refresh(wf_execution)
+
+    # CoordinatorPlan を生成 (実行を駆動せず、観測用のスナップショット)
+    try:
+        from app.services.coordinator_service import build_coordinator_plan
+        wf_groups_for_plan = (
+            db.query(WorkflowGroup)
+            .filter(WorkflowGroup.workflow_id == wf.id)
+            .order_by(WorkflowGroup.group_order.asc())
+            .all()
+        )
+        build_coordinator_plan(db, wf_execution, wf, executable_skills, wf_groups_for_plan)
+    except Exception as e:
+        # CoordinatorPlan 生成失敗はワークフロー実行を止めない (best-effort)
+        logger.warning(f"CoordinatorPlan generation failed for wf_execution {wf_execution.id}: {e}")
 
     # 実行モード判定
     workflow_execution_mode = "serial"
@@ -361,7 +375,6 @@ async def execute_workflow(
     )
 
     # グループベースで最初に起動するスキルを決定
-    from app.models import WorkflowGroup
     first_group = (
         db.query(WorkflowGroup)
         .filter(WorkflowGroup.workflow_id == request.workflow_id)

@@ -18,9 +18,9 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
 
-    # AI API Keys
-    OPENAI_API_KEY: str
-    GEMINI_API_KEY: str
+    # AI API Keys (ユーザーごとにDBで管理。サーバー側は不要)
+    OPENAI_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
 
     # Application

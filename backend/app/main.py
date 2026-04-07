@@ -5,7 +5,28 @@ from fastapi.responses import HTMLResponse
 from pathlib import Path
 from app.config import settings
 from app.api import auth, admin, user, execute, worker
+from app.database import engine
+from app.models import Base
 import logging
+
+# 起動時に未作成のテーブルを作成 (coordinator 拡張テーブル群を含む)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as _e:
+    logging.getLogger(__name__).warning(f"create_all failed: {_e}")
+
+# 既定の coordinator アダプターを seed (idempotent)
+try:
+    from app.database import SessionLocal
+    from app.services.coordinator_extensions import seed_default_adapters
+    _db = SessionLocal()
+    try:
+        seed_default_adapters(_db)
+    finally:
+        _db.close()
+except Exception as _e:
+    logging.getLogger(__name__).warning(f"adapter seed failed: {_e}")
+
 
 # ログ設定（環境に応じてログレベルを変更）
 log_level = logging.DEBUG if settings.is_debug_mode else logging.INFO

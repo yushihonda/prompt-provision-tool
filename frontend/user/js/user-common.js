@@ -276,6 +276,7 @@ function formatJSON(json) {
 const USER_NAV_ITEMS = [
     { href: 'dashboard.html', label: 'ワークフロー / スキル' },
     { href: 'history.html',   label: '実行履歴' },
+    { href: 'settings.html',  label: 'API設定' },
 ];
 
 /**

@@ -204,6 +204,37 @@ def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
         event["summary"] = execution.error_message or "エラーが発生"
     append_synthesis_event(wf_exec, event)
 
+    # CoordinatorEvent 発火 (review / judge / completion を観測層に流す)
+    try:
+        from app.services.coordinator_service import (
+            get_plan_by_workflow_execution,
+            record_event,
+            EVENT_JUDGE_DECISION_MADE,
+            EVENT_REVIEW_REQUESTED,
+            EVENT_TASK_FINISHED,
+            EVENT_RUN_COMPLETED,
+        )
+        plan = get_plan_by_workflow_execution(db, wf_exec.id)
+        if plan:
+            etype = event.get("event_type", "")
+            task_id = f"task_{execution.workflow_skill_id}" if execution.workflow_skill_id else f"exec_{execution.id}"
+            payload = {
+                "execution_id": execution.id,
+                "stage": profile,
+                "step_name": step_name,
+                "summary": event.get("summary"),
+            }
+            if etype in ("judge_complete", "supervisor_decision"):
+                record_event(db, plan.plan_id, EVENT_JUDGE_DECISION_MADE, task_id=task_id, payload=payload)
+            elif etype == "quality_gate_pass":
+                record_event(db, plan.plan_id, EVENT_REVIEW_REQUESTED, task_id=task_id, payload={**payload, "result": "pass"})
+            elif etype == "leader_complete":
+                record_event(db, plan.plan_id, EVENT_RUN_COMPLETED, payload=payload)
+            elif etype.endswith("_error"):
+                record_event(db, plan.plan_id, EVENT_TASK_FINISHED, task_id=task_id, payload={**payload, "status": "error"})
+    except Exception as _e:
+        logger.warning(f"CoordinatorEvent dispatch failed: {_e}")
+
     # 永続メモリ更新（成功時、通常スキルのみ）
     if execution.status == "success" and not role and execution.workflow_skill_id:
         try:
@@ -285,6 +316,63 @@ def finalize_execution(
         f"Execution {execution.id} finalized: status={status_result}, "
         f"tokens={tokens_used}, cost={execution.cost}"
     )
+
+    # CoordinatorArtifact 生成 (成功した execution の出力を構造化保存)
+    if status_result == "success" and execution.workflow_execution_id:
+        try:
+            _record_coordinator_artifact(db, execution, output, model_used)
+        except Exception as e:
+            logger.warning(f"CoordinatorArtifact recording failed for execution {execution.id}: {e}")
+
+
+def _record_coordinator_artifact(db: Session, execution: Execution, output: str, model_used: str) -> None:
+    """成功したExecutionに対応するCoordinatorArtifactを生成する"""
+    from app.services.coordinator_service import (
+        get_plan_by_workflow_execution,
+        record_artifact,
+        record_event,
+        map_profile_to_role,
+        default_artifact_type_for_role,
+        find_worker_for_task,
+        update_worker_status,
+        WORKER_DONE,
+        EVENT_TASK_FINISHED,
+    )
+    plan = get_plan_by_workflow_execution(db, execution.workflow_execution_id)
+    if not plan:
+        return
+
+    profile = (execution.agent_profile or "default").lower()
+    role = map_profile_to_role(profile)
+    artifact_type = default_artifact_type_for_role(role)
+    task_id = f"task_{execution.workflow_skill_id}" if execution.workflow_skill_id else f"exec_{execution.id}"
+
+    summary = (output or "")[:200] if output else None
+
+    artifact = record_artifact(
+        db, plan.plan_id, task_id, role, artifact_type,
+        execution_id=execution.id,
+        summary=summary,
+        inline_content=output,
+        provider_mode=None,
+        model_hint=model_used,
+        extra_metadata={"agent_profile": profile, "skill_order": execution.skill_order},
+    )
+    record_event(
+        db, plan.plan_id, EVENT_TASK_FINISHED,
+        task_id=task_id,
+        payload={"status": "success", "execution_id": execution.id, "model": model_used},
+    )
+
+    # 担当 named worker の状態を done に遷移し、artifact_refs を追加
+    try:
+        worker = find_worker_for_task(db, plan.plan_id, task_id)
+        if worker:
+            update_worker_status(db, worker.worker_id, WORKER_DONE,
+                                 current_task_id=task_id,
+                                 artifact_id=artifact.artifact_id)
+    except Exception as _e:
+        logger.warning(f"Worker status update failed for task {task_id}: {_e}")
 
 
 def _update_account_stats(
