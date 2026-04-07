@@ -14,11 +14,12 @@
 
 | ファイル | 役割 |
 |---------|------|
-| `backend/app/services/coordinator_service.py` | Plan / Worker / Artifact / Event / Workspace / DAG / Provider Router / `resolve_execution_kind` |
+| `backend/app/services/coordinator_service.py` | Plan / Worker / Artifact / Event / Workspace / DAG / Provider Router / `resolve_execution_kind` / step workspace allocation |
 | `backend/app/services/coordinator_extensions.py` | Adapter Registry / Task Envelope / Eval Harness / Resume / local adapter health refresh |
+| `backend/app/services/workflow_step_schema.py` | `StepExecutionConfig` + `parse_execution_config` (workflow step に execution / workspace / approval を持たせる) |
 | `backend/app/services/external_cli_adapters.py` | external_cli bundle payload 構築 (`build_external_cli_payload`) |
 | `backend/app/services/external_cli_capabilities.py` | capability 定数 + `required_capabilities_for_task` |
-| `backend/app/services/completion_service.py` | `build_external_cli_provenance` + artifact metadata 永続化 |
+| `backend/app/services/completion_service.py` | `build_external_cli_provenance` / `build_http_provider_provenance` + artifact metadata 永続化 |
 | `backend/app/api/adapters.py` | `/api/adapters/*` (health refresh / models) |
 | `backend/app/api/user.py` | `/api/user/coordinator/*` エンドポイント |
 | `sidecar/app/providers/http_provider.py` | OpenAI互換 HTTP provider (Ollama) + preflight |
@@ -35,6 +36,8 @@
 | `frontend/user/cli-terminal.html` | External CLI ターミナルページ (xterm.js + PTY) |
 | `frontend/user/js/cli-terminal-view.js` | パイプモード ストリーミングビューア |
 | `frontend/user/js/cli-terminal-pty.js` | PTY duplex ターミナル |
+| `frontend/js/runtime-badge.js` | artifact metadata から runtime チップを描画 |
+| `frontend/admin/js/execution-config-form.js` | workflow skill 編集の `execution_config` フォーム helper |
 
 ## DB テーブル
 
@@ -152,6 +155,64 @@
 クライアント側 (Tauri) が管理し、バックエンドは状態とパスのみ保持する。
 
 ステータス遷移: `reserved → active → promoted (or cleaned)`
+
+### Mixed runtime workflow execution
+
+既存の管理画面ワークフロー定義に、**ステップ単位の実行ランタイム metadata** を持たせて mixed runtime 実行を可能にする層。`WorkflowSkill.config_json` の `execution_config` キーに JSON で持たせるだけで、DBマイグレーション無しで利用できる。
+
+```json
+{
+  "execution_config": {
+    "schema_version": "1.0",
+    "execution": {
+      "execution_kind": "external_cli",
+      "preferred_adapter": "claude-code-local",
+      "candidate_adapters": ["codex-local"],
+      "required_capabilities": ["file_read", "file_write", "shell_exec"],
+      "cli_runtime_hint": "claude_code",
+      "cwd_hint": "/Users/me/project"
+    },
+    "workspace": {
+      "workspace_policy": "temp_dir",
+      "share_with_steps": ["code_step"],
+      "promote_on": "accepted",
+      "cleanup_on": "failed"
+    },
+    "approval": {
+      "policy": "allow_write",
+      "allow_writes": true,
+      "allow_shell": false
+    },
+    "artifact_contract": {
+      "expected_type": "patch"
+    }
+  }
+}
+```
+
+#### 実行フロー
+
+1. `worker.py` が `WorkflowSkill` 行を読み、`parse_execution_config(config_json)` で `StepExecutionConfig` に正規化
+2. parsed config を matched task の `_step_execution_config` にアタッチして `resolve_execution_kind` を呼ぶ
+3. `resolve_execution_kind` が step config の `execution.execution_kind` を見て分岐:
+   - `external_cli` + 解決可能な adapter + `cwd` あり → `external_cli_payload` を返す
+   - `provider` または `auto` → 既存の HTTP / internal ルーティングへ
+4. `_maybe_allocate_step_workspace` が `workspace_policy != "none"` のとき `CoordinatorWorkspace` を予約。`share_with_steps` に上流 task_id があれば既存の workspace を再利用 (cleaned 行はスキップ)
+5. capability mismatch (step の `required_capabilities` が adapter の declared capabilities を超えるとき) は **planner時点で fail-fast** し、`selection_reason=step_capability_mismatch:NAME:missing=...` で http_provider に fall back
+6. judge ロールは `execution_kind=external_cli` でも **強制的に remote http_provider** (hard rule)
+
+#### selection_reason 語彙 (artifact 監査用)
+
+- `judge_forced_remote` — judge ハードルール
+- `step_pref:external_cli:NAME` — `preferred_adapter` ヒット
+- `step_candidate:external_cli:NAME` — `candidate_adapters` 内の最初のヒット
+- `prefer_external_cli:RUNTIME` — `cli_runtime_hint` のみで解決
+- `step_capability_mismatch:NAME:missing=cap1,cap2` — capability 不足で fall back
+- `low_impact_local` / `cheap_local` 等 — 既存 HTTP provider ルーティングの reason
+
+#### 後方互換
+
+`execution_config` キーが無い `WorkflowSkill` 行は `default_step_execution_config()` を返し、`execution_kind=auto` / `workspace_policy=none` / `approval=read_only` となる。これは既存ルーティングと完全に同じ動作で、何も書き換えなくても旧ワークフローが壊れない。
 
 ### Adapter Registry
 

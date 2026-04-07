@@ -1,4 +1,4 @@
-"""Phase 4.4 — approval policy enforcement at planner time."""
+"""Approval policy enforcement at planner time."""
 from __future__ import annotations
 
 import json
@@ -207,8 +207,8 @@ class ApprovalPolicyEnforcementTests(unittest.TestCase):
         result = resolve_execution_kind(self.db, self.plan, task)
         self.assertEqual(result["execution_kind"], EXECUTION_KIND_EXTERNAL_CLI)
         payload = result["external_cli_payload"]
-        # Phase 4.4 treats ask_before_shell as read_only — Phase 5 will
-        # add the interactive confirmation modal.
+        # ask_before_shell currently behaves like read_only; the
+        # interactive confirmation modal is a planned follow-up.
         self.assertFalse(payload["allow_shell"])
 
 

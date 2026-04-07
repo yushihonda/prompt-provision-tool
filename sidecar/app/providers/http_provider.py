@@ -13,7 +13,7 @@ class OpenAICompatibleHttpProvider(LLMProvider):
 
     First concrete target: Ollama at http://localhost:11434/v1.
     Future-compatible: vLLM, LM Studio, llama-cpp-python server.
-    Phase 1 path: POST {base_url}/chat/completions (non-streaming).
+    Initial path: POST {base_url}/chat/completions (non-streaming).
     """
 
     mode = "http"

@@ -257,7 +257,7 @@ def build_external_cli_provenance(external_cli_meta: dict) -> dict:
     graph.
     """
     return {
-        "step_execution_kind": "external_cli",  # Phase 4.5: unified base key
+        "step_execution_kind": "external_cli",  # unified base key (shared with build_http_provider_provenance)
         "execution_kind": "external_cli",
         "adapter_type": "external_cli",
         "adapter_id": external_cli_meta.get("adapter_id"),
@@ -286,9 +286,9 @@ def build_external_cli_provenance(external_cli_meta: dict) -> dict:
 
 
 def build_http_provider_provenance(provider_meta: dict) -> dict:
-    """Phase 4.5: complement to build_external_cli_provenance for the
-    HTTP/internal provider path. Returns the unified base keys so a
-    single artifact reader can render either runtime kind.
+    """Complement to build_external_cli_provenance for the HTTP /
+    internal provider path. Returns the unified base keys so a single
+    artifact reader can render either runtime kind.
 
     `provider_meta` here is the existing dict produced by
     `_run_with_runtime_fallback` plus whatever the planner attached.
@@ -519,7 +519,7 @@ def _record_coordinator_artifact(
                 execution.id, exc,
             )
 
-    # Phase 3.6: external CLI provenance (Claude / Codex / Cursor / Generic).
+    # External CLI provenance (Claude Code / Codex / Generic).
     if external_cli_meta:
         provenance.update(build_external_cli_provenance(external_cli_meta))
         logger.info(

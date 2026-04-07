@@ -1,11 +1,12 @@
-//! PTY-backed external CLI execution (Phase 2).
+//! PTY-backed external CLI execution (interactive duplex).
 //!
-//! Phase 1 (`external_cli.rs`) captures stdout/stderr line-by-line via
-//! pipes — fast and simple but no terminal semantics, so interactive
-//! confirmations from `claude` (file edit prompts, dangerous-command
-//! confirms, etc.) cannot reach the user.
+//! The pipe-mode runner in `external_cli.rs` / `external_cli_runner.rs`
+//! captures stdout/stderr line-by-line — fast and simple but no
+//! terminal semantics, so interactive confirmations from `claude`
+//! (file edit prompts, dangerous-command confirms, etc.) cannot reach
+//! the user.
 //!
-//! Phase 2 spawns the child inside a real PTY using `portable-pty`. The
+//! This module spawns the child inside a real PTY using `portable-pty`. The
 //! frontend xterm.js terminal becomes a true duplex view: keystrokes
 //! flow into the child, and the child's escape sequences render
 //! correctly (colors, cursor movement, prompts).

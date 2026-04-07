@@ -1,10 +1,10 @@
-"""Tests for external_cli artifact provenance helper (Phase 3.6).
+"""Tests for external_cli artifact provenance helper.
 
 The full integration path (finalize_execution → _record_coordinator_artifact)
-requires a complete Execution/Workflow/Plan graph that is awkward to set
-up in isolation. Instead we test the pure helper that does the actual
-mapping; integration with finalize_execution is exercised end-to-end in
-Phase 3.8 against the live backend.
+requires a complete Execution / Workflow / Plan graph that is awkward
+to set up in isolation. Instead we test the pure helper that does the
+actual mapping; integration with finalize_execution is exercised
+end-to-end against the live backend.
 """
 from __future__ import annotations
 
@@ -102,7 +102,7 @@ class BuildExternalCliProvenanceTests(unittest.TestCase):
         self.assertEqual(prov["changed_files"], [])
         self.assertEqual(prov["changed_files_count"], 0)
 
-    def test_phase_4_5_unified_base_keys_present(self):
+    def test_unified_base_keys_present_for_both_runtime_kinds(self):
         # Both runtime kinds must share these base keys.
         cli_meta = self._full_meta()
         cli_meta["selection_reason"] = "step_pref:external_cli:claude-code-local"

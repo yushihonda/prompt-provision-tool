@@ -80,11 +80,33 @@ npm run tauri:dev
   - Codex: scaffold (`codex -p` 前提、flag layout は実機で検証予定)
   - Generic: 設定駆動 (`/bin/sh -c ...`)、テスト / 任意 CLI に利用
 - **デュアルモード terminal** — `cli-terminal.html` ページに2種類のビューア
-  - Phase 1: パイプ経由のストリーミング (xterm.js 読み取り専用)
-  - Phase 2: `portable-pty` による PTY duplex (キー入力 → 子プロセス、ファイル編集確認等に応答可能)
+  - パイプモード: `tokio::process::Command` 経由のストリーミング (xterm.js 読み取り専用)
+  - PTY モード: `portable-pty` による duplex (キー入力 → 子プロセス、ファイル編集確認等に応答可能)
 - **Capability gate** — 必須 capability がアダプタに無ければ spawn 前に `CapabilityMismatch` で拒否
 - **Artifact provenance** — 実行後 `runtime` / `cwd` / `exit_code` / `changed_files` / `capability_check_passed` など全て artifact metadata に永続化
 - **Judge は強制 remote** — 個人サブスクを judge に使わないよう hard rule で保護
+
+### Mixed runtime ワークフロー
+既存の管理画面ワークフロー定義を、ステップ単位で実行ランタイムを切り替えて動かせます。`WorkflowSkill.config_json` の `execution_config` キーに以下のメタデータを持たせるだけで、DBマイグレーション無しで適用できます。
+
+- `execution.execution_kind` — `auto` / `provider` / `external_cli`
+- `execution.preferred_adapter` — `claude-code-local` / `codex-local` / `generic-cli` 等
+- `execution.candidate_adapters` — フォールバック順
+- `execution.required_capabilities` — `file_write` / `shell_exec` / `workspace_aware` 等
+- `workspace.workspace_policy` — `none` / `temp_dir` / `shared`
+- `workspace.share_with_steps` — 上流ステップのワークスペースを再利用
+- `approval.policy` — `read_only` / `ask_before_shell` / `allow_shell` / `allow_write`
+
+例えば以下のように1つのワークフロー内で:
+- **search step** → Gemini (HTTP provider)
+- **plan step** → Ollama `qwen2.5-coder:14b` (HTTP local)
+- **code step** → Claude Code CLI (`workspace_policy=temp_dir`, `allow_write`)
+- **verify step** → Codex CLI (`share_with_steps=[code_step]`, read-only)
+- **judge step** → Anthropic / OpenAI (hard rule: 強制 remote)
+
+ように混在させることが可能です。capability mismatch / cwd 不在 / 認証必要 のときは fail-fast で artifact metadata に `selection_reason` が記録されます。
+
+レガシー (execution_config 未設定) のステップは従来動作のまま、何も変わりません。
 
 ### Coordinator 観測層
 - ワークフロー開始時に **CoordinatorPlan** を生成（実行は既存の OrchestrationManager が担う）

@@ -1,5 +1,5 @@
-//! Claude Code (`claude`) adapter — Phase 3.2 will fully implement this.
-//! Phase 3.1 ships a working stub so the registry compiles end-to-end.
+//! Claude Code (`claude`) adapter — concrete implementation of
+//! `ExternalCliAdapter` for the local `claude` CLI.
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -65,7 +65,10 @@ impl ExternalCliAdapter for ClaudeCodeAdapter {
     }
 
     fn validate_environment(&self) -> Result<(), String> {
-        // Phase 3.2: real `which claude` check. Placeholder allows compile.
+        // TODO: real `which claude` check. Placeholder always succeeds
+        // so the registry can be constructed even on machines without
+        // `claude` installed; the runner will report MissingBinary on
+        // spawn failure.
         Ok(())
     }
 

@@ -1,4 +1,4 @@
-// Phase 4.6 — workflow step "実行ランタイム" form helper.
+// Workflow step "実行ランタイム" form helper.
 //
 // Usage from skills.js (or wherever the workflow skill editor lives):
 //
@@ -45,7 +45,7 @@
 
     const APPROVAL_OPTIONS = [
         { value: 'read_only', label: 'read_only (読み取りのみ)' },
-        { value: 'ask_before_shell', label: 'ask_before_shell (Phase 5 で確認モーダル)' },
+        { value: 'ask_before_shell', label: 'ask_before_shell (確認モーダルは未実装)' },
         { value: 'allow_shell', label: 'allow_shell (シェル許可)' },
         { value: 'allow_write', label: 'allow_write (ファイル書込み許可)' },
     ];

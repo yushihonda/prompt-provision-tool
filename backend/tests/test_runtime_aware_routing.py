@@ -1,4 +1,4 @@
-"""Tests for Phase 4.2 — resolve_execution_kind reads StepExecutionConfig."""
+"""resolve_execution_kind reads StepExecutionConfig per workflow step."""
 from __future__ import annotations
 
 import json

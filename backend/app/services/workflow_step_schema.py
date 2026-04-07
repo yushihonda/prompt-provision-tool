@@ -1,4 +1,4 @@
-"""Workflow step execution metadata schema (Phase 4.1).
+"""Workflow step execution metadata schema.
 
 Lives inside `WorkflowSkill.config_json` under the `execution_config`
 key. No DB migration — `config_json` is already a free-form Text column.

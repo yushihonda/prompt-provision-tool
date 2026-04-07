@@ -1,11 +1,11 @@
-//! Phase 1 entry point for external CLI execution — now a thin shim.
+//! Thin Tauri-command shim for external CLI execution.
 //!
-//! After Phase 3.2 the actual subprocess + capture + classification
-//! logic lives in `external_cli_runner.rs`, and concrete adapters live
-//! in `external_cli_adapters/`. This file only:
+//! The actual subprocess + capture + classification logic lives in
+//! `external_cli_runner.rs`, and concrete adapters live in
+//! `external_cli_adapters/`. This file only:
 //!
 //! - keeps the public Tauri command name `external_cli_run`
-//! - re-exports the Phase 3 types so other modules can `use crate::external_cli::*`
+//! - re-exports the shared types so other modules can `use crate::external_cli::*`
 //! - converts the incoming request into the registry-driven runner call
 
 use std::sync::atomic::AtomicBool;

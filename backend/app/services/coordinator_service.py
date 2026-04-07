@@ -817,7 +817,7 @@ def resolve_execution_provider(
 
 # ───────────────────────────────────────────────
 #  External CLI execution kind selection
-#  (Phase 3.4 — opt-in routing for Claude Code / Codex / Cursor / Generic)
+#  (opt-in routing for Claude Code / Codex / Generic external CLI runtimes)
 # ───────────────────────────────────────────────
 
 EXECUTION_KIND_HTTP_PROVIDER = "http_provider"
@@ -829,7 +829,7 @@ def _apply_step_config_to_task(task: Dict[str, Any], step_config) -> None:
     """Translate a parsed StepExecutionConfig into the legacy ad-hoc
     fields that the existing resolve_execution_kind body reads.
 
-    This keeps Phase 4.2 surgical: we don't rewrite the Phase 3 routing
+    This keeps the integration surgical: we don't rewrite the routing
     body, we just feed it the same shape it already understands.
     """
     exec_meta = step_config.execution
@@ -860,8 +860,8 @@ def _apply_step_config_to_task(task: Dict[str, Any], step_config) -> None:
     if approval.allow_shell or approval.policy == "allow_shell":
         task["allow_shell"] = True
 
-    # Phase 4.3 will allocate workspace rows here. For Phase 4.2 we just
-    # surface the metadata so the planner can decide.
+    # Workspace allocation happens via _maybe_allocate_step_workspace below.
+    # Here we just surface the metadata so the planner can decide.
     if workspace.workspace_policy != "none":
         task.setdefault("_workspace_policy", workspace.workspace_policy)
         task.setdefault("_workspace_share_with_steps", workspace.share_with_steps)
@@ -881,7 +881,7 @@ def _maybe_allocate_step_workspace(
     task: Dict[str, Any],
     step_config,
 ) -> None:
-    """Phase 4.3: allocate (or share) a CoordinatorWorkspace for a step
+    """Allocate (or share) a CoordinatorWorkspace for a step
     whose `workspace_policy` is not "none".
 
     Resolution order for `share_with_steps`:
@@ -957,18 +957,18 @@ def resolve_execution_kind(
 
     role = task.get("role", ROLE_WRITER)
 
-    # Phase 4.2: read step execution metadata from the task envelope.
+    # Read step execution metadata from the task envelope.
     # worker.py attaches `_step_execution_config` (a StepExecutionConfig)
     # before calling resolve_execution_kind. Legacy rows produce a
-    # default config, which is indistinguishable from before this PR.
+    # default config, indistinguishable from the legacy routing path.
     step_config = task.get("_step_execution_config")
     if isinstance(step_config, StepExecutionConfig) and not is_legacy_step(step_config):
         _apply_step_config_to_task(task, step_config)
-        # Phase 4.3: allocate (or share) a CoordinatorWorkspace for CLI
-        # steps that declared workspace_policy != "none". Judge tasks
-        # are excluded from external_cli below, so allocating a
-        # workspace for them is harmless but pointless — we still
-        # allocate so audit metadata is consistent.
+        # Allocate (or share) a CoordinatorWorkspace for steps that
+        # declared workspace_policy != "none". Judge tasks are excluded
+        # from external_cli below, so allocating a workspace for them
+        # is harmless but pointless — we still allocate so audit
+        # metadata stays consistent.
         _maybe_allocate_step_workspace(db, plan, task, step_config)
 
     # Hard rule: judge never goes external_cli even if opted in.
@@ -1019,7 +1019,7 @@ def resolve_execution_kind(
                     target = a
                     break
         if target is not None:
-            # Phase 4.4: approval policy enforcement.
+            # Approval policy enforcement.
             # If the step's required_capabilities exceed what the
             # selected adapter declares, fail fast before issuing the
             # bundle. The Rust capability gate would catch this too,
@@ -1241,7 +1241,7 @@ def find_workspace_by_task_id(
     plan_id: str,
     task_id: str,
 ) -> Optional[CoordinatorWorkspace]:
-    """Phase 4.3: locate an existing workspace allocated for the named
+    """Locate an existing workspace allocated for the named
     upstream task. Used by `share_with_steps` so a downstream
     verification step inherits the same workspace as the code step.
     """

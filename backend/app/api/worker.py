@@ -483,9 +483,9 @@ async def _get_execution_bundle_inner(
                     None,
                 )
                 if matched_task:
-                    # Phase 4.2: attach parsed StepExecutionConfig from
-                    # the WorkflowSkill row so resolve_execution_kind
-                    # can route per-step. Legacy rows yield the default
+                    # Attach the parsed StepExecutionConfig from the
+                    # WorkflowSkill row so resolve_execution_kind can
+                    # route per-step. Legacy rows yield the default
                     # config, which behaves identically to before.
                     try:
                         from app.services.workflow_step_schema import parse_execution_config
@@ -505,7 +505,7 @@ async def _get_execution_bundle_inner(
                             execution_id, exc,
                         )
 
-                    # Phase 3.4: check whether this task opts in to external CLI.
+                    # Check whether this task opts in to external CLI execution.
                     kind_result = resolve_execution_kind(
                         db, plan, matched_task,
                         retry_count=int(getattr(execution, "retry_count", 0) or 0),

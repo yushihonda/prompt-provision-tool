@@ -1,4 +1,4 @@
-// Phase 4.5 — runtime badge helper.
+// Runtime badge helper.
 // Renders a compact "runtime" chip from artifact extra_metadata so the
 // workflow timeline / execution detail can show which engine ran each
 // step (claude_code / codex / ollama / openai / gemini / etc.).

@@ -17,8 +17,8 @@
 - **Registry** (`external_cli_registry.rs`) — 型付き `Arc<dyn ExternalCliAdapter>` マップ、`with_defaults()` で3 runtime を登録
 - **Concrete adapters** — Claude Code (完全実装) / Codex (scaffold、`codex --help` での flag 検証は TODO) / Generic (`/bin/sh -c`, テスト / 任意 CLI に利用)
 - **Generic runner** (`external_cli_runner.rs`) — runtime非依存の spawn / capture / timeout / cwd 検証 / changed_files diff / output truncation / unified event emission
-- **Phase 1 パイプモード** (`external_cli.rs`) — `tokio::process::Command` による stdout/stderr ラインバッファ capture + xterm.js 読み取り専用ターミナル
-- **Phase 2 PTY モード** (`external_cli_pty.rs`) — `portable-pty` を使った duplex PTY、キー入力 → 子プロセス、ファイル編集確認等のインタラクティブなワークフローに対応
+- **パイプモード** (`external_cli.rs` + `external_cli_runner.rs`) — `tokio::process::Command` による stdout/stderr ラインバッファ capture + xterm.js 読み取り専用ターミナル
+- **PTY モード** (`external_cli_pty.rs`) — `portable-pty` を使った duplex PTY、キー入力 → 子プロセス、ファイル編集確認等のインタラクティブなワークフローに対応
 - **Capability gate** — タスクの `required_capabilities` と adapter の declared capabilities を比較、mismatch は spawn 前に `CapabilityMismatch` で拒否 + 失敗イベント emit
 - **Unified event family** — `external_cli:planned/capability_checked/started/stdout_chunk/stderr_chunk/finished/failed` の7種、payload に `runtime` / `adapter_id` / `transport=pipe|pty` を含む
 - **Backend routing** — `resolve_execution_kind()` で `http_provider` / `external_cli` / `internal` の3分岐、judge タスクは hard rule で external_cli から除外
@@ -28,11 +28,24 @@
 - **Nav** — "External CLI" ナビエントリを追加
 - **既定モデル** — seed adapters に `claude-code-local` / `codex-local` を登録
 
+### Added — Mixed runtime workflow execution
+- **Step execution metadata schema** (`backend/app/services/workflow_step_schema.py`) — `StepExecutionConfig` pydantic model with `execution` / `workspace` / `approval` / `artifact_contract` blocks, persisted inside the existing `WorkflowSkill.config_json` (zero DB migration)
+- **Legacy fall-through** — workflow steps without `execution_config` resolve to the default config and follow the existing routing path with no behavior change
+- **Per-step routing** — `coordinator_service.resolve_execution_kind` reads the parsed `StepExecutionConfig` from the matched task and translates it to runtime selection
+- **Adapter resolution order** — `preferred_adapter` → `candidate_adapters` (in order) → `cli_runtime_hint` (config.runtime match)
+- **Stable selection_reason vocabulary** — `step_pref:external_cli:NAME`, `step_candidate:external_cli:NAME`, `step_capability_mismatch:NAME:missing=...`, `judge_forced_remote`
+- **Workspace allocation** (`_maybe_allocate_step_workspace`) — `temp_dir` step は planner 時に `CoordinatorWorkspace` 行を予約。`share_with_steps` で上流 task の workspace を再利用、cleaned 行はスキップ
+- **Approval policy enforcement** — `allow_writes` / `allow_shell` がadapterのcapabilityを越える場合、planner時点で`http_provider`にfall backし`selection_reason`を記録
+- **Hard rule** — judge タスクは `prefer_external_cli=true` でも強制的に remote http_provider
+- **Unified artifact provenance base** — `build_external_cli_provenance` + 新 `build_http_provider_provenance` が共通base keys (`step_execution_kind` / `selection_reason` / `adapter_id` / `runtime` 等) を出力、両 runtime kind で artifact reader が統一動作
+- **Frontend runtime badge** (`frontend/js/runtime-badge.js`) — artifact `extra_metadata` から `cli://claude` / `cli://codex` / `http://local` / `http://remote` チップを描画
+- **Admin form helper** (`frontend/admin/js/execution-config-form.js`) — workflow skill 編集モーダル用の `renderForm` / `collectForm`、defaults は legacy 動作と一致
+
 ### Tests
 - sidecar: 28 (Ollama preflight + runtime fallback)
-- backend: 22 (local adapter health + external CLI adapter seed + routing + provenance)
+- backend: 51 (local adapter health + external CLI adapter seed + routing + provenance + mixed-runtime workflow schema/routing/workspace/approval)
 - Rust: 31 (trait, registry, runner, all adapters, PTY, local LLM)
-- 計 81 unit tests pass + 実機 `claude -p "..."` smoke 成功
+- 計 110 unit tests pass + 実機 `claude -p "..."` smoke 成功
 
 ## [3.0.0] - 2026-04-06
 

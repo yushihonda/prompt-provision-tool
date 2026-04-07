@@ -1,7 +1,7 @@
 //! Shared types and the `ExternalCliAdapter` trait.
 //!
-//! Phase 3 — generalize the Claude-Code-only path so Codex / Cursor /
-//! Generic CLIs can plug in via the same interface.
+//! Generalizes the Claude-Code-only path so Codex / Generic CLIs can
+//! plug in via the same interface.
 //!
 //! - shared enums (`ExternalCliRuntimeKind`, `ExternalCliCapability`,
 //!   `ExternalCliExecutionStatus`)
@@ -10,7 +10,7 @@
 //! - the generic runner lives in `external_cli_runner.rs` and consumes
 //!   anything that implements this trait
 //!
-//! The Phase 1 module `external_cli.rs` keeps its public Tauri command
+//! The `external_cli.rs` module keeps its public Tauri command
 //! signatures; internally it now constructs a request and dispatches via
 //! the registry + this trait.
 

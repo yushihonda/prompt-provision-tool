@@ -1,4 +1,4 @@
-"""Phase 4.3 — workspace allocation + share_with_steps."""
+"""Workspace allocation + share_with_steps for workflow steps."""
 from __future__ import annotations
 
 import json

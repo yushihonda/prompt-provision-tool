@@ -1,6 +1,6 @@
 //! Desktop-side consumer for `execution_kind=external_cli` bundles.
 //!
-//! Phase 3.5 — when the backend bundle response carries
+//! When the backend bundle response carries
 //! `execution_kind="external_cli"` + `external_cli_payload`, the sidecar
 //! returns a `delegated_to_external_cli_runtime` marker and stops. This
 //! Tauri command picks the same execution up, runs it through the
@@ -8,10 +8,11 @@
 //! existing `/api/worker/executions/{id}/complete` endpoint with an
 //! `external_cli_meta` field.
 //!
-//! Phase 3.5 ships **on-demand fetch only** — the frontend explicitly
-//! invokes `consume_external_cli_bundle(execution_id)` after observing
-//! that the execution is sitting in the delegated state. A background
-//! polling loop is a small follow-up; the contract here is the same.
+//! Currently this ships **on-demand fetch only** — the frontend
+//! explicitly invokes `consume_external_cli_bundle(execution_id)`
+//! after observing that the execution is sitting in the delegated
+//! state. A background polling loop is a small follow-up; the
+//! contract here is the same.
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;

@@ -92,11 +92,22 @@ Coordinator 層はワークフロー実行を**観測してメタデータを蓄
 | `external_cli` | `external_cli_payload` | desktop Rust runtime | **Claude Code / Codex / Generic CLI** |
 | `internal` | なし | sidecar 内蔵 CLI | legacy `local_worker.provider_adapter` |
 
-### 選択ルール (初期実装、opt-in)
-1. `judge` ロールは **強制的に** `http_provider` (remote_only) — 個人サブスクを judge に使わない
-2. タスクに `prefer_external_cli=true` + `cli_runtime_hint`(`claude_code`/`codex`/`generic`) があり、対応する adapter が enabled → `external_cli`
-3. `cwd` が無いタスクは external_cli に行かない (sandbox 安全確保)
-4. それ以外は既存 `resolve_execution_provider` にフォールスルー → `http_provider`
+### 選択ルール (opt-in)
+1. `judge` ロールは **強制的に** `http_provider` (remote_only) — 個人サブスクを judge に使わない (hard rule)
+2. ワークフロースキルの `config_json.execution_config.execution.execution_kind == "external_cli"` で、`preferred_adapter` / `candidate_adapters` / `cli_runtime_hint` のいずれかが解決可能で `cwd` が指定されている → `external_cli`
+3. capability mismatch (step の `required_capabilities` が選ばれた adapter の declared capabilities を超える) → planner時点で `step_capability_mismatch:NAME:missing=...` を `selection_reason` に書き込み `http_provider` に fall back
+4. レガシー (execution_config 未設定) のステップは既存 `resolve_execution_provider` にフォールスルー → `http_provider`
+
+### Mixed runtime workflow execution
+
+ステップ単位の実行ランタイム metadata は `WorkflowSkill.config_json` の `execution_config` キーに JSON として持ちます。DBマイグレーション無しで以下を宣言できます:
+
+- `execution.execution_kind` (`auto` / `provider` / `external_cli`)
+- `execution.preferred_adapter` / `execution.candidate_adapters` / `execution.required_capabilities`
+- `workspace.workspace_policy` (`none` / `temp_dir` / `shared`) + `workspace.share_with_steps`
+- `approval.policy` (`read_only` / `ask_before_shell` / `allow_shell` / `allow_write`)
+
+これにより1つのワークフロー内で「search step → Gemini」「plan step → Ollama qwen2.5-coder」「code step → Claude Code (workspace temp_dir, allow_write)」「verify step → Codex (share_with_steps=[code_step], read_only)」「judge step → 強制 remote」のように混在実行ができます。詳細は [`coordinator.md`](./coordinator.md) の "Mixed runtime workflow execution" 節を参照。
 
 ### External CLI 実行所有権
 Sidecar は `execution_kind=external_cli` の bundle を見たら `delegated_to_external_cli_runtime` marker を返して何もしません。desktop Rust の `consume_external_cli_bundle` Tauri command が同じ execution を fetch して registry 経由で実行し、completion を POST します。これにより Rust = runtime truth の原則を保ちつつ、外部 CLI 実行の所有権が明確に分離されます。

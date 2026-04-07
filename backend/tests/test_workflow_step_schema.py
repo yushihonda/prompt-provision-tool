@@ -1,4 +1,4 @@
-"""Tests for workflow_step_schema (Phase 4.1)."""
+"""Tests for workflow_step_schema."""
 from __future__ import annotations
 
 import json
@@ -117,8 +117,8 @@ class WorkflowStepSchemaTests(unittest.TestCase):
         self.assertEqual(from_helper.model_dump(), from_parser.model_dump())
 
     def test_admin_form_round_trip_shape(self):
-        """Phase 4.6 — the admin form sends the same shape that the
-        parser produces. Lock the contract."""
+        """The admin form sends the same shape that the parser
+        produces. Lock the contract."""
         from_form = {
             "schema_version": "1.0",
             "execution": {

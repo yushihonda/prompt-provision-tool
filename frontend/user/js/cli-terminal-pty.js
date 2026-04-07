@@ -1,4 +1,4 @@
-// Phase 2: Claude Code in a real PTY (duplex xterm.js terminal).
+// Claude Code in a real PTY (duplex xterm.js terminal).
 // Calls Tauri commands external_cli_pty_{spawn,write,resize,kill}.
 
 (function () {

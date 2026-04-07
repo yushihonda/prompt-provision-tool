@@ -1,6 +1,7 @@
-// Claude Code CLI terminal viewer (Phase 1: read-only streaming via Tauri events).
+// External CLI terminal viewer — read-only streaming via Tauri events.
 // xterm.js is loaded from CDN by cli-terminal.html.
-// Phase 2 will add PTY duplex (keystroke -> child stdin).
+// The companion file cli-terminal-pty.js handles full PTY duplex
+// (keystroke -> child stdin) on the same page.
 
 (function () {
     'use strict';
@@ -177,7 +178,7 @@
             return;
         }
 
-        // Phase 3.7: read runtime selector — adapter_id and command come
+        // Read runtime selector — adapter_id and command come
         // from the registry on the Rust side, so we only need to send the
         // adapter_id that maps to the chosen runtime.
         const runtimeSel = document.getElementById('cli-runtime-select');
@@ -239,7 +240,7 @@
             cwdEl.value = '';
             cwdEl.placeholder = '/Users/you/your-project';
         }
-        // Phase 3.7: keep adapter label in sync with the runtime selector.
+        // Keep adapter label in sync with the runtime selector.
         const runtimeSel = document.getElementById('cli-runtime-select');
         const adapterLabel = document.getElementById('cli-runtime-adapter');
         function updateAdapterLabel() {

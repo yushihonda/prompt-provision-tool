@@ -518,7 +518,7 @@ async def _run_existing_execution(
     try:
         bundle = await _fetch_bundle(api_base, auth_token, execution_id)
 
-        # Phase 3.5: external_cli bundles are owned by the desktop Rust
+        # external_cli bundles are owned by the desktop Rust
         # runtime, not the sidecar. Skip cleanly so the sidecar worker
         # pool moves on to the next bundle and the same execution stays
         # claimable by the Rust side. We do NOT POST a completion here

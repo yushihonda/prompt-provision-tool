@@ -1,9 +1,9 @@
 //! OpenAI Codex CLI (`codex`) adapter — scaffold.
 //!
-//! Phase 3.3 fills in the exact flag layout against `codex --help`. The
+//! TODO: verify the exact flag layout against `codex --help`. The
 //! current scaffold uses a best-guess `-p <prompt>` invocation that
-//! matches Claude's interface; if Codex requires a different layout,
-//! only this file needs to change.
+//! matches Claude Code's interface; if Codex requires a different
+//! layout, only this file needs to change.
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -67,8 +67,9 @@ impl ExternalCliAdapter for CodexAdapter {
     }
 
     fn validate_environment(&self) -> Result<(), String> {
-        // Phase 3.3 will probe `which codex`. Phase 3.1 leaves it permissive
-        // so registry construction does not fail on machines without codex.
+        // TODO: probe `which codex`. Currently permissive so registry
+        // construction does not fail on machines without `codex`; the
+        // runner reports MissingBinary on spawn failure instead.
         Ok(())
     }
 
@@ -78,7 +79,7 @@ impl ExternalCliAdapter for CodexAdapter {
     ) -> Result<(String, Vec<String>), String> {
         let mut args: Vec<String> = self.cfg.default_args.clone();
         args.extend(req.args.iter().cloned());
-        // TODO(phase-3.3): verify against `codex --help`. If Codex uses
+        // TODO: verify against `codex --help`. If Codex uses
         // a subcommand like `codex exec` or accepts the prompt via stdin,
         // adjust here. Until then mirror Claude's `-p <prompt>` shape.
         args.push("-p".into());
@@ -128,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_match_phase_plan() {
+    fn capabilities_declared_correctly() {
         let a = CodexAdapter::new();
         let caps = &a.adapter_config().capabilities;
         assert!(caps.contains(&ExternalCliCapability::FileWrite));

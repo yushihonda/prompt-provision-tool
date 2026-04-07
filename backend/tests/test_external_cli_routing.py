@@ -1,4 +1,4 @@
-"""Tests for resolve_execution_kind (Phase 3.4)."""
+"""Tests for resolve_execution_kind."""
 from __future__ import annotations
 
 import json
