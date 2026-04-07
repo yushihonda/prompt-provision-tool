@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -613,7 +613,7 @@ def record_artifact(
 #  Provider routing
 # ───────────────────────────────────────────────
 
-def route_provider_mode(
+def route_provider_mode_with_reason(
     plan: CoordinatorPlan,
     *,
     role: str,
@@ -621,8 +621,30 @@ def route_provider_mode(
     impact_level: str = "medium",
     retry_count: int = 0,
     writes_files: bool = False,
-) -> str:
-    """provider_policy のルールに従って provider_mode を決定する"""
+    cheap: bool = False,
+) -> Tuple[str, str]:
+    """Hard-rule + policy-rule routing.
+
+    Returns (provider_mode, selection_reason). Selection reasons are stable
+    machine-readable strings so they can be persisted for audit.
+    """
+    # Hard rules — early return. These cannot be overridden by policy.
+    if role == ROLE_JUDGE:
+        return PROVIDER_REMOTE_ONLY, "judge_forced_remote"
+    if writes_files:
+        return PROVIDER_REMOTE_ONLY, "writes_files_forced_remote"
+    if retry_count >= 2:
+        return PROVIDER_REMOTE_ONLY, "retry_escalation"
+    if impact_level == "high":
+        return PROVIDER_REMOTE_ONLY, "high_impact_remote"
+
+    # Soft preference for clearly-cheap research-style work.
+    if cheap or impact_level == "low":
+        if role in (ROLE_RESEARCHER, ROLE_WRITER):
+            return PROVIDER_LOCAL_PREFERRED, (
+                "cheap_local" if cheap else "low_impact_local"
+            )
+
     try:
         policy = json.loads(plan.provider_policy or "{}")
     except Exception:
@@ -631,9 +653,9 @@ def route_provider_mode(
     default = policy.get("default_mode", PROVIDER_REMOTE_ONLY)
     rules = policy.get("escalation_rules", [])
 
-    # ルールを順番に評価。マッチした最後のルールを採用 (上書き優先順)
     selected = default
-    for rule in rules:
+    matched_index = -1
+    for idx, rule in enumerate(rules):
         when = rule.get("when", {})
         if "role" in when and when["role"] != role:
             continue
@@ -646,7 +668,151 @@ def route_provider_mode(
         if "retry_count_gte" in when and retry_count < int(when["retry_count_gte"]):
             continue
         selected = rule.get("switch_to", selected)
-    return selected
+        matched_index = idx
+
+    reason = f"policy_rule:{matched_index}" if matched_index >= 0 else "policy_default"
+    return selected, reason
+
+
+def route_provider_mode(
+    plan: CoordinatorPlan,
+    *,
+    role: str,
+    artifact_type: str = "draft",
+    impact_level: str = "medium",
+    retry_count: int = 0,
+    writes_files: bool = False,
+) -> str:
+    """Backwards-compatible wrapper. Returns mode only."""
+    mode, _ = route_provider_mode_with_reason(
+        plan,
+        role=role,
+        artifact_type=artifact_type,
+        impact_level=impact_level,
+        retry_count=retry_count,
+        writes_files=writes_files,
+    )
+    return mode
+
+
+def resolve_execution_provider_bundle(
+    db: Session,
+    plan: CoordinatorPlan,
+    task: Dict[str, Any],
+    *,
+    retry_count: int = 0,
+) -> Dict[str, Any]:
+    """Resolve both selected provider and (when policy allows) a remote
+    fallback provider for runtime fallback.
+
+    Returns a dict with:
+        provider_payload: the selected provider's payload (or None for cli/sdk)
+        fallback_provider_payload: the remote fallback payload, or None
+        provider_mode_selected: provider mode chosen by routing
+        provider_selection_reason: machine-readable reason
+        selected_adapter_id / selected_adapter_name
+        fallback_adapter_id / fallback_adapter_name
+
+    Rules:
+        - remote_only or local_only: no fallback payload
+        - local_preferred + local adapter found: attach remote fallback
+        - local_preferred + no local adapter (pre-routing fallback already
+          downgraded to remote_only): no runtime fallback payload
+    """
+    from app.services.coordinator_extensions import (
+        find_adapter_for_task,
+        build_provider_payload,
+    )
+
+    primary = resolve_execution_provider(db, plan, task, retry_count=retry_count)
+    fallback_payload = None
+    fallback_adapter_id = None
+    fallback_adapter_name = None
+
+    if (
+        primary["provider_mode"] == PROVIDER_LOCAL_PREFERRED
+        and not primary["fallback_occurred"]
+    ):
+        # Look up a remote_only adapter usable for this role.
+        role = task.get("role", ROLE_WRITER)
+        remote_adapter = find_adapter_for_task(
+            db, role=role, provider_mode=PROVIDER_REMOTE_ONLY, capability=None
+        )
+        if remote_adapter is not None:
+            fallback_payload = build_provider_payload(
+                remote_adapter, model=task.get("model")
+            )
+            fallback_adapter_id = remote_adapter.adapter_id
+            fallback_adapter_name = remote_adapter.name
+
+    return {
+        "provider_payload": primary["provider_payload"],
+        "fallback_provider_payload": fallback_payload,
+        "provider_mode_selected": primary["provider_mode"],
+        "provider_selection_reason": primary["selection_reason"],
+        "selected_adapter_id": primary["adapter_id"],
+        "selected_adapter_name": primary["adapter_name"],
+        "fallback_adapter_id": fallback_adapter_id,
+        "fallback_adapter_name": fallback_adapter_name,
+        "pre_routing_fallback_occurred": primary["fallback_occurred"],
+    }
+
+
+def resolve_execution_provider(
+    db: Session,
+    plan: CoordinatorPlan,
+    task: Dict[str, Any],
+    *,
+    retry_count: int = 0,
+) -> Dict[str, Any]:
+    """Pick adapter + build provider_payload for one task.
+
+    Returns a dict with keys: provider_mode, selection_reason, adapter_id,
+    adapter_name, provider_payload, fallback_occurred.
+
+    Fallback rule: if mode==local_preferred but no local adapter is available,
+    we transparently fall back to remote_only and append `+fallback_no_adapter`
+    to the selection reason.
+    """
+    from app.services.coordinator_extensions import (
+        find_adapter_for_task,
+        build_provider_payload,
+    )
+
+    role = task.get("role", ROLE_WRITER)
+    mode, reason = route_provider_mode_with_reason(
+        plan,
+        role=role,
+        artifact_type=task.get("expected_artifact_type", "draft"),
+        impact_level=task.get("impact_level", "medium"),
+        retry_count=retry_count,
+        writes_files=bool(task.get("writes_files", False)),
+        cheap=bool(task.get("cheap", False)),
+    )
+
+    capability = "openai_compat" if mode == PROVIDER_LOCAL_PREFERRED else None
+    adapter = find_adapter_for_task(
+        db, role=role, provider_mode=mode, capability=capability
+    )
+    fallback_occurred = False
+    if adapter is None and mode == PROVIDER_LOCAL_PREFERRED:
+        # No local adapter available — fall back to remote.
+        mode = PROVIDER_REMOTE_ONLY
+        reason = f"{reason}+fallback_no_adapter"
+        fallback_occurred = True
+        adapter = find_adapter_for_task(
+            db, role=role, provider_mode=mode, capability=None
+        )
+
+    payload = build_provider_payload(adapter, model=task.get("model"))
+    return {
+        "provider_mode": mode,
+        "selection_reason": reason,
+        "adapter_id": adapter.adapter_id if adapter else None,
+        "adapter_name": adapter.name if adapter else None,
+        "provider_payload": payload,
+        "fallback_occurred": fallback_occurred,
+    }
 
 
 # ───────────────────────────────────────────────

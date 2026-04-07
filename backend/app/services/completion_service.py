@@ -258,6 +258,7 @@ def finalize_execution(
     status_result: str = "success",
     error_message: Optional[str] = None,
     template_text: Optional[str] = None,
+    provider_meta: Optional[dict] = None,
 ) -> None:
     """
     実行結果を DB に保存し、アカウント集計を更新する。
@@ -320,13 +321,29 @@ def finalize_execution(
     # CoordinatorArtifact 生成 (成功した execution の出力を構造化保存)
     if status_result == "success" and execution.workflow_execution_id:
         try:
-            _record_coordinator_artifact(db, execution, output, model_used)
+            _record_coordinator_artifact(
+                db, execution, output, model_used,
+                provider_meta=provider_meta,
+            )
         except Exception as e:
             logger.warning(f"CoordinatorArtifact recording failed for execution {execution.id}: {e}")
 
 
-def _record_coordinator_artifact(db: Session, execution: Execution, output: str, model_used: str) -> None:
-    """成功したExecutionに対応するCoordinatorArtifactを生成する"""
+def _record_coordinator_artifact(
+    db: Session,
+    execution: Execution,
+    output: str,
+    model_used: str,
+    *,
+    provider_meta: Optional[dict] = None,
+) -> None:
+    """成功したExecutionに対応するCoordinatorArtifactを生成する.
+
+    provider_meta が渡された場合 (sidecar 実行結果由来) はそれをそのまま記録する。
+    渡されない場合は legacy 経路 — routing を再評価して selected 情報を埋める。
+    legacy 経路は execution result から actual を取れない過渡期のためだけに残す。
+    TODO: legacy 経路は将来的に削除する。
+    """
     from app.services.coordinator_service import (
         get_plan_by_workflow_execution,
         record_artifact,
@@ -349,14 +366,105 @@ def _record_coordinator_artifact(db: Session, execution: Execution, output: str,
 
     summary = (output or "")[:200] if output else None
 
+    # Build provider provenance metadata. Prefer the actual provider info
+    # returned by the execution result over re-running routing logic.
+    provenance: dict = {}
+    routing_provider_mode: Optional[str] = None
+    if provider_meta:
+        # Authoritative path: use what actually executed.
+        provenance.update(
+            {
+                "selected_provider_mode": provider_meta.get("selected_provider_mode"),
+                "selected_adapter_id": provider_meta.get("selected_adapter_id"),
+                "selected_adapter_name": provider_meta.get("selected_adapter_name"),
+                "selected_model": provider_meta.get("selected_model"),
+                "selected_base_url": provider_meta.get("selected_base_url"),
+                "provider_selection_reason": provider_meta.get("provider_selection_reason"),
+                "actual_provider_mode": provider_meta.get("actual_provider_mode"),
+                "actual_adapter_id": provider_meta.get("actual_adapter_id"),
+                "actual_adapter_name": provider_meta.get("actual_adapter_name"),
+                "actual_model": provider_meta.get("actual_model"),
+                "actual_base_url": provider_meta.get("actual_base_url"),
+                "actual_transport": provider_meta.get("actual_transport"),
+                "fallback_applied": provider_meta.get("fallback_applied", False),
+                "fallback_from_adapter_id": provider_meta.get("fallback_from_adapter_id"),
+                "fallback_to_adapter_id": provider_meta.get("fallback_to_adapter_id"),
+                "fallback_reason": provider_meta.get("fallback_reason"),
+                "provider_attempt_count": provider_meta.get("provider_attempt_count", 1),
+                "preflight_status": provider_meta.get("preflight_status"),
+                "local_error_reason": provider_meta.get("local_error_reason"),
+                "local_model_requested": provider_meta.get("local_model_requested"),
+            }
+        )
+        routing_provider_mode = provider_meta.get("actual_provider_mode")
+        logger.info(
+            "artifact_recorded execution_id=%s actual_adapter=%s fallback_applied=%s",
+            execution.id,
+            provider_meta.get("actual_adapter_name"),
+            provider_meta.get("fallback_applied"),
+        )
+    else:
+        # Legacy path: no execution-result provenance available. Re-run routing
+        # to at least populate selected_*. Marked legacy on purpose.
+        # TODO: remove once all provider paths emit provider_meta.
+        try:
+            if execution.workflow_skill_id:
+                from app.services.coordinator_service import resolve_execution_provider
+                try:
+                    plan_tasks = json.loads(plan.tasks or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    plan_tasks = []
+                matched_task = next(
+                    (
+                        t for t in plan_tasks
+                        if t.get("workflow_skill_id") == execution.workflow_skill_id
+                    ),
+                    None,
+                )
+                if matched_task:
+                    routing = resolve_execution_provider(
+                        db, plan, matched_task,
+                        retry_count=int(getattr(execution, "retry_count", 0) or 0),
+                    )
+                    routing_provider_mode = routing.get("provider_mode")
+                    provenance.update(
+                        {
+                            "selected_provider_mode": routing.get("provider_mode"),
+                            "selected_adapter_id": routing.get("adapter_id"),
+                            "selected_adapter_name": routing.get("adapter_name"),
+                            "provider_selection_reason": routing.get("selection_reason"),
+                            "fallback_applied": routing.get("fallback_occurred", False),
+                            "legacy_metadata_path": True,
+                        }
+                    )
+                    payload = routing.get("provider_payload") or {}
+                    if payload:
+                        provenance["selected_base_url"] = payload.get("base_url")
+                        provenance["selected_model"] = payload.get("model")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "legacy provider routing metadata skipped for execution %s: %s",
+                execution.id, exc,
+            )
+
+    # Task / workflow context for traceability (task_id was already computed above).
+    extra_metadata = {
+        "agent_profile": profile,
+        "skill_order": execution.skill_order,
+        "task_role": role,
+        "task_id": task_id,
+        "workflow_run_id": execution.workflow_execution_id,
+    }
+    extra_metadata.update(provenance)
+
     artifact = record_artifact(
         db, plan.plan_id, task_id, role, artifact_type,
         execution_id=execution.id,
         summary=summary,
         inline_content=output,
-        provider_mode=None,
+        provider_mode=routing_provider_mode,
         model_hint=model_used,
-        extra_metadata={"agent_profile": profile, "skill_order": execution.skill_order},
+        extra_metadata=extra_metadata,
     )
     record_event(
         db, plan.plan_id, EVENT_TASK_FINISHED,

@@ -74,6 +74,9 @@ class SkillRunResult:
     provider_error_message: str | None = None
     retry_reason: str | None = None
     token_accounting_source: str = "unavailable"
+    # Selected vs actual provider provenance (runtime fallback). Populated by
+    # the http execution path. Other paths leave this None.
+    provider_meta: dict[str, Any] | None = None
 
     def as_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -163,6 +166,210 @@ def _classify_provider_failure(error_message: str) -> tuple[str, str]:
     return "provider_local_environment_error", "local_environment_error"
 
 
+def _payload_to_actual_meta(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "actual_provider_mode": payload.get("provider_mode_selected") or payload.get("provider_mode"),
+        "actual_adapter_id": payload.get("adapter_id"),
+        "actual_adapter_name": payload.get("adapter_name"),
+        "actual_model": payload.get("model"),
+        "actual_base_url": payload.get("base_url"),
+        "actual_transport": payload.get("transport"),
+    }
+
+
+def _payload_to_selected_meta(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "selected_provider_mode": payload.get("provider_mode_selected") or payload.get("provider_mode"),
+        "selected_adapter_id": payload.get("adapter_id"),
+        "selected_adapter_name": payload.get("adapter_name"),
+        "selected_model": payload.get("model"),
+        "selected_base_url": payload.get("base_url"),
+        "provider_selection_reason": payload.get("provider_selection_reason"),
+    }
+
+
+def _execute_http_provider(
+    provider_payload: dict[str, Any],
+    *,
+    final_prompt: str,
+    bundle_model: str,
+    execution_id: int,
+):
+    """Run a single HTTP provider attempt and return the ProviderResponse.
+
+    Sync HTTP call wrapped so that runtime-fallback orchestration can drive
+    multiple provider attempts uniformly. Kept thin on purpose: any
+    provider-side error classification lives in providers.errors.
+    """
+    provider = create_provider("http", provider_payload)
+    return provider.run(
+        ProviderRequest(
+            prompt=final_prompt,
+            model=str(provider_payload.get("model") or bundle_model or ""),
+            metadata={"execution_id": execution_id},
+        )
+    )
+
+
+async def _run_with_runtime_fallback(
+    *,
+    provider_payload: dict[str, Any],
+    fallback_provider_payload: dict[str, Any] | None,
+    final_prompt: str,
+    bundle_model: str,
+    execution_id: int,
+):
+    """Execute via the selected HTTP provider, falling back once on
+    recoverable failures when policy allows.
+
+    Returns (provider_response, provider_meta) where provider_response is
+    the ProviderResponse used for downstream completion, and provider_meta
+    is a dict carrying selected vs actual provider provenance + fallback
+    diagnostics.
+    """
+    from app.providers.errors import (
+        RecoverableProviderError,
+        classify_provider_response,
+    )
+
+    selected_meta = _payload_to_selected_meta(provider_payload)
+    selected_mode = (
+        provider_payload.get("provider_mode_selected")
+        or provider_payload.get("provider_mode")
+        or "remote_only"
+    )
+    local_model_requested = str(
+        provider_payload.get("model") or bundle_model or ""
+    )
+
+    def _preflight_status_from_error(reason: str | None) -> str:
+        if reason is None:
+            return "ok"
+        if reason == "connect_error":
+            return "unreachable"
+        if reason == "model_not_found":
+            return "model_missing"
+        return "ok"
+
+    print(
+        f"[sidecar-py] provider_attempt execution_id={execution_id} "
+        f"adapter={provider_payload.get('adapter_name')} attempt=1",
+        file=sys.stderr,
+        flush=True,
+    )
+    primary_response = _execute_http_provider(
+        provider_payload,
+        final_prompt=final_prompt,
+        bundle_model=bundle_model,
+        execution_id=execution_id,
+    )
+    primary_error = classify_provider_response(primary_response)
+
+    if primary_error is None:
+        meta = {
+            **selected_meta,
+            **_payload_to_actual_meta(provider_payload),
+            "fallback_applied": False,
+            "fallback_from_adapter_id": None,
+            "fallback_to_adapter_id": None,
+            "fallback_reason": None,
+            "provider_attempt_count": 1,
+            "preflight_status": "ok",
+            "local_error_reason": None,
+            "local_model_requested": local_model_requested if selected_mode in ("local_preferred", "local_only") else None,
+        }
+        return primary_response, meta
+
+    print(
+        f"[sidecar-py] provider_runtime_failure execution_id={execution_id} "
+        f"adapter={provider_payload.get('adapter_name')} reason={primary_error.reason}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    fallback_eligible = (
+        isinstance(primary_error, RecoverableProviderError)
+        and selected_mode == "local_preferred"
+        and fallback_provider_payload is not None
+    )
+    if not fallback_eligible:
+        meta = {
+            **selected_meta,
+            **_payload_to_actual_meta(provider_payload),
+            "fallback_applied": False,
+            "fallback_from_adapter_id": None,
+            "fallback_to_adapter_id": None,
+            "fallback_reason": primary_error.reason,
+            "provider_attempt_count": 1,
+            "preflight_status": _preflight_status_from_error(primary_error.reason),
+            "local_error_reason": primary_error.reason if selected_mode in ("local_preferred", "local_only") else None,
+            "local_model_requested": local_model_requested if selected_mode in ("local_preferred", "local_only") else None,
+        }
+        return primary_response, meta
+
+    print(
+        f"[sidecar-py] provider_fallback_start execution_id={execution_id} "
+        f"from={provider_payload.get('adapter_name')} "
+        f"to={fallback_provider_payload.get('adapter_name')}",
+        file=sys.stderr,
+        flush=True,
+    )
+    fallback_response = _execute_http_provider(
+        fallback_provider_payload,
+        final_prompt=final_prompt,
+        bundle_model=bundle_model,
+        execution_id=execution_id,
+    )
+    fallback_error = classify_provider_response(fallback_response)
+
+    if fallback_error is None:
+        print(
+            f"[sidecar-py] provider_fallback_success execution_id={execution_id} "
+            f"actual_adapter={fallback_provider_payload.get('adapter_name')} attempts=2",
+            file=sys.stderr,
+            flush=True,
+        )
+        meta = {
+            **selected_meta,
+            **_payload_to_actual_meta(fallback_provider_payload),
+            "fallback_applied": True,
+            "fallback_from_adapter_id": provider_payload.get("adapter_id"),
+            "fallback_to_adapter_id": fallback_provider_payload.get("adapter_id"),
+            "fallback_reason": primary_error.reason,
+            "provider_attempt_count": 2,
+            "preflight_status": _preflight_status_from_error(primary_error.reason),
+            "local_error_reason": primary_error.reason,
+            "local_model_requested": local_model_requested,
+        }
+        return fallback_response, meta
+
+    print(
+        f"[sidecar-py] provider_fallback_failure execution_id={execution_id} "
+        f"first_reason={primary_error.reason} second_reason={fallback_error.reason}",
+        file=sys.stderr,
+        flush=True,
+    )
+    # Return the fallback response so the existing error reporting path runs,
+    # but augment its message so operators see both attempts in metadata.
+    fallback_response.error_message = (
+        f"local_failed:{primary_error.reason}; remote_failed:{fallback_error.reason}; "
+        f"{fallback_response.error_message or ''}"
+    ).strip()
+    meta = {
+        **selected_meta,
+        **_payload_to_actual_meta(fallback_provider_payload),
+        "fallback_applied": True,
+        "fallback_from_adapter_id": provider_payload.get("adapter_id"),
+        "fallback_to_adapter_id": fallback_provider_payload.get("adapter_id"),
+        "fallback_reason": primary_error.reason,
+        "provider_attempt_count": 2,
+        "preflight_status": _preflight_status_from_error(primary_error.reason),
+        "local_error_reason": primary_error.reason,
+        "local_model_requested": local_model_requested,
+    }
+    return fallback_response, meta
+
+
 def _auth_headers(auth_token: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {auth_token}",
@@ -218,18 +425,22 @@ async def _complete_execution(
     tokens_used: int,
     model_used: str,
     execution_time_ms: int,
+    provider_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "output": output,
+        "tokens_used": tokens_used,
+        "model_used": model_used,
+        "execution_time_ms": execution_time_ms,
+    }
+    if provider_meta is not None:
+        body["provider_meta"] = provider_meta
     return await _request_json(
         "POST",
         api_base,
         f"/api/worker/executions/{execution_id}/complete",
         auth_token,
-        {
-            "output": output,
-            "tokens_used": tokens_used,
-            "model_used": model_used,
-            "execution_time_ms": execution_time_ms,
-        },
+        body,
     )
 
 
@@ -300,11 +511,17 @@ async def _run_existing_execution(
     auth_token: str,
     execution_id: int,
     configured_engine_mode: str,
+    provider_payload: dict[str, Any] | None = None,
 ) -> SkillRunResult:
     started_at = time.time()
     runtime_info = preview_runtime_info(configured_engine_mode)
     try:
         bundle = await _fetch_bundle(api_base, auth_token, execution_id)
+        # provider_payload precedence: explicit arg > bundle > None
+        if provider_payload is None:
+            bundle_payload = bundle.get("provider_payload")
+            if isinstance(bundle_payload, dict):
+                provider_payload = bundle_payload
 
         # リーダーステップ（workflow_skill_idなし）のbundleに前ステップ出力が含まれていない場合、
         # バックエンドのDB更新を待って再取得する（並列ステップ完了直後のタイミング問題対策）
@@ -329,7 +546,76 @@ async def _run_existing_execution(
                 bundle = await _fetch_bundle(api_base, auth_token, execution_id)
                 _prompt = str(bundle.get("final_prompt") or "")
         runtime_info.auth_key_source = _detect_auth_key_source(bundle)
-        if runtime_info.effective_engine_mode == "cli":
+        # Bundle may also carry a runtime fallback payload (remote retry).
+        fallback_provider_payload = None
+        if isinstance(bundle.get("fallback_provider_payload"), dict):
+            fallback_provider_payload = bundle.get("fallback_provider_payload")
+        provider_meta_for_result: dict[str, Any] | None = None
+        if provider_payload and provider_payload.get("transport") == "http":
+            provider_response, provider_meta_for_result = await _run_with_runtime_fallback(
+                provider_payload=provider_payload,
+                fallback_provider_payload=fallback_provider_payload,
+                final_prompt=str(bundle.get("final_prompt") or ""),
+                bundle_model=str(bundle.get("model") or ""),
+                execution_id=execution_id,
+            )
+            elapsed_ms = int((time.time() - started_at) * 1000)
+            output = provider_response.output_text
+            model_used = provider_response.model
+            tokens_used = provider_response.tokens_used or 0
+            execution_time_ms = elapsed_ms
+            token_accounting_source = (
+                provider_response.token_accounting_source or "unavailable"
+            )
+            provider_error_code = provider_response.error_code
+            provider_error_message = provider_response.error_message
+            retry_reason = provider_response.retry_reason
+            runtime_info.provider_transport = provider_response.provider_transport
+            runtime_info.provider_adapter = provider_response.provider_adapter
+            runtime_info.provider_runtime = provider_response.provider_runtime
+            runtime_info.provider_impl = provider_response.provider_impl
+            runtime_info.provider_mode = provider_response.provider_mode
+            if provider_response.status != "success":
+                await _report_execution_error(
+                    api_base,
+                    auth_token,
+                    execution_id,
+                    provider_error_message or "HTTP provider failed",
+                    execution_time_ms,
+                )
+                detail = await _get_execution_detail(api_base, auth_token, execution_id)
+                return SkillRunResult(
+                    execution_id=execution_id,
+                    status=detail.get("status", "error"),
+                    output=detail.get("output_data") or "",
+                    model_used=detail.get("model_used") or model_used,
+                    tokens_used=detail.get("tokens_used") or 0,
+                    execution_time_ms=detail.get("execution_time") or execution_time_ms,
+                    output_format=detail.get("output_format") or bundle.get("output_format") or "txt",
+                    skill_id=detail.get("skill_id"),
+                    workflow_execution_id=detail.get("workflow_execution_id"),
+                    workflow_skill_id=detail.get("workflow_skill_id"),
+                    skill_order=detail.get("skill_order"),
+                    skill_name=detail.get("skill_display_name") or detail.get("skill_name"),
+                    workflow_name=detail.get("workflow_name"),
+                    error_message=detail.get("error_message") or provider_error_message,
+                    execution_role=detail.get("execution_role"),
+                    configured_engine_mode=runtime_info.configured_engine_mode,
+                    effective_engine_mode=runtime_info.effective_engine_mode,
+                    provider_mode=runtime_info.provider_mode,
+                    provider_transport=runtime_info.provider_transport,
+                    provider_adapter=runtime_info.provider_adapter,
+                    provider_runtime=runtime_info.provider_runtime,
+                    provider_impl=runtime_info.provider_impl,
+                    auth_key_source=runtime_info.auth_key_source,
+                    observation_source=runtime_info.observation_source,
+                    provider_error_code=provider_error_code,
+                    provider_error_message=provider_error_message,
+                    retry_reason=retry_reason,
+                    token_accounting_source=token_accounting_source,
+                    provider_meta=provider_meta_for_result,
+                )
+        elif runtime_info.effective_engine_mode == "cli":
             provider = create_provider("cli")
             provider_response = provider.run(
                 ProviderRequest(
@@ -410,6 +696,7 @@ async def _run_existing_execution(
             tokens_used,
             model_used,
             execution_time_ms,
+            provider_meta=provider_meta_for_result,
         )
         detail = await _get_execution_detail(api_base, auth_token, execution_id)
         return SkillRunResult(
@@ -441,6 +728,7 @@ async def _run_existing_execution(
             provider_error_message=provider_error_message,
             retry_reason=retry_reason,
             token_accounting_source=token_accounting_source,
+            provider_meta=provider_meta_for_result,
         )
     except Exception as exc:
         elapsed_ms = int((time.time() - started_at) * 1000)

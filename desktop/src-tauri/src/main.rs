@@ -1,3 +1,4 @@
+mod local_llm;
 mod orchestration;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -2816,7 +2817,9 @@ fn main() {
             check_for_app_update,
             start_orchestrated_workflow,
             get_orchestration_status,
-            cancel_orchestration
+            cancel_orchestration,
+            local_llm::local_llm_ping,
+            local_llm::local_llm_list_models,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

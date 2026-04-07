@@ -874,6 +874,9 @@ class SidecarApp:
         auth_token = str(payload["auth_token"])
         execution_id = int(payload["execution_id"])
         configured_engine_mode = str(payload.get("configured_engine_mode") or "api_key")
+        provider_payload = payload.get("provider_payload")
+        if provider_payload is not None and not isinstance(provider_payload, dict):
+            provider_payload = None
 
         import sys as _sys
         print(
@@ -884,6 +887,7 @@ class SidecarApp:
         outcome = asyncio.run(
             _run_existing_execution(
                 api_base, auth_token, execution_id, configured_engine_mode,
+                provider_payload=provider_payload,
             )
         )
         return outcome.as_payload()

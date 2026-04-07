@@ -119,6 +119,7 @@ class WorkerCompleteRequest(BaseModel):
     tokens_used: int = 0
     model_used: str = ""
     execution_time_ms: int = 0
+    provider_meta: Optional[dict] = None
 
 
 class WorkerCompleteResponse(BaseModel):
@@ -147,6 +148,8 @@ class BundleResponse(BaseModel):
     signature: str
     api_keys: Optional[dict] = None  # {"openai": "sk-...", "gemini": "AI..."} ローカル実行用
     agent_profile: Optional[str] = None
+    provider_payload: Optional[dict] = None  # coordinator が選択した http provider 設定
+    fallback_provider_payload: Optional[dict] = None  # runtime fallback 用 remote 設定
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +453,67 @@ async def _get_execution_bundle_inner(
     execution.status = "processing"
     db.commit()
 
+    # Coordinator が plan を持っていれば、該当 task の provider routing を解決して
+    # provider_payload と fallback_provider_payload を bundle に載せる。
+    # 失敗しても bundle 発行は止めない。
+    provider_payload: Optional[dict] = None
+    fallback_provider_payload: Optional[dict] = None
+    try:
+        if execution.workflow_execution_id and execution.workflow_skill_id:
+            from app.services.coordinator_service import (
+                get_plan_by_workflow_execution,
+                resolve_execution_provider_bundle,
+            )
+            plan = get_plan_by_workflow_execution(db, execution.workflow_execution_id)
+            if plan:
+                try:
+                    plan_tasks = json.loads(plan.tasks or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    plan_tasks = []
+                matched_task = next(
+                    (
+                        t for t in plan_tasks
+                        if t.get("workflow_skill_id") == execution.workflow_skill_id
+                    ),
+                    None,
+                )
+                if matched_task:
+                    routing = resolve_execution_provider_bundle(
+                        db, plan, matched_task,
+                        retry_count=int(getattr(execution, "retry_count", 0) or 0),
+                    )
+                    provider_payload = routing.get("provider_payload")
+                    fallback_provider_payload = routing.get("fallback_provider_payload")
+                    # Embed the routing reason inside the payload itself so the
+                    # sidecar can echo it back in actual provider metadata.
+                    if provider_payload is not None:
+                        provider_payload = dict(provider_payload)
+                        provider_payload["provider_mode_selected"] = routing.get(
+                            "provider_mode_selected"
+                        )
+                        provider_payload["provider_selection_reason"] = routing.get(
+                            "provider_selection_reason"
+                        )
+                    if fallback_provider_payload is not None:
+                        fallback_provider_payload = dict(fallback_provider_payload)
+                        fallback_provider_payload["provider_mode_selected"] = (
+                            "remote_only"
+                        )
+                        fallback_provider_payload["provider_selection_reason"] = (
+                            "runtime_fallback_remote"
+                        )
+                    logger.info(
+                        "provider_selected execution_id=%s mode=%s adapter=%s "
+                        "fallback=%s reason=%s",
+                        execution.id,
+                        routing.get("provider_mode_selected"),
+                        routing.get("selected_adapter_name"),
+                        routing.get("fallback_adapter_name"),
+                        routing.get("provider_selection_reason"),
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("provider routing skipped for execution %s: %s", execution_id, exc)
+
     # 署名生成（api_keys は署名対象に含めない）
     bundle_data = {
         "execution_id": execution.id,
@@ -460,6 +524,8 @@ async def _get_execution_bundle_inner(
         "output_format": execution.output_format or "txt",
         "enable_deep_think": bool(execution.enable_deep_think),
         "agent_profile": normalized_profile,
+        "provider_payload": provider_payload,
+        "fallback_provider_payload": fallback_provider_payload,
     }
     signature = sign_bundle(bundle_data)
     bundle_data["api_keys"] = api_keys if api_keys else None
@@ -526,6 +592,7 @@ async def complete_execution(
         execution_time_ms=body.execution_time_ms,
         status_result="success",
         template_text=template_text,
+        provider_meta=body.provider_meta,
     )
 
     # Redis 完了イベント（UI SSE 用）

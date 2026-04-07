@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 from app.config import settings
-from app.api import auth, admin, user, execute, worker
+from app.api import auth, admin, user, execute, worker, adapters
 from app.database import engine
 from app.models import Base
 import logging
@@ -74,6 +74,7 @@ app.include_router(admin.router)
 app.include_router(user.router)
 app.include_router(execute.router)
 app.include_router(worker.router)
+app.include_router(adapters.router)
 
 # 静的ファイルの提供（フロントエンド）
 frontend_path = Path(__file__).parent.parent.parent / "frontend"

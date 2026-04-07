@@ -175,24 +175,175 @@ def find_adapter_for_task(
     return candidates[0] if candidates else None
 
 
+def build_provider_payload(
+    adapter: Optional[CoordinatorAdapter],
+    *,
+    model: Optional[str] = None,
+    timeout: float = 120.0,
+    api_key: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Convert a CoordinatorAdapter row into the sidecar provider_payload dict.
+
+    Returns None for adapters that the sidecar resolves on its own (cli /
+    internal sdk). Only http-transport adapters need explicit payloads.
+    """
+    if adapter is None or adapter.transport != "http":
+        return None
+    config = _safe_json_loads(adapter.config) or {}
+    base_url = adapter.impl or config.get("endpoint")
+    if not base_url:
+        return None
+    selected_model = (
+        model
+        or config.get("default_model")
+        or "qwen2.5-coder:14b"
+    )
+    return {
+        "transport": "http",
+        "base_url": base_url,
+        "model": selected_model,
+        "api_key": api_key,
+        "timeout": float(config.get("timeout", timeout)),
+        "adapter_id": adapter.adapter_id,
+        "adapter_name": adapter.name,
+        "provider_mode": adapter.provider_mode,
+    }
+
+
 def update_adapter_health(
     db: Session,
     adapter_id: str,
     health_status: str,
     plan_id: Optional[str] = None,
+    *,
+    detail: Optional[Dict[str, Any]] = None,
 ) -> Optional[CoordinatorAdapter]:
+    """Update adapter health, optionally storing a detail blob.
+
+    `detail` is merged into adapter.config under the `last_health_detail`
+    key so we avoid a schema migration in this PR. Pass keys like
+    {"models": [...], "latency_ms": 12, "error": None}.
+    """
     adapter = db.query(CoordinatorAdapter).filter(CoordinatorAdapter.adapter_id == adapter_id).first()
     if not adapter:
         return None
     prev = adapter.health_status
     adapter.health_status = health_status
     adapter.last_health_check = datetime.utcnow()
+    if detail is not None:
+        config = _safe_json_loads(adapter.config) or {}
+        config["last_health_detail"] = {
+            **detail,
+            "checked_at": adapter.last_health_check.isoformat() + "Z",
+            "status": health_status,
+        }
+        adapter.config = _safe_json_dumps(config)
     db.commit()
     db.refresh(adapter)
     if plan_id and prev != health_status:
         record_event(db, plan_id, EVENT_ADAPTER_HEALTH_CHANGED,
                      payload={"adapter_id": adapter_id, "from": prev, "to": health_status})
     return adapter
+
+
+def refresh_local_adapter_health(
+    db: Session,
+    adapter_id: str,
+    *,
+    probe_fn: Optional[Any] = None,
+) -> Optional[CoordinatorAdapter]:
+    """Probe a local-LLM adapter's HTTP endpoint and persist the result.
+
+    `probe_fn` is an injectable callable taking (base_url) and returning
+    {"reachable": bool, "models": list[str], "latency_ms": int|None, "error": str|None}.
+    Defaults to `_default_probe_local_endpoint` which uses httpx.
+
+    Health mapping:
+        reachable + non-empty models -> "healthy"
+        reachable + empty models     -> "degraded"
+        unreachable                  -> "unreachable"
+    """
+    adapter = db.query(CoordinatorAdapter).filter(CoordinatorAdapter.adapter_id == adapter_id).first()
+    if adapter is None:
+        return None
+    if adapter.transport != "http":
+        return adapter
+
+    config = _safe_json_loads(adapter.config) or {}
+    base_url = adapter.impl or config.get("endpoint")
+    if not base_url:
+        return update_adapter_health(
+            db, adapter_id, "unknown",
+            detail={"error": "no_base_url", "models": [], "latency_ms": None},
+        )
+
+    probe = probe_fn or _default_probe_local_endpoint
+    result = probe(base_url)
+
+    if not result.get("reachable"):
+        new_status = "unreachable"
+    elif not result.get("models"):
+        new_status = "degraded"
+    else:
+        new_status = "healthy"
+
+    return update_adapter_health(
+        db, adapter_id, new_status,
+        detail={
+            "models": result.get("models") or [],
+            "latency_ms": result.get("latency_ms"),
+            "error": result.get("error"),
+        },
+    )
+
+
+def _default_probe_local_endpoint(base_url: str) -> Dict[str, Any]:
+    """Default probe — calls GET {base_url}/models via httpx.
+
+    Mirrors sidecar/app/providers/discovery.list_models() shape so backend
+    and sidecar agree on the result schema.
+    """
+    import time
+    import httpx
+
+    url = f"{base_url.rstrip('/')}/models"
+    started = time.monotonic()
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(url)
+    except httpx.ConnectError as exc:
+        return {"reachable": False, "models": [], "latency_ms": None, "error": f"connect_error: {exc}"}
+    except httpx.TimeoutException as exc:
+        return {"reachable": False, "models": [], "latency_ms": None, "error": f"timeout: {exc}"}
+    except httpx.HTTPError as exc:
+        return {"reachable": False, "models": [], "latency_ms": None, "error": f"http_error: {exc}"}
+
+    latency_ms = int((time.monotonic() - started) * 1000)
+    if resp.status_code >= 400:
+        return {
+            "reachable": False, "models": [], "latency_ms": latency_ms,
+            "error": f"http_{resp.status_code}",
+        }
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        return {
+            "reachable": True, "models": [], "latency_ms": latency_ms,
+            "error": f"malformed_json: {exc}",
+        }
+    raw = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return {
+            "reachable": True, "models": [], "latency_ms": latency_ms,
+            "error": "malformed_response",
+        }
+    models: List[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            mid = item.get("id")
+            if isinstance(mid, str):
+                models.append(mid)
+    return {"reachable": True, "models": models, "latency_ms": latency_ms, "error": None}
 
 
 def seed_default_adapters(db: Session) -> List[CoordinatorAdapter]:
@@ -219,7 +370,10 @@ def seed_default_adapters(db: Session) -> List[CoordinatorAdapter]:
         impl="http://localhost:11434/v1",
         supported_roles=["researcher", "writer"],
         capabilities=["streaming", "openai_compat"],
-        config={"endpoint": "http://localhost:11434/v1"},
+        config={
+            "endpoint": "http://localhost:11434/v1",
+            "default_model": "qwen2.5-coder:14b",
+        },
     ))
     seeded.append(register_adapter(
         db,
