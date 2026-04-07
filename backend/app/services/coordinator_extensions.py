@@ -377,6 +377,50 @@ def seed_default_adapters(db: Session) -> List[CoordinatorAdapter]:
     ))
     seeded.append(register_adapter(
         db,
+        name="claude-code-local",
+        adapter_type=ADAPTER_EXTERNAL_CLI,
+        provider_mode=PROVIDER_REMOTE_ONLY,
+        transport="external_cli",
+        runtime="claude_code",
+        impl="claude",
+        supported_roles=["writer", "reviewer", "researcher"],
+        capabilities=[
+            "file_read", "file_write", "shell_exec",
+            "local_auth_session", "workspace_aware",
+            "streaming_stdout", "streaming_stderr", "pty",
+        ],
+        config={
+            "runtime": "claude_code",
+            "command": "claude",
+            "default_args": [],
+            "timeout_ms": 900000,
+            "requires_local_auth": True,
+        },
+    ))
+    seeded.append(register_adapter(
+        db,
+        name="codex-local",
+        adapter_type=ADAPTER_EXTERNAL_CLI,
+        provider_mode=PROVIDER_REMOTE_ONLY,
+        transport="external_cli",
+        runtime="codex",
+        impl="codex",
+        supported_roles=["writer", "reviewer", "researcher"],
+        capabilities=[
+            "file_read", "file_write", "shell_exec",
+            "local_auth_session", "workspace_aware",
+            "streaming_stdout", "streaming_stderr",
+        ],
+        config={
+            "runtime": "codex",
+            "command": "codex",
+            "default_args": [],
+            "timeout_ms": 900000,
+            "requires_local_auth": True,
+        },
+    ))
+    seeded.append(register_adapter(
+        db,
         name="remote-api-openai-compat",
         adapter_type=ADAPTER_REMOTE_API,
         provider_mode=PROVIDER_REMOTE_ONLY,

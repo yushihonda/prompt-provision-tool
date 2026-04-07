@@ -816,6 +816,135 @@ def resolve_execution_provider(
 
 
 # ───────────────────────────────────────────────
+#  External CLI execution kind selection
+#  (Phase 3.4 — opt-in routing for Claude Code / Codex / Cursor / Generic)
+# ───────────────────────────────────────────────
+
+EXECUTION_KIND_HTTP_PROVIDER = "http_provider"
+EXECUTION_KIND_EXTERNAL_CLI = "external_cli"
+EXECUTION_KIND_INTERNAL = "internal"
+
+
+def resolve_execution_kind(
+    db: Session,
+    plan: CoordinatorPlan,
+    task: Dict[str, Any],
+    *,
+    retry_count: int = 0,
+) -> Dict[str, Any]:
+    """Decide whether a task should run via HTTP provider, external CLI, or
+    fall back to the internal sidecar pipeline.
+
+    Routing rules (initial — conservative, opt-in):
+    1. judge tasks always go remote_only/http (hard rule from
+       route_provider_mode_with_reason)
+    2. if task has prefer_external_cli=true and a cli_runtime_hint
+       (e.g. "claude_code"), pick the matching external_cli adapter
+    3. otherwise fall through to existing resolve_execution_provider
+       and return execution_kind=http_provider
+
+    Returns a dict with:
+        execution_kind, adapter_id, adapter_name, runtime,
+        required_capabilities, selection_reason, provider_payload,
+        external_cli_payload (one of provider_payload / external_cli_payload
+        is non-None)
+    """
+    from app.services.coordinator_extensions import (
+        find_adapter_for_task,
+        list_adapters,
+    )
+    from app.services.external_cli_adapters import build_external_cli_payload
+    from app.services.external_cli_capabilities import required_capabilities_for_task
+
+    role = task.get("role", ROLE_WRITER)
+
+    # Hard rule: judge never goes external_cli even if opted in.
+    if role == ROLE_JUDGE:
+        provider_result = resolve_execution_provider(db, plan, task, retry_count=retry_count)
+        return {
+            "execution_kind": EXECUTION_KIND_HTTP_PROVIDER,
+            "adapter_id": provider_result.get("adapter_id"),
+            "adapter_name": provider_result.get("adapter_name"),
+            "runtime": None,
+            "required_capabilities": [],
+            "selection_reason": "judge_forced_remote",
+            "provider_payload": provider_result.get("provider_payload"),
+            "external_cli_payload": None,
+        }
+
+    prefer_cli = bool(task.get("prefer_external_cli", False))
+    cli_runtime_hint = task.get("cli_runtime_hint")  # e.g. "claude_code" / "codex"
+
+    if prefer_cli and cli_runtime_hint:
+        # Find an enabled external_cli adapter whose config.runtime matches.
+        adapters = list_adapters(db, only_enabled=True)
+        target = None
+        for a in adapters:
+            if a.transport != "external_cli":
+                continue
+            try:
+                cfg = json.loads(a.config or "{}")
+            except json.JSONDecodeError:
+                cfg = {}
+            if cfg.get("runtime") == cli_runtime_hint:
+                target = a
+                break
+        if target is not None:
+            workspace_id = task.get("workspace_id")
+            workspace_mode = task.get("workspace_mode")
+            workspace_path = task.get("workspace_path")
+            cwd = workspace_path or task.get("cwd_hint")
+            if not cwd:
+                # Without a cwd we cannot run an external CLI safely.
+                # Fall through to the HTTP provider path.
+                pass
+            else:
+                required_caps = required_capabilities_for_task(
+                    role=role,
+                    writes_files=bool(task.get("writes_files", False)),
+                    allow_shell=bool(task.get("allow_shell", False)),
+                    has_workspace=bool(workspace_id),
+                    requires_local_auth=True,
+                )
+                payload = build_external_cli_payload(
+                    target,
+                    cwd=cwd,
+                    prompt=task.get("prompt") or task.get("objective") or "",
+                    task_id=task.get("task_id") or f"task_{task.get('workflow_skill_id')}",
+                    workflow_run_id=str(plan.workflow_execution_id or plan.plan_id),
+                    task_role=role,
+                    allow_writes=bool(task.get("writes_files", False)),
+                    allow_shell=bool(task.get("allow_shell", False)),
+                    required_capabilities=required_caps,
+                    workspace_id=workspace_id,
+                    workspace_mode=workspace_mode,
+                )
+                return {
+                    "execution_kind": EXECUTION_KIND_EXTERNAL_CLI,
+                    "adapter_id": target.adapter_id,
+                    "adapter_name": target.name,
+                    "runtime": cli_runtime_hint,
+                    "required_capabilities": required_caps,
+                    "selection_reason": f"prefer_external_cli:{cli_runtime_hint}",
+                    "provider_payload": None,
+                    "external_cli_payload": payload,
+                }
+
+    # Default path — existing HTTP/internal routing.
+    provider_result = resolve_execution_provider(db, plan, task, retry_count=retry_count)
+    return {
+        "execution_kind": EXECUTION_KIND_HTTP_PROVIDER,
+        "adapter_id": provider_result.get("adapter_id"),
+        "adapter_name": provider_result.get("adapter_name"),
+        "runtime": None,
+        "required_capabilities": [],
+        "selection_reason": provider_result.get("selection_reason"),
+        "provider_payload": provider_result.get("provider_payload"),
+        "external_cli_payload": None,
+    }
+
+
+# ───────────────────────────────────────────────
 #  Plan retrieval
 # ───────────────────────────────────────────────
 

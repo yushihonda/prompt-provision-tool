@@ -248,6 +248,40 @@ def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
     db.commit()
 
 
+def build_external_cli_provenance(external_cli_meta: dict) -> dict:
+    """Convert sidecar/Rust-side `external_cli_meta` into the artifact
+    provenance shape persisted onto CoordinatorArtifact.extra_metadata.
+
+    This is a pure function — exposed at module top level so it can be
+    unit tested without spinning up an Execution / Workflow / Plan
+    graph.
+    """
+    return {
+        "execution_kind": "external_cli",
+        "adapter_type": "external_cli",
+        "adapter_id": external_cli_meta.get("adapter_id"),
+        "adapter_name": external_cli_meta.get("adapter_name"),
+        "runtime": external_cli_meta.get("runtime"),
+        "cwd": external_cli_meta.get("cwd"),
+        "command": external_cli_meta.get("command"),
+        "command_line_preview": external_cli_meta.get("command_line_preview"),
+        "cli_status": external_cli_meta.get("status"),
+        "exit_code": external_cli_meta.get("exit_code"),
+        "duration_ms": external_cli_meta.get("duration_ms"),
+        "stdout_truncated": external_cli_meta.get("stdout_truncated"),
+        "stderr_truncated": external_cli_meta.get("stderr_truncated"),
+        "changed_files": external_cli_meta.get("changed_files") or [],
+        "changed_files_count": len(external_cli_meta.get("changed_files") or []),
+        "capability_check_passed": external_cli_meta.get("capability_check_passed"),
+        "allow_writes": external_cli_meta.get("allow_writes"),
+        "allow_shell": external_cli_meta.get("allow_shell"),
+        "required_capabilities": external_cli_meta.get("required_capabilities") or [],
+        "workspace_id": external_cli_meta.get("workspace_id"),
+        "workspace_mode": external_cli_meta.get("workspace_mode"),
+        "workspace_path": external_cli_meta.get("workspace_path"),
+    }
+
+
 def finalize_execution(
     db: Session,
     execution: Execution,
@@ -259,6 +293,7 @@ def finalize_execution(
     error_message: Optional[str] = None,
     template_text: Optional[str] = None,
     provider_meta: Optional[dict] = None,
+    external_cli_meta: Optional[dict] = None,
 ) -> None:
     """
     実行結果を DB に保存し、アカウント集計を更新する。
@@ -324,6 +359,7 @@ def finalize_execution(
             _record_coordinator_artifact(
                 db, execution, output, model_used,
                 provider_meta=provider_meta,
+                external_cli_meta=external_cli_meta,
             )
         except Exception as e:
             logger.warning(f"CoordinatorArtifact recording failed for execution {execution.id}: {e}")
@@ -336,6 +372,7 @@ def _record_coordinator_artifact(
     model_used: str,
     *,
     provider_meta: Optional[dict] = None,
+    external_cli_meta: Optional[dict] = None,
 ) -> None:
     """成功したExecutionに対応するCoordinatorArtifactを生成する.
 
@@ -446,6 +483,17 @@ def _record_coordinator_artifact(
                 "legacy provider routing metadata skipped for execution %s: %s",
                 execution.id, exc,
             )
+
+    # Phase 3.6: external CLI provenance (Claude / Codex / Cursor / Generic).
+    if external_cli_meta:
+        provenance.update(build_external_cli_provenance(external_cli_meta))
+        logger.info(
+            "external_cli_artifact_recorded execution_id=%s adapter=%s runtime=%s status=%s",
+            execution.id,
+            external_cli_meta.get("adapter_name"),
+            external_cli_meta.get("runtime"),
+            external_cli_meta.get("status"),
+        )
 
     # Task / workflow context for traceability (task_id was already computed above).
     extra_metadata = {

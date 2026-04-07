@@ -517,6 +517,38 @@ async def _run_existing_execution(
     runtime_info = preview_runtime_info(configured_engine_mode)
     try:
         bundle = await _fetch_bundle(api_base, auth_token, execution_id)
+
+        # Phase 3.5: external_cli bundles are owned by the desktop Rust
+        # runtime, not the sidecar. Skip cleanly so the sidecar worker
+        # pool moves on to the next bundle and the same execution stays
+        # claimable by the Rust side. We do NOT POST a completion here
+        # because that would mark the execution finished from the wrong
+        # owner.
+        if bundle.get("execution_kind") == "external_cli":
+            print(
+                f"[sidecar-py] external_cli_delegated execution_id={execution_id} "
+                f"adapter={(bundle.get('external_cli_payload') or {}).get('adapter_name')} "
+                f"runtime={(bundle.get('external_cli_payload') or {}).get('runtime')}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return SkillRunResult(
+                status="delegated_to_external_cli_runtime",
+                output="",
+                model_used=str(bundle.get("model") or ""),
+                tokens_used=0,
+                duration_ms=int((time.time() - started_at) * 1000),
+                error_code=None,
+                error_message=None,
+                provider_mode="external_cli",
+                provider_transport="external_cli",
+                provider_adapter=(bundle.get("external_cli_payload") or {}).get("adapter_name") or "external_cli",
+                provider_runtime=(bundle.get("external_cli_payload") or {}).get("runtime") or "external_cli",
+                provider_impl="rust_runtime",
+                token_accounting_source="unavailable",
+                auth_key_source=AUTH_KEY_SOURCE_LOCAL_ENV,
+            )
+
         # provider_payload precedence: explicit arg > bundle > None
         if provider_payload is None:
             bundle_payload = bundle.get("provider_payload")

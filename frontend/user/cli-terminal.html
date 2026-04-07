@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NexMAGI - External CLI ターミナル</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        .cli-terminal-card {
+            background: var(--card-bg, #fff);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+            margin-bottom: 16px;
+        }
+        .cli-status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #e5e7eb;
+            color: #374151;
+            margin-left: 8px;
+        }
+        .cli-status-badge.running    { background: #dbeafe; color: #1e40af; }
+        .cli-status-badge.succeeded  { background: #dcfce7; color: #166534; }
+        .cli-status-badge.failed     { background: #fee2e2; color: #991b1b; }
+        .cli-status-badge.timed_out  { background: #fef3c7; color: #92400e; }
+        .cli-status-badge.cancelled  { background: #e5e7eb; color: #374151; }
+        .cli-status-badge.missing_binary,
+        .cli-status-badge.auth_required { background: #fee2e2; color: #991b1b; }
+        #cli-terminal-mount {
+            background: #0b0b0b;
+            border-radius: 8px;
+            padding: 8px;
+            margin-top: 12px;
+            min-height: 360px;
+        }
+        .cli-meta-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px 16px;
+            margin-top: 12px;
+            font-size: 12px;
+            color: var(--content-text-muted);
+        }
+        .cli-meta-grid b { color: var(--content-text); font-weight: 600; }
+        .cli-changed-files {
+            margin-top: 12px;
+            font-size: 12px;
+        }
+        .cli-changed-files ul { margin: 6px 0 0 16px; }
+    </style>
+</head>
+<body class="user-theme">
+    <div class="container">
+        <div class="content">
+            <div class="nav" id="desktop-nav"></div>
+            <h2 style="margin-bottom: 24px;">External CLI ターミナル</h2>
+            <p style="font-size: 13px; color: var(--content-text-muted); margin-bottom: 20px;">
+                ローカルにインストール済みの CLI runtime（Claude Code / Codex / Generic）を選んで実行します。
+                個人サブスクリプションでログイン済みである必要があります（Claude Pro / Max、ChatGPT Plus / Pro 等）。
+            </p>
+
+            <div class="cli-terminal-card">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <strong style="font-size: 14px;">使用ランタイム</strong>
+                    <select id="cli-runtime-select" style="padding: 8px 14px; border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; font-size: 13px; background: var(--content-bg); color: var(--content-text);">
+                        <option value="claude_code">Claude Code (claude)</option>
+                        <option value="codex">OpenAI Codex (codex)</option>
+                        <option value="generic">Generic (/bin/sh)</option>
+                    </select>
+                    <span id="cli-runtime-adapter" style="font-size: 11px; color: var(--content-text-muted);">adapter: claude-code-local</span>
+                </div>
+            </div>
+
+            <div class="cli-terminal-card">
+                <div style="display: grid; gap: 12px;">
+                    <div>
+                        <label style="display: block; font-size: 12px; font-weight: 600; color: var(--content-text-muted); margin-bottom: 6px;">作業ディレクトリ (cwd)</label>
+                        <input id="cli-cwd" type="text" placeholder="/Users/you/your-project" style="width: 100%; padding: 10px 14px; border: 1px solid rgba(0,0,0,0.1); border-radius: 10px; font-size: 13px; background: var(--content-bg); color: var(--content-text); box-sizing: border-box; font-family: monospace;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 12px; font-weight: 600; color: var(--content-text-muted); margin-bottom: 6px;">プロンプト</label>
+                        <textarea id="cli-prompt" rows="4" placeholder="Claude Code に依頼する内容を書いてください..." style="width: 100%; padding: 10px 14px; border: 1px solid rgba(0,0,0,0.1); border-radius: 10px; font-size: 13px; background: var(--content-bg); color: var(--content-text); box-sizing: border-box; font-family: monospace; resize: vertical;"></textarea>
+                    </div>
+                    <div style="display: flex; gap: 16px; align-items: center;">
+                        <label style="font-size: 12px; display: flex; align-items: center; gap: 6px;">
+                            <input type="checkbox" id="cli-allow-writes"> ファイル書き込みを許可
+                        </label>
+                        <label style="font-size: 12px; display: flex; align-items: center; gap: 6px;">
+                            <input type="checkbox" id="cli-allow-shell"> シェル実行を許可
+                        </label>
+                        <label style="font-size: 12px; display: flex; align-items: center; gap: 6px;">
+                            タイムアウト(秒)
+                            <input type="number" id="cli-timeout-sec" value="900" min="10" max="3600" style="width: 70px; padding: 4px 8px; border: 1px solid rgba(0,0,0,0.1); border-radius: 6px; font-size: 12px;">
+                        </label>
+                        <button id="cli-run-btn" style="margin-left: auto; padding: 10px 24px; background: var(--accent, #7c3aed); color: #fff; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer;">実行</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="cli-terminal-card">
+                <div style="display: flex; align-items: center; margin-bottom: 12px;">
+                    <strong style="font-size: 14px;">PTY モード（対話型）</strong>
+                    <span id="pty-status" class="cli-status-badge">idle</span>
+                    <span style="margin-left: auto; font-size: 12px; color: var(--content-text-muted);">
+                        Claude Code をフルターミナルで起動。プロンプト確認・キー入力に応答できます。
+                    </span>
+                </div>
+                <div style="display: grid; gap: 8px;">
+                    <div>
+                        <label style="display: block; font-size: 12px; font-weight: 600; color: var(--content-text-muted); margin-bottom: 6px;">作業ディレクトリ (cwd)</label>
+                        <input id="pty-cwd" type="text" placeholder="/Users/you/your-project" style="width: 100%; padding: 8px 12px; border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; font-size: 12px; background: var(--content-bg); color: var(--content-text); box-sizing: border-box; font-family: monospace;">
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <button id="pty-spawn-btn" style="padding: 8px 18px; background: var(--accent, #7c3aed); color: #fff; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;">claude を起動</button>
+                        <button id="pty-kill-btn" style="padding: 8px 18px; background: #ef4444; color: #fff; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;" disabled>停止</button>
+                        <span id="pty-session-id" style="font-size: 11px; color: var(--content-text-muted); margin-left: auto; font-family: monospace;"></span>
+                    </div>
+                </div>
+                <div id="pty-terminal-mount" style="background: #0b0b0b; border-radius: 8px; padding: 8px; margin-top: 12px; min-height: 360px;"></div>
+            </div>
+
+            <div class="cli-terminal-card">
+                <div style="display: flex; align-items: center;">
+                    <strong style="font-size: 14px;">非対話モード（ストリーミング）</strong>
+                    <span id="cli-status" class="cli-status-badge">idle</span>
+                    <span id="cli-duration" style="margin-left: auto; font-size: 12px; color: var(--content-text-muted);"></span>
+                </div>
+                <div id="cli-terminal-mount"></div>
+                <div class="cli-meta-grid" id="cli-meta">
+                    <div><b>adapter:</b> <span id="cli-meta-adapter">-</span></div>
+                    <div><b>runtime:</b> <span id="cli-meta-runtime">-</span></div>
+                    <div><b>cwd:</b> <span id="cli-meta-cwd">-</span></div>
+                    <div><b>exit_code:</b> <span id="cli-meta-exit">-</span></div>
+                </div>
+                <div class="cli-changed-files">
+                    <b style="font-size: 12px;">変更されたファイル</b>
+                    <ul id="cli-changed-list"><li style="color: var(--content-text-muted);">（なし）</li></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.__NEXMAGI_RUNTIME = window.__NEXMAGI_RUNTIME || {
+            desktop: true,
+            apiBase: 'http://127.0.0.1:8000'
+        };
+    </script>
+    <script src="../js/runtime-adapter.js"></script>
+    <script src="../js/swal-defaults.js"></script>
+    <script src="js/user-common.js"></script>
+    <script src="js/cli-terminal-view.js"></script>
+    <script src="js/cli-terminal-pty.js"></script>
+</body>
+</html>

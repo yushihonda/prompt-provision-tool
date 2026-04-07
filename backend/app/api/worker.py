@@ -120,6 +120,7 @@ class WorkerCompleteRequest(BaseModel):
     model_used: str = ""
     execution_time_ms: int = 0
     provider_meta: Optional[dict] = None
+    external_cli_meta: Optional[dict] = None
 
 
 class WorkerCompleteResponse(BaseModel):
@@ -458,10 +459,14 @@ async def _get_execution_bundle_inner(
     # 失敗しても bundle 発行は止めない。
     provider_payload: Optional[dict] = None
     fallback_provider_payload: Optional[dict] = None
+    execution_kind: str = "http_provider"
+    external_cli_payload: Optional[dict] = None
     try:
         if execution.workflow_execution_id and execution.workflow_skill_id:
             from app.services.coordinator_service import (
+                EXECUTION_KIND_EXTERNAL_CLI,
                 get_plan_by_workflow_execution,
+                resolve_execution_kind,
                 resolve_execution_provider_bundle,
             )
             plan = get_plan_by_workflow_execution(db, execution.workflow_execution_id)
@@ -478,6 +483,20 @@ async def _get_execution_bundle_inner(
                     None,
                 )
                 if matched_task:
+                    # Phase 3.4: check whether this task opts in to external CLI.
+                    kind_result = resolve_execution_kind(
+                        db, plan, matched_task,
+                        retry_count=int(getattr(execution, "retry_count", 0) or 0),
+                    )
+                    if kind_result.get("execution_kind") == EXECUTION_KIND_EXTERNAL_CLI:
+                        execution_kind = EXECUTION_KIND_EXTERNAL_CLI
+                        external_cli_payload = kind_result.get("external_cli_payload")
+                        logger.info(
+                            "external_cli_selected execution_id=%s adapter=%s runtime=%s",
+                            execution.id,
+                            kind_result.get("adapter_name"),
+                            kind_result.get("runtime"),
+                        )
                     routing = resolve_execution_provider_bundle(
                         db, plan, matched_task,
                         retry_count=int(getattr(execution, "retry_count", 0) or 0),
@@ -526,6 +545,8 @@ async def _get_execution_bundle_inner(
         "agent_profile": normalized_profile,
         "provider_payload": provider_payload,
         "fallback_provider_payload": fallback_provider_payload,
+        "execution_kind": execution_kind,
+        "external_cli_payload": external_cli_payload,
     }
     signature = sign_bundle(bundle_data)
     bundle_data["api_keys"] = api_keys if api_keys else None
@@ -593,6 +614,7 @@ async def complete_execution(
         status_result="success",
         template_text=template_text,
         provider_meta=body.provider_meta,
+        external_cli_meta=body.external_cli_meta,
     )
 
     # Redis 完了イベント（UI SSE 用）

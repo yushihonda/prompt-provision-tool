@@ -1,3 +1,10 @@
+mod external_cli;
+mod external_cli_adapters;
+mod external_cli_pty;
+mod external_cli_registry;
+mod external_cli_runner;
+mod external_cli_runtime;
+mod external_cli_traits;
 mod local_llm;
 mod orchestration;
 
@@ -2744,7 +2751,11 @@ fn main() {
         builder
     };
 
-    builder.manage(DesktopState::default()).setup(|app| {
+    builder
+        .manage(DesktopState::default())
+        .manage(external_cli_pty::PtyState::default())
+        .manage(external_cli_registry::ExternalCliRegistry::with_defaults())
+        .setup(|app| {
             // Start orchestration background tick task
             let tick_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -2820,6 +2831,12 @@ fn main() {
             cancel_orchestration,
             local_llm::local_llm_ping,
             local_llm::local_llm_list_models,
+            external_cli::external_cli_run,
+            external_cli_pty::external_cli_pty_spawn,
+            external_cli_pty::external_cli_pty_write,
+            external_cli_pty::external_cli_pty_resize,
+            external_cli_pty::external_cli_pty_kill,
+            external_cli_runtime::consume_external_cli_bundle,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

@@ -18,4 +18,8 @@ serde_json = { version = "1.0.149" }
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-updater = "2.10.0"
 thiserror = { version = "2.0.18" }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "process", "io-util", "sync", "rt", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+portable-pty = "0.8"
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
