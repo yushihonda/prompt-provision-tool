@@ -142,6 +142,8 @@ pub struct ExternalCliExecutionRequest {
     pub workspace_id: Option<String>,
     pub workspace_mode: Option<String>,
     #[serde(default)]
+    pub approval_policy: Option<String>,
+    #[serde(default)]
     pub env_overrides: HashMap<String, String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,

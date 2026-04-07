@@ -24,6 +24,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use crate::external_cli_approval::{
+    request_shell_approval, ApprovalDecision, ApprovalGate,
+};
 use crate::external_cli_registry::ExternalCliRegistry;
 use crate::external_cli_traits::{
     ExternalCliCapability, ExternalCliExecutionRequest, ExternalCliExecutionResult,
@@ -269,6 +272,7 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
 
 pub async fn run_external_cli_with_adapter(
     registry: &ExternalCliRegistry,
+    approval_gate: Option<&ApprovalGate>,
     app: AppHandle,
     req: ExternalCliExecutionRequest,
     cancel: Arc<AtomicBool>,
@@ -321,6 +325,93 @@ pub async fn run_external_cli_with_adapter(
         }
     };
     let cfg = adapter.adapter_config();
+
+    // 1.5 interactive approval gate (ask_before_shell)
+    // If the step policy is ask_before_shell, we emit an event and
+    // wait for the user to explicitly allow shell execution. Approval
+    // promotes the task's allow_shell flag + adds ShellExec capability
+    // for this single run.
+    let mut req = req;
+    if req.approval_policy.as_deref() == Some("ask_before_shell") {
+        let gate = match approval_gate {
+            Some(g) => g,
+            None => {
+                let reason = "ask_before_shell_requires_approval_gate_state".to_string();
+                emit(
+                    &app,
+                    FAILED_EVENT,
+                    FailedPayload {
+                        task_id: &req.task_id,
+                        workflow_run_id: &req.workflow_run_id,
+                        adapter_id: &cfg.adapter_id,
+                        runtime: runtime_str,
+                        status: ExternalCliExecutionStatus::Failed.as_str(),
+                        reason: &reason,
+                    },
+                );
+                return error_result(
+                    &req,
+                    ExternalCliExecutionStatus::Failed,
+                    started_at,
+                    String::new(),
+                    reason,
+                    String::new(),
+                    false,
+                );
+            }
+        };
+        let decision = request_shell_approval(
+            &app,
+            gate,
+            &req.task_id,
+            &req.workflow_run_id,
+            &cfg.adapter_id,
+            runtime_str,
+            &req.cwd,
+            &req.prompt,
+        )
+        .await;
+        match decision {
+            ApprovalDecision::Approved => {
+                req.allow_shell = true;
+                if !req
+                    .required_capabilities
+                    .contains(&ExternalCliCapability::ShellExec)
+                {
+                    req.required_capabilities
+                        .push(ExternalCliCapability::ShellExec);
+                }
+            }
+            ApprovalDecision::Rejected | ApprovalDecision::TimedOut => {
+                let reason_str = if decision == ApprovalDecision::TimedOut {
+                    "approval_timed_out"
+                } else {
+                    "approval_rejected"
+                };
+                emit(
+                    &app,
+                    FAILED_EVENT,
+                    FailedPayload {
+                        task_id: &req.task_id,
+                        workflow_run_id: &req.workflow_run_id,
+                        adapter_id: &cfg.adapter_id,
+                        runtime: runtime_str,
+                        status: ExternalCliExecutionStatus::Cancelled.as_str(),
+                        reason: reason_str,
+                    },
+                );
+                return error_result(
+                    &req,
+                    ExternalCliExecutionStatus::Cancelled,
+                    started_at,
+                    String::new(),
+                    reason_str.to_string(),
+                    String::new(),
+                    false,
+                );
+            }
+        }
+    }
 
     // 2. environment validation
     if let Err(reason) = adapter.validate_environment() {

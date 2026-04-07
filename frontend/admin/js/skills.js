@@ -1352,6 +1352,9 @@ function renderWorkflows() {
                     <button onclick="openWorkflowDetail(${wf.id})" title="編集" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
                         <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #28a745; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m11.239 15.533c-1.045 3.004-1.238 3.451-1.238 3.84 0 .441.385.627.627.627.272 0 1.108-.301 3.829-1.249zm.888-.888 3.22 3.22 6.408-6.401c.163-.163.245-.376.245-.591 0-.213-.082-.427-.245-.591-.58-.579-1.458-1.457-2.039-2.036-.163-.163-.377-.245-.591-.245-.213 0-.428.082-.592.245zm-3.127-.895c0-.402-.356-.75-.75-.75-2.561 0-2.939 0-5.5 0-.394 0-.75.348-.75.75s.356.75.75.75h5.5c.394 0 .75-.348.75-.75zm5-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75z" fill-rule="nonzero"/></svg>
                     </button>
+                    <button onclick="editWorkflowExecutionConfig(${wf.id})" title="実行ランタイム設定" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; font-size: 18px;">
+                        ⚙
+                    </button>
                 </div>
             </td>
         </tr>
@@ -1952,6 +1955,147 @@ async function _wfbSave() {
         return false;
     }
 }
+
+// ───────────────────────────────────────────────
+// Workflow step 実行ランタイム editor
+// Opens a modal for a single workflow and lets the admin set
+// execution_config (runtime / preferred adapter / workspace / approval)
+// for each step. Saves by replaying PUT /api/admin/workflows/:id/skills
+// with the full skills array, preserving every field the backend
+// already expects and injecting the new config_json.execution_config.
+// ───────────────────────────────────────────────
+async function editWorkflowExecutionConfig(workflowId) {
+    if (!window.executionConfigForm) {
+        await showAlert('execution-config-form helper not loaded', 'error');
+        return;
+    }
+    let wfDetail;
+    try {
+        wfDetail = await apiRequest(`/api/admin/workflows/${workflowId}`);
+    } catch (e) {
+        await showAlert('ワークフロー詳細の取得に失敗しました', 'error');
+        return;
+    }
+    const skillsArr = (wfDetail.skills || []).slice().sort(
+        (a, b) => (a.skill_order || 0) - (b.skill_order || 0)
+    );
+    if (!skillsArr.length) {
+        await showAlert('このワークフローにはまだステップがありません', 'info');
+        return;
+    }
+
+    // Build a section per step.
+    const stepSectionsHtml = skillsArr.map(function (s, idx) {
+        let existingCfg = null;
+        try {
+            const raw = typeof s.config_json === 'string'
+                ? JSON.parse(s.config_json)
+                : s.config_json;
+            if (raw && typeof raw === 'object') {
+                existingCfg = raw.execution_config || null;
+            }
+        } catch (_e) { /* ignore */ }
+        const formHtml = window.executionConfigForm.renderForm(existingCfg);
+        return (
+            '<div data-step-section data-step-index="' + idx + '" '
+            + 'style="border:1px solid rgba(0,0,0,0.1); border-radius:12px; padding:14px; margin-bottom:14px;">'
+            + '<div style="font-size:13px; font-weight:600; margin-bottom:8px;">'
+            + 'Step ' + (s.skill_order || idx + 1) + ': ' + _escapeHtmlSimple(s.skill_name || '(unnamed)')
+            + ' <span style="font-size:11px; color:#6b7280;">skill_id=' + s.skill_id + '</span>'
+            + '</div>'
+            + formHtml
+            + '</div>'
+        );
+    }).join('');
+
+    const { value: formValues } = await Swal.fire({
+        title: '実行ランタイム設定 (Workflow #' + workflowId + ')',
+        html:
+            '<div style="max-height:70vh; overflow-y:auto; text-align:left;">'
+            + '<p style="font-size:12px; color:#6b7280; margin-bottom:12px;">'
+            + '各ステップの実行ランタイム / ワークスペース / 承認ポリシーを設定します。'
+            + '空欄のままにすると従来どおり自動ルーティングされます。'
+            + '</p>'
+            + stepSectionsHtml
+            + '</div>',
+        width: '900px',
+        showCancelButton: true,
+        confirmButtonText: '保存',
+        cancelButtonText: ADMIN_SWAL.btnClose,
+        confirmButtonColor: ADMIN_SWAL.primary,
+        cancelButtonColor: ADMIN_SWAL.secondary,
+        preConfirm: function () {
+            const out = [];
+            const sections = document.querySelectorAll('[data-step-section]');
+            sections.forEach(function (sec) {
+                const idx = parseInt(sec.getAttribute('data-step-index'), 10);
+                const root = sec.querySelector('[data-exec-config-root]');
+                const newCfg = window.executionConfigForm.collectForm(root);
+                out.push({ idx: idx, execution_config: newCfg });
+            });
+            return out;
+        },
+    });
+
+    if (!formValues) return;
+
+    // Merge new execution_config into each skill's config_json.
+    const newSkillsPayload = skillsArr.map(function (s, idx) {
+        const updated = formValues.find(function (f) { return f.idx === idx; });
+        let baseCfg = {};
+        if (s.config_json) {
+            try {
+                baseCfg = typeof s.config_json === 'string'
+                    ? JSON.parse(s.config_json)
+                    : (s.config_json || {});
+                if (typeof baseCfg !== 'object' || baseCfg === null) baseCfg = {};
+            } catch (_e) { baseCfg = {}; }
+        }
+        baseCfg.execution_config = updated ? updated.execution_config
+            : window.executionConfigForm.defaultConfig();
+        return {
+            skill_id: s.skill_id,
+            skill_order: s.skill_order,
+            skill_name: s.skill_name,
+            config_json: baseCfg,
+            agent_profile: s.agent_profile || null,
+        };
+    });
+
+    try {
+        await apiRequest('/api/admin/workflows/' + workflowId + '/skills', {
+            method: 'PUT',
+            body: JSON.stringify({ skills: newSkillsPayload }),
+        });
+        await Swal.fire({
+            title: '保存完了',
+            text: 'ステップ実行ランタイム設定を更新しました',
+            icon: 'success',
+            confirmButtonText: ADMIN_SWAL.btnClose,
+            confirmButtonColor: ADMIN_SWAL.primary,
+        });
+    } catch (e) {
+        await Swal.fire({
+            title: 'エラー',
+            text: '保存に失敗しました',
+            icon: 'error',
+            confirmButtonText: ADMIN_SWAL.btnClose,
+            confirmButtonColor: ADMIN_SWAL.primary,
+        });
+        console.error('editWorkflowExecutionConfig error:', e);
+    }
+}
+
+function _escapeHtmlSimple(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+// Expose globally for inline onclick handlers.
+window.editWorkflowExecutionConfig = editWorkflowExecutionConfig;
 
 // ページ読み込み時に実行
 (async () => {

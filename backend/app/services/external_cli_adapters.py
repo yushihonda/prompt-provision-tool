@@ -36,6 +36,7 @@ def build_external_cli_payload(
     required_capabilities: Optional[list[str]] = None,
     workspace_id: Optional[str] = None,
     workspace_mode: Optional[str] = None,
+    approval_policy: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Convert a CoordinatorAdapter row into the runtime external_cli payload.
 
@@ -76,6 +77,7 @@ def build_external_cli_payload(
         "required_capabilities": list(required_capabilities or []),
         "workspace_id": workspace_id,
         "workspace_mode": workspace_mode,
+        "approval_policy": approval_policy,
     }
 
 

@@ -1,5 +1,6 @@
 mod external_cli;
 mod external_cli_adapters;
+mod external_cli_approval;
 mod external_cli_pty;
 mod external_cli_registry;
 mod external_cli_runner;
@@ -7,6 +8,7 @@ mod external_cli_runtime;
 mod external_cli_traits;
 mod local_llm;
 mod orchestration;
+mod workspaces;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use keyring::Entry;
@@ -2755,6 +2757,7 @@ fn main() {
         .manage(DesktopState::default())
         .manage(external_cli_pty::PtyState::default())
         .manage(external_cli_registry::ExternalCliRegistry::with_defaults())
+        .manage(external_cli_approval::ApprovalGate::default())
         .setup(|app| {
             // Start orchestration background tick task
             let tick_handle = app.handle().clone();
@@ -2837,6 +2840,11 @@ fn main() {
             external_cli_pty::external_cli_pty_resize,
             external_cli_pty::external_cli_pty_kill,
             external_cli_runtime::consume_external_cli_bundle,
+            external_cli_approval::external_cli_approve,
+            external_cli_approval::external_cli_reject,
+            workspaces::workspace_ensure_dir,
+            workspaces::workspace_promote,
+            workspaces::workspace_cleanup,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

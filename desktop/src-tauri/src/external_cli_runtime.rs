@@ -22,6 +22,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
+use crate::external_cli_approval::ApprovalGate;
 use crate::external_cli_registry::ExternalCliRegistry;
 use crate::external_cli_runner::run_external_cli_with_adapter;
 use crate::external_cli_traits::{
@@ -176,6 +177,10 @@ fn payload_to_request(
             .get("workspace_mode")
             .and_then(|v| v.as_str())
             .map(String::from),
+        approval_policy: obj
+            .get("approval_policy")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         env_overrides,
         metadata: HashMap::new(),
     })
@@ -269,6 +274,7 @@ fn post_completion(
 pub async fn consume_external_cli_bundle(
     app: AppHandle,
     registry: State<'_, ExternalCliRegistry>,
+    approval_gate: State<'_, ApprovalGate>,
     req: ConsumeExternalCliRequest,
 ) -> Result<ConsumeExternalCliResponse, String> {
     // Step 1: fetch bundle (sync via spawn_blocking to keep this async-friendly).
@@ -294,7 +300,14 @@ pub async fn consume_external_cli_bundle(
 
     // Step 2: run via registry-driven runner.
     let cancel = Arc::new(AtomicBool::new(false));
-    let result = run_external_cli_with_adapter(&registry, app, cli_req, cancel).await;
+    let result = run_external_cli_with_adapter(
+        &registry,
+        Some(&approval_gate),
+        app,
+        cli_req,
+        cancel,
+    )
+    .await;
 
     // Step 3: post completion (best effort).
     let api_base = req.api_base.clone();

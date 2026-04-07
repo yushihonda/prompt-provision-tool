@@ -18,6 +18,7 @@ pub use crate::external_cli_traits::{
     ExternalCliExecutionResult, ExternalCliExecutionStatus, ExternalCliRuntimeKind,
 };
 
+use crate::external_cli_approval::ApprovalGate;
 use crate::external_cli_registry::ExternalCliRegistry;
 use crate::external_cli_runner::run_external_cli_with_adapter;
 
@@ -25,8 +26,9 @@ use crate::external_cli_runner::run_external_cli_with_adapter;
 pub async fn external_cli_run(
     app: AppHandle,
     registry: State<'_, ExternalCliRegistry>,
+    approval_gate: State<'_, ApprovalGate>,
     req: ExternalCliExecutionRequest,
 ) -> Result<ExternalCliExecutionResult, String> {
     let cancel = Arc::new(AtomicBool::new(false));
-    Ok(run_external_cli_with_adapter(&registry, app, req, cancel).await)
+    Ok(run_external_cli_with_adapter(&registry, Some(&approval_gate), app, req, cancel).await)
 }

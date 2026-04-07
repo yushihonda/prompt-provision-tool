@@ -828,6 +828,61 @@ async def get_execution_output(
     }
 
 
+# ───────────────────────────────────────────────
+# Workspace lifecycle endpoints (Tauri filesystem integration)
+# ───────────────────────────────────────────────
+
+class WorkspacePathUpdateRequest(BaseModel):
+    workspace_path: str
+
+
+@router.post("/workspaces/{workspace_id}/path")
+async def api_update_workspace_path(
+    workspace_id: str,
+    body: WorkspacePathUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """Tauri side reports the concrete filesystem path it created for
+    the workspace. Transitions the row from reserved -> active.
+    """
+    from app.services.coordinator_service import update_workspace_path
+    ws = update_workspace_path(db, workspace_id, body.workspace_path)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    return {"workspace_id": ws.workspace_id, "status": ws.status, "workspace_path": ws.workspace_path}
+
+
+@router.post("/workspaces/{workspace_id}/promote")
+async def api_promote_workspace(
+    workspace_id: str,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """Mark a workspace as promoted (files merged / kept)."""
+    from app.services.coordinator_service import promote_workspace
+    ws = promote_workspace(db, workspace_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    return {"workspace_id": ws.workspace_id, "status": ws.status}
+
+
+@router.post("/workspaces/{workspace_id}/cleanup")
+async def api_cleanup_workspace(
+    workspace_id: str,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """Mark a workspace as cleaned. Actual filesystem removal is the
+    Tauri side's responsibility — backend only records the status.
+    """
+    from app.services.coordinator_service import cleanup_workspace
+    ws = cleanup_workspace(db, workspace_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    return {"workspace_id": ws.workspace_id, "status": ws.status}
+
+
 @router.delete("/keys/{key_id}")
 async def revoke_worker_key(
     key_id: int,

@@ -189,6 +189,29 @@ class ApprovalPolicyEnforcementTests(unittest.TestCase):
         self.assertEqual(result["execution_kind"], EXECUTION_KIND_HTTP_PROVIDER)
         self.assertIn("shell_exec", result["selection_reason"])
 
+    def test_ask_before_shell_policy_flows_into_bundle(self):
+        cfg = StepExecutionConfig(
+            execution=StepExecutionMeta(
+                execution_kind="external_cli",
+                preferred_adapter="claude-code-local",
+                cli_runtime_hint="claude_code",
+            ),
+            approval=StepApprovalMeta(policy="ask_before_shell"),
+        )
+        task = {
+            "task_id": "interactive_step",
+            "role": ROLE_WRITER,
+            "cwd_hint": "/Users/me/project",
+            "_step_execution_config": cfg,
+        }
+        result = resolve_execution_kind(self.db, self.plan, task)
+        self.assertEqual(result["execution_kind"], EXECUTION_KIND_EXTERNAL_CLI)
+        payload = result["external_cli_payload"]
+        self.assertEqual(payload["approval_policy"], "ask_before_shell")
+        # At planner time shell is still false — the Rust runner emits
+        # an approval_requested event and promotes only if the user approves.
+        self.assertFalse(payload["allow_shell"])
+
     def test_ask_before_shell_does_not_grant_shell(self):
         cfg = StepExecutionConfig(
             execution=StepExecutionMeta(

@@ -129,6 +129,7 @@ mod tests {
             allow_shell: false,
             workspace_id: None,
             workspace_mode: None,
+            approval_policy: None,
             env_overrides: HashMap::new(),
             metadata: HashMap::new(),
         }

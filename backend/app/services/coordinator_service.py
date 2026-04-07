@@ -859,6 +859,12 @@ def _apply_step_config_to_task(task: Dict[str, Any], step_config) -> None:
         task["writes_files"] = True
     if approval.allow_shell or approval.policy == "allow_shell":
         task["allow_shell"] = True
+    # ask_before_shell: surface the policy string so the Rust runner
+    # knows to emit an approval request event before spawning instead
+    # of short-circuiting to read-only. The runner asks the user
+    # interactively and, on approval, promotes the step to allow_shell
+    # for that single execution.
+    task["_approval_policy"] = approval.policy
 
     # Workspace allocation happens via _maybe_allocate_step_workspace below.
     # Here we just surface the metadata so the planner can decide.
@@ -1085,6 +1091,7 @@ def resolve_execution_kind(
                     required_capabilities=required_caps,
                     workspace_id=workspace_id,
                     workspace_mode=workspace_mode,
+                    approval_policy=task.get("_approval_policy"),
                 )
                 # Determine the runtime label even when cli_runtime_hint
                 # was not explicit (preferred_adapter path).
