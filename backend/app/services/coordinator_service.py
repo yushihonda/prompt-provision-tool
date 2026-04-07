@@ -971,11 +971,12 @@ def resolve_execution_kind(
     if isinstance(step_config, StepExecutionConfig) and not is_legacy_step(step_config):
         _apply_step_config_to_task(task, step_config)
         # Allocate (or share) a CoordinatorWorkspace for steps that
-        # declared workspace_policy != "none". Judge tasks are excluded
-        # from external_cli below, so allocating a workspace for them
-        # is harmless but pointless — we still allocate so audit
-        # metadata stays consistent.
-        _maybe_allocate_step_workspace(db, plan, task, step_config)
+        # declared workspace_policy != "none". Skip judge tasks
+        # entirely: they are hard-routed to http below and never
+        # consume a workspace, so allocating one would leave orphan
+        # rows that are never promoted or cleaned.
+        if role != ROLE_JUDGE:
+            _maybe_allocate_step_workspace(db, plan, task, step_config)
 
     # Hard rule: judge never goes external_cli even if opted in.
     if role == ROLE_JUDGE:
@@ -1079,20 +1080,6 @@ def resolve_execution_kind(
                     has_workspace=bool(workspace_id),
                     requires_local_auth=True,
                 )
-                payload = build_external_cli_payload(
-                    target,
-                    cwd=cwd,
-                    prompt=task.get("prompt") or task.get("objective") or "",
-                    task_id=task.get("task_id") or f"task_{task.get('workflow_skill_id')}",
-                    workflow_run_id=str(plan.workflow_execution_id or plan.plan_id),
-                    task_role=role,
-                    allow_writes=bool(task.get("writes_files", False)),
-                    allow_shell=bool(task.get("allow_shell", False)),
-                    required_capabilities=required_caps,
-                    workspace_id=workspace_id,
-                    workspace_mode=workspace_mode,
-                    approval_policy=task.get("_approval_policy"),
-                )
                 # Determine the runtime label even when cli_runtime_hint
                 # was not explicit (preferred_adapter path).
                 try:
@@ -1108,6 +1095,22 @@ def resolve_execution_kind(
                     selection_reason = f"step_candidate:external_cli:{target.name}"
                 else:
                     selection_reason = f"prefer_external_cli:{resolved_runtime}"
+                payload = build_external_cli_payload(
+                    target,
+                    cwd=cwd,
+                    prompt=task.get("prompt") or task.get("objective") or "",
+                    task_id=task.get("task_id") or f"task_{task.get('workflow_skill_id')}",
+                    workflow_run_id=str(plan.workflow_execution_id or plan.plan_id),
+                    task_role=role,
+                    allow_writes=bool(task.get("writes_files", False)),
+                    allow_shell=bool(task.get("allow_shell", False)),
+                    required_capabilities=required_caps,
+                    workspace_id=workspace_id,
+                    workspace_mode=workspace_mode,
+                    workspace_path=workspace_path,
+                    approval_policy=task.get("_approval_policy"),
+                    selection_reason=selection_reason,
+                )
                 return {
                     "execution_kind": EXECUTION_KIND_EXTERNAL_CLI,
                     "adapter_id": target.adapter_id,

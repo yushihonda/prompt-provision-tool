@@ -177,8 +177,16 @@ fn payload_to_request(
             .get("workspace_mode")
             .and_then(|v| v.as_str())
             .map(String::from),
+        workspace_path: obj
+            .get("workspace_path")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         approval_policy: obj
             .get("approval_policy")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        selection_reason: obj
+            .get("selection_reason")
             .and_then(|v| v.as_str())
             .map(String::from),
         env_overrides,
@@ -186,14 +194,22 @@ fn payload_to_request(
     })
 }
 
-fn build_external_cli_meta(result: &ExternalCliExecutionResult) -> serde_json::Value {
+fn build_external_cli_meta(
+    result: &ExternalCliExecutionResult,
+    req: &ExternalCliExecutionRequest,
+) -> serde_json::Value {
+    let required_caps: Vec<&str> = req
+        .required_capabilities
+        .iter()
+        .map(|c| c.as_str())
+        .collect();
     serde_json::json!({
         "adapter_id": result.adapter_id,
         "adapter_name": result.adapter_name,
         "runtime": result.runtime.as_str(),
         "status": result.status.as_str(),
         "cwd": result.cwd,
-        "command": "", // filled in by adapter; preview separately
+        "command": req.command,
         "command_line_preview": result.command_line_preview,
         "exit_code": result.exit_code,
         "duration_ms": result.duration_ms,
@@ -203,6 +219,16 @@ fn build_external_cli_meta(result: &ExternalCliExecutionResult) -> serde_json::V
         "capability_check_passed": result.capability_check_passed,
         "task_id": result.task_id,
         "workflow_run_id": result.workflow_run_id,
+        // Provenance echoed back from the request so completion_service
+        // can build a full audit row from a single dict.
+        "selection_reason": req.selection_reason,
+        "approval_policy": req.approval_policy,
+        "required_capabilities": required_caps,
+        "allow_writes": req.allow_writes,
+        "allow_shell": req.allow_shell,
+        "workspace_id": req.workspace_id,
+        "workspace_mode": req.workspace_mode,
+        "workspace_path": req.workspace_path,
     })
 }
 
@@ -233,6 +259,7 @@ fn post_completion(
     auth_token: &str,
     execution_id: i64,
     result: &ExternalCliExecutionResult,
+    req: &ExternalCliExecutionRequest,
 ) -> Result<(), String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60))
@@ -256,7 +283,7 @@ fn post_completion(
         "tokens_used": 0,
         "model_used": result.runtime.as_str(),
         "execution_time_ms": result.duration_ms,
-        "external_cli_meta": build_external_cli_meta(result),
+        "external_cli_meta": build_external_cli_meta(result, req),
     });
     let resp = client
         .post(&url)
@@ -296,7 +323,31 @@ pub async fn consume_external_cli_bundle(
     let payload = bundle
         .external_cli_payload
         .ok_or_else(|| "external_cli_payload_missing".to_string())?;
-    let cli_req = payload_to_request(payload)?;
+    let mut cli_req = payload_to_request(payload)?;
+
+    // If the bundle reserved a workspace but the path is not yet on
+    // disk, materialize it via crate::workspaces and POST the path
+    // back to the backend. After this the cwd we hand to the adapter
+    // is guaranteed to exist.
+    if let Some(ws_id) = cli_req.workspace_id.clone() {
+        if cli_req.workspace_path.is_none() || cli_req.cwd.is_empty() {
+            let ensure_req = crate::workspaces::WorkspaceEnsureRequest {
+                api_base: req.api_base.clone(),
+                auth_token: req.auth_token.clone(),
+                workspace_id: ws_id.clone(),
+                plan_id: cli_req.workflow_run_id.clone(),
+                task_id: cli_req.task_id.clone(),
+            };
+            let ensured = crate::workspaces::workspace_ensure_dir(ensure_req).await?;
+            cli_req.cwd = ensured.workspace_path.clone();
+            cli_req.workspace_path = Some(ensured.workspace_path);
+        }
+    }
+
+    // Keep a clone for the completion POST so we can echo provenance
+    // (selection_reason, approval_policy, capabilities) back to the
+    // backend. The runner consumes the original request.
+    let cli_req_for_post = cli_req.clone();
 
     // Step 2: run via registry-driven runner.
     let cancel = Arc::new(AtomicBool::new(false));
@@ -314,7 +365,13 @@ pub async fn consume_external_cli_bundle(
     let auth_token = req.auth_token.clone();
     let result_for_post = result.clone();
     let post_outcome = tokio::task::spawn_blocking(move || {
-        post_completion(&api_base, &auth_token, execution_id, &result_for_post)
+        post_completion(
+            &api_base,
+            &auth_token,
+            execution_id,
+            &result_for_post,
+            &cli_req_for_post,
+        )
     })
     .await
     .map_err(|e| format!("join_post: {e}"))?;
