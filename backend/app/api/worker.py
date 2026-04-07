@@ -483,6 +483,28 @@ async def _get_execution_bundle_inner(
                     None,
                 )
                 if matched_task:
+                    # Phase 4.2: attach parsed StepExecutionConfig from
+                    # the WorkflowSkill row so resolve_execution_kind
+                    # can route per-step. Legacy rows yield the default
+                    # config, which behaves identically to before.
+                    try:
+                        from app.services.workflow_step_schema import parse_execution_config
+                        from app.models import WorkflowSkill as _WorkflowSkill
+                        ws_row = (
+                            db.query(_WorkflowSkill)
+                            .filter(_WorkflowSkill.id == execution.workflow_skill_id)
+                            .first()
+                        )
+                        if ws_row is not None:
+                            matched_task["_step_execution_config"] = parse_execution_config(
+                                ws_row.config_json
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "step execution_config parse skipped for execution %s: %s",
+                            execution_id, exc,
+                        )
+
                     # Phase 3.4: check whether this task opts in to external CLI.
                     kind_result = resolve_execution_kind(
                         db, plan, matched_task,

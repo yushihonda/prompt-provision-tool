@@ -825,6 +825,101 @@ EXECUTION_KIND_EXTERNAL_CLI = "external_cli"
 EXECUTION_KIND_INTERNAL = "internal"
 
 
+def _apply_step_config_to_task(task: Dict[str, Any], step_config) -> None:
+    """Translate a parsed StepExecutionConfig into the legacy ad-hoc
+    fields that the existing resolve_execution_kind body reads.
+
+    This keeps Phase 4.2 surgical: we don't rewrite the Phase 3 routing
+    body, we just feed it the same shape it already understands.
+    """
+    exec_meta = step_config.execution
+    approval = step_config.approval
+    workspace = step_config.workspace
+
+    # Map execution_kind=external_cli to the existing prefer_external_cli flag.
+    if exec_meta.execution_kind == "external_cli":
+        task["prefer_external_cli"] = True
+        if exec_meta.cli_runtime_hint:
+            task["cli_runtime_hint"] = exec_meta.cli_runtime_hint
+        elif exec_meta.preferred_adapter:
+            # Best-effort: derive runtime from adapter name prefix.
+            name = exec_meta.preferred_adapter
+            if name.startswith("claude-"):
+                task["cli_runtime_hint"] = "claude_code"
+            elif name.startswith("codex-"):
+                task["cli_runtime_hint"] = "codex"
+            elif name.startswith("generic-"):
+                task["cli_runtime_hint"] = "generic"
+
+    if exec_meta.cwd_hint:
+        task.setdefault("cwd_hint", exec_meta.cwd_hint)
+
+    # Approval policy → bundle flags consumed by external_cli_payload.
+    if approval.allow_writes or approval.policy == "allow_write":
+        task["writes_files"] = True
+    if approval.allow_shell or approval.policy == "allow_shell":
+        task["allow_shell"] = True
+
+    # Phase 4.3 will allocate workspace rows here. For Phase 4.2 we just
+    # surface the metadata so the planner can decide.
+    if workspace.workspace_policy != "none":
+        task.setdefault("_workspace_policy", workspace.workspace_policy)
+        task.setdefault("_workspace_share_with_steps", workspace.share_with_steps)
+
+    # Stash explicit preferred adapter for downstream lookup helpers.
+    if exec_meta.preferred_adapter:
+        task["_preferred_adapter_name"] = exec_meta.preferred_adapter
+    if exec_meta.candidate_adapters:
+        task["_candidate_adapter_names"] = list(exec_meta.candidate_adapters)
+    if exec_meta.required_capabilities:
+        task["_step_required_capabilities"] = list(exec_meta.required_capabilities)
+
+
+def _maybe_allocate_step_workspace(
+    db: Session,
+    plan: "CoordinatorPlan",
+    task: Dict[str, Any],
+    step_config,
+) -> None:
+    """Phase 4.3: allocate (or share) a CoordinatorWorkspace for a step
+    whose `workspace_policy` is not "none".
+
+    Resolution order for `share_with_steps`:
+    1. each step key (e.g. "step_42") is interpreted as the upstream
+       task's task_id; we look up the existing workspace for that
+       task_id under the same plan
+    2. if found and not yet cleaned, the downstream task reuses its
+       workspace_id / workspace_path
+    3. otherwise a fresh workspace is reserved with the requested mode
+    """
+    workspace_meta = step_config.workspace
+    if workspace_meta.workspace_policy == "none":
+        return
+
+    # 1. Try share_with_steps lookup.
+    for upstream_task_id in workspace_meta.share_with_steps or []:
+        existing = find_workspace_by_task_id(db, plan.plan_id, upstream_task_id)
+        if existing is not None and existing.status != "cleaned":
+            task["workspace_id"] = existing.workspace_id
+            task["workspace_mode"] = existing.mode
+            if existing.workspace_path:
+                task["workspace_path"] = existing.workspace_path
+            task["_workspace_shared_from"] = upstream_task_id
+            return
+
+    # 2. Reserve a new workspace.
+    task_id = task.get("task_id") or f"task_{task.get('workflow_skill_id')}"
+    ws = reserve_workspace(
+        db, plan.plan_id,
+        task_id=task_id,
+        mode=workspace_meta.workspace_policy,
+    )
+    task["workspace_id"] = ws.workspace_id
+    task["workspace_mode"] = ws.mode
+    if ws.workspace_path:
+        task["workspace_path"] = ws.workspace_path
+
+
 def resolve_execution_kind(
     db: Session,
     plan: CoordinatorPlan,
@@ -855,8 +950,26 @@ def resolve_execution_kind(
     )
     from app.services.external_cli_adapters import build_external_cli_payload
     from app.services.external_cli_capabilities import required_capabilities_for_task
+    from app.services.workflow_step_schema import (
+        StepExecutionConfig,
+        is_legacy_step,
+    )
 
     role = task.get("role", ROLE_WRITER)
+
+    # Phase 4.2: read step execution metadata from the task envelope.
+    # worker.py attaches `_step_execution_config` (a StepExecutionConfig)
+    # before calling resolve_execution_kind. Legacy rows produce a
+    # default config, which is indistinguishable from before this PR.
+    step_config = task.get("_step_execution_config")
+    if isinstance(step_config, StepExecutionConfig) and not is_legacy_step(step_config):
+        _apply_step_config_to_task(task, step_config)
+        # Phase 4.3: allocate (or share) a CoordinatorWorkspace for CLI
+        # steps that declared workspace_policy != "none". Judge tasks
+        # are excluded from external_cli below, so allocating a
+        # workspace for them is harmless but pointless — we still
+        # allocate so audit metadata is consistent.
+        _maybe_allocate_step_workspace(db, plan, task, step_config)
 
     # Hard rule: judge never goes external_cli even if opted in.
     if role == ROLE_JUDGE:
@@ -875,21 +988,75 @@ def resolve_execution_kind(
     prefer_cli = bool(task.get("prefer_external_cli", False))
     cli_runtime_hint = task.get("cli_runtime_hint")  # e.g. "claude_code" / "codex"
 
-    if prefer_cli and cli_runtime_hint:
-        # Find an enabled external_cli adapter whose config.runtime matches.
+    if prefer_cli and (cli_runtime_hint or task.get("_preferred_adapter_name")):
+        # Find an enabled external_cli adapter. Resolution order:
+        # 1. _preferred_adapter_name (exact name match)
+        # 2. _candidate_adapter_names (in order)
+        # 3. cli_runtime_hint (config.runtime match)
         adapters = list_adapters(db, only_enabled=True)
         target = None
-        for a in adapters:
-            if a.transport != "external_cli":
-                continue
-            try:
-                cfg = json.loads(a.config or "{}")
-            except json.JSONDecodeError:
-                cfg = {}
-            if cfg.get("runtime") == cli_runtime_hint:
-                target = a
+        preferred_name = task.get("_preferred_adapter_name")
+        candidate_names = task.get("_candidate_adapter_names") or []
+        ordered_candidates = ([preferred_name] if preferred_name else []) + list(candidate_names)
+        for name in ordered_candidates:
+            for a in adapters:
+                if a.transport != "external_cli":
+                    continue
+                if a.name == name:
+                    target = a
+                    break
+            if target is not None:
                 break
+        if target is None and cli_runtime_hint:
+            for a in adapters:
+                if a.transport != "external_cli":
+                    continue
+                try:
+                    cfg = json.loads(a.config or "{}")
+                except json.JSONDecodeError:
+                    cfg = {}
+                if cfg.get("runtime") == cli_runtime_hint:
+                    target = a
+                    break
         if target is not None:
+            # Phase 4.4: approval policy enforcement.
+            # If the step's required_capabilities exceed what the
+            # selected adapter declares, fail fast before issuing the
+            # bundle. The Rust capability gate would catch this too,
+            # but blocking at planner-time saves a spawn round trip
+            # and surfaces a clear selection_reason for audit.
+            try:
+                target_caps_raw = json.loads(target.capabilities or "[]")
+            except json.JSONDecodeError:
+                target_caps_raw = []
+            target_caps = set(target_caps_raw if isinstance(target_caps_raw, list) else [])
+            step_required = set(task.get("_step_required_capabilities") or [])
+            # Approval policy adds implicit caps.
+            if task.get("writes_files"):
+                step_required.add("file_write")
+            if task.get("allow_shell"):
+                step_required.add("shell_exec")
+            missing_caps = sorted(step_required - target_caps)
+            if missing_caps:
+                # Hard mismatch — fall back to http_provider with a
+                # clear selection_reason so the artifact records why.
+                provider_result = resolve_execution_provider(
+                    db, plan, task, retry_count=retry_count
+                )
+                return {
+                    "execution_kind": EXECUTION_KIND_HTTP_PROVIDER,
+                    "adapter_id": provider_result.get("adapter_id"),
+                    "adapter_name": provider_result.get("adapter_name"),
+                    "runtime": None,
+                    "required_capabilities": sorted(step_required),
+                    "selection_reason": (
+                        f"step_capability_mismatch:{target.name}:missing="
+                        + ",".join(missing_caps)
+                    ),
+                    "provider_payload": provider_result.get("provider_payload"),
+                    "external_cli_payload": None,
+                }
+
             workspace_id = task.get("workspace_id")
             workspace_mode = task.get("workspace_mode")
             workspace_path = task.get("workspace_path")
@@ -919,13 +1086,28 @@ def resolve_execution_kind(
                     workspace_id=workspace_id,
                     workspace_mode=workspace_mode,
                 )
+                # Determine the runtime label even when cli_runtime_hint
+                # was not explicit (preferred_adapter path).
+                try:
+                    target_cfg = json.loads(target.config or "{}")
+                except json.JSONDecodeError:
+                    target_cfg = {}
+                resolved_runtime = (
+                    cli_runtime_hint or target_cfg.get("runtime") or "generic"
+                )
+                if task.get("_preferred_adapter_name") == target.name:
+                    selection_reason = f"step_pref:external_cli:{target.name}"
+                elif task.get("_candidate_adapter_names"):
+                    selection_reason = f"step_candidate:external_cli:{target.name}"
+                else:
+                    selection_reason = f"prefer_external_cli:{resolved_runtime}"
                 return {
                     "execution_kind": EXECUTION_KIND_EXTERNAL_CLI,
                     "adapter_id": target.adapter_id,
                     "adapter_name": target.name,
-                    "runtime": cli_runtime_hint,
+                    "runtime": resolved_runtime,
                     "required_capabilities": required_caps,
-                    "selection_reason": f"prefer_external_cli:{cli_runtime_hint}",
+                    "selection_reason": selection_reason,
                     "provider_payload": None,
                     "external_cli_payload": payload,
                 }
@@ -1052,6 +1234,26 @@ def get_workspaces_for_plan(db: Session, plan_id: str) -> List[CoordinatorWorksp
     return db.query(CoordinatorWorkspace).filter(
         CoordinatorWorkspace.plan_id == plan_id
     ).order_by(CoordinatorWorkspace.created_at.asc()).all()
+
+
+def find_workspace_by_task_id(
+    db: Session,
+    plan_id: str,
+    task_id: str,
+) -> Optional[CoordinatorWorkspace]:
+    """Phase 4.3: locate an existing workspace allocated for the named
+    upstream task. Used by `share_with_steps` so a downstream
+    verification step inherits the same workspace as the code step.
+    """
+    return (
+        db.query(CoordinatorWorkspace)
+        .filter(
+            CoordinatorWorkspace.plan_id == plan_id,
+            CoordinatorWorkspace.task_id == task_id,
+        )
+        .order_by(CoordinatorWorkspace.created_at.desc())
+        .first()
+    )
 
 
 def auto_reserve_workspaces_for_plan(db: Session, plan: CoordinatorPlan) -> List[CoordinatorWorkspace]:

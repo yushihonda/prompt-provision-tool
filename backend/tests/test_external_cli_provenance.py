@@ -25,7 +25,10 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
-from app.services.completion_service import build_external_cli_provenance  # noqa: E402
+from app.services.completion_service import (  # noqa: E402
+    build_external_cli_provenance,
+    build_http_provider_provenance,
+)
 
 
 class BuildExternalCliProvenanceTests(unittest.TestCase):
@@ -98,6 +101,38 @@ class BuildExternalCliProvenanceTests(unittest.TestCase):
         prov = build_external_cli_provenance(meta)
         self.assertEqual(prov["changed_files"], [])
         self.assertEqual(prov["changed_files_count"], 0)
+
+    def test_phase_4_5_unified_base_keys_present(self):
+        # Both runtime kinds must share these base keys.
+        cli_meta = self._full_meta()
+        cli_meta["selection_reason"] = "step_pref:external_cli:claude-code-local"
+        cli_meta["approval_policy"] = "allow_write"
+        cli_prov = build_external_cli_provenance(cli_meta)
+        http_meta = {
+            "selected_adapter_name": "local-llm-ollama",
+            "actual_adapter_name": "remote-api-openai-compat",
+            "selected_provider_mode": "local_preferred",
+            "actual_provider_mode": "remote_only",
+            "provider_selection_reason": "low_impact_local",
+            "fallback_applied": True,
+            "fallback_reason": "connect_error",
+            "provider_attempt_count": 2,
+            "preflight_status": "unreachable",
+            "local_error_reason": "connect_error",
+            "local_model_requested": "qwen2.5-coder:14b",
+        }
+        http_prov = build_http_provider_provenance(http_meta)
+        # Unified base keys.
+        for key in ("step_execution_kind", "adapter_id", "adapter_name", "runtime", "selection_reason"):
+            self.assertIn(key, cli_prov)
+            self.assertIn(key, http_prov)
+        self.assertEqual(cli_prov["step_execution_kind"], "external_cli")
+        self.assertEqual(http_prov["step_execution_kind"], "http_provider")
+        self.assertEqual(cli_prov["selection_reason"], "step_pref:external_cli:claude-code-local")
+        self.assertEqual(http_prov["selection_reason"], "low_impact_local")
+        # http_prov retains its runtime-specific keys too.
+        self.assertTrue(http_prov["fallback_applied"])
+        self.assertEqual(http_prov["preflight_status"], "unreachable")
 
     def test_strong_requirement_questions_answerable_from_dict(self):
         prov = build_external_cli_provenance(self._full_meta())

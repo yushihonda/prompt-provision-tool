@@ -257,11 +257,14 @@ def build_external_cli_provenance(external_cli_meta: dict) -> dict:
     graph.
     """
     return {
+        "step_execution_kind": "external_cli",  # Phase 4.5: unified base key
         "execution_kind": "external_cli",
         "adapter_type": "external_cli",
         "adapter_id": external_cli_meta.get("adapter_id"),
         "adapter_name": external_cli_meta.get("adapter_name"),
         "runtime": external_cli_meta.get("runtime"),
+        "selection_reason": external_cli_meta.get("selection_reason"),
+        "approval_policy": external_cli_meta.get("approval_policy"),
         "cwd": external_cli_meta.get("cwd"),
         "command": external_cli_meta.get("command"),
         "command_line_preview": external_cli_meta.get("command_line_preview"),
@@ -279,6 +282,38 @@ def build_external_cli_provenance(external_cli_meta: dict) -> dict:
         "workspace_id": external_cli_meta.get("workspace_id"),
         "workspace_mode": external_cli_meta.get("workspace_mode"),
         "workspace_path": external_cli_meta.get("workspace_path"),
+    }
+
+
+def build_http_provider_provenance(provider_meta: dict) -> dict:
+    """Phase 4.5: complement to build_external_cli_provenance for the
+    HTTP/internal provider path. Returns the unified base keys so a
+    single artifact reader can render either runtime kind.
+
+    `provider_meta` here is the existing dict produced by
+    `_run_with_runtime_fallback` plus whatever the planner attached.
+    """
+    return {
+        "step_execution_kind": "http_provider",
+        "execution_kind": "http_provider",
+        "adapter_type": "http_provider",
+        "adapter_id": provider_meta.get("actual_adapter_id")
+        or provider_meta.get("selected_adapter_id"),
+        "adapter_name": provider_meta.get("actual_adapter_name")
+        or provider_meta.get("selected_adapter_name"),
+        "runtime": provider_meta.get("actual_provider_mode")
+        or provider_meta.get("selected_provider_mode"),
+        "selection_reason": provider_meta.get("provider_selection_reason"),
+        "selected_provider_mode": provider_meta.get("selected_provider_mode"),
+        "actual_provider_mode": provider_meta.get("actual_provider_mode"),
+        "fallback_applied": provider_meta.get("fallback_applied", False),
+        "fallback_from_adapter_id": provider_meta.get("fallback_from_adapter_id"),
+        "fallback_to_adapter_id": provider_meta.get("fallback_to_adapter_id"),
+        "fallback_reason": provider_meta.get("fallback_reason"),
+        "provider_attempt_count": provider_meta.get("provider_attempt_count", 1),
+        "preflight_status": provider_meta.get("preflight_status"),
+        "local_error_reason": provider_meta.get("local_error_reason"),
+        "local_model_requested": provider_meta.get("local_model_requested"),
     }
 
 
