@@ -14,10 +14,27 @@
 
 | ファイル | 役割 |
 |---------|------|
-| `backend/app/services/coordinator_service.py` | Plan / Worker / Artifact / Event / Workspace / DAG / Provider Router |
-| `backend/app/services/coordinator_extensions.py` | Adapter Registry / Task Envelope / Eval Harness / Resume |
+| `backend/app/services/coordinator_service.py` | Plan / Worker / Artifact / Event / Workspace / DAG / Provider Router / `resolve_execution_kind` |
+| `backend/app/services/coordinator_extensions.py` | Adapter Registry / Task Envelope / Eval Harness / Resume / local adapter health refresh |
+| `backend/app/services/external_cli_adapters.py` | external_cli bundle payload 構築 (`build_external_cli_payload`) |
+| `backend/app/services/external_cli_capabilities.py` | capability 定数 + `required_capabilities_for_task` |
+| `backend/app/services/completion_service.py` | `build_external_cli_provenance` + artifact metadata 永続化 |
+| `backend/app/api/adapters.py` | `/api/adapters/*` (health refresh / models) |
 | `backend/app/api/user.py` | `/api/user/coordinator/*` エンドポイント |
+| `sidecar/app/providers/http_provider.py` | OpenAI互換 HTTP provider (Ollama) + preflight |
+| `sidecar/app/providers/discovery.py` | `ping` / `list_models` helpers |
+| `sidecar/app/real_execution.py` | runtime fallback + `execution_kind=external_cli` bypass |
+| `desktop/src-tauri/src/external_cli_traits.rs` | `ExternalCliAdapter` trait + shared enums/types |
+| `desktop/src-tauri/src/external_cli_registry.rs` | `ExternalCliRegistry` |
+| `desktop/src-tauri/src/external_cli_runner.rs` | 汎用 runner (pipe モード, capability gate, changed_files) |
+| `desktop/src-tauri/src/external_cli_pty.rs` | PTY duplex モード (`portable-pty`) |
+| `desktop/src-tauri/src/external_cli_runtime.rs` | `consume_external_cli_bundle` Tauri command |
+| `desktop/src-tauri/src/external_cli_adapters/{claude_code,codex,generic}.rs` | concrete adapters |
+| `desktop/src-tauri/src/local_llm.rs` | `local_llm_ping` / `local_llm_list_models` Tauri commands |
 | `frontend/user/js/workflow-execute.js` | `loadCoordinatorPlan` / `renderCoordinatorPlan` |
+| `frontend/user/cli-terminal.html` | External CLI ターミナルページ (xterm.js + PTY) |
+| `frontend/user/js/cli-terminal-view.js` | パイプモード ストリーミングビューア |
+| `frontend/user/js/cli-terminal-pty.js` | PTY duplex ターミナル |
 
 ## DB テーブル
 
@@ -140,13 +157,35 @@
 
 起動時に既定アダプターが seed される:
 
-| name | type | provider_mode | impl |
-|------|------|--------------|------|
-| internal-sidecar | internal | remote_only | sidecar.main |
-| local-llm-ollama | local_llm | local_preferred | http://localhost:11434/v1 |
-| remote-api-openai-compat | remote_api | remote_only | user_api_keys |
+| name | type | transport | provider_mode | impl |
+|------|------|-----------|---------------|------|
+| internal-sidecar | internal | process_stdio | remote_only | sidecar.main |
+| local-llm-ollama | local_llm | http | local_preferred | http://localhost:11434/v1 |
+| remote-api-openai-compat | remote_api | http | remote_only | user_api_keys |
+| claude-code-local | external_cli | external_cli | remote_only | claude |
+| codex-local | external_cli | external_cli | remote_only | codex |
 
-`find_adapter_for_task(role, provider_mode)` でルックアップする。
+`find_adapter_for_task(role, provider_mode)` で HTTP provider 系の lookup をする。external_cli は `resolve_execution_kind()` で `cli_runtime_hint` を見て選択される (別経路)。
+
+`update_adapter_health()` + `refresh_local_adapter_health()` で Ollama 系 adapter の health を probe し、adapter row の `config.last_health_detail` に models 一覧 / latency / 最終 error を書き込む。
+
+#### External CLI adapter (Claude Code / Codex / Generic)
+
+External CLI adapter は **Rust 側の `ExternalCliRegistry`** に独立して登録される。バックエンドの `CoordinatorAdapter` row は bundle payload 生成と UI 表示用のメタデータであり、実行は Rust の `ExternalCliAdapter` trait 実装が担当する。
+
+- `ExternalCliAdapter` trait: `validate_environment()` / `supports_capabilities()` / `build_command()` / `build_prompt()` / `classify_failure()` / `normalize_result()`
+- `ExternalCliCapability` enum (12種): `FileRead` / `FileWrite` / `ShellExec` / `DiffReview` / `LocalAuthSession` / `StructuredPatchSummary` / `BackgroundTask` / `StreamingStdout` / `StreamingStderr` / `WorkspaceAware` / `JsonOutput` / `Pty`
+- `ExternalCliExecutionStatus` enum: `Pending` / `Running` / `Succeeded` / `Failed` / `TimedOut` / `Cancelled` / `MissingBinary` / `AuthRequired` / `CapabilityMismatch` / `Unsupported`
+- concrete adapters: `ClaudeCodeAdapter` (完全実装) / `CodexAdapter` (scaffold、`codex --help` で flag 検証予定) / `GenericAdapter` (config-driven、テスト/任意 CLI)
+
+generic runner (`external_cli_runner::run_external_cli_with_adapter`) が runtime非依存の処理を担当:
+- cwd 検証 (home 配下のみ許可)
+- subprocess spawn (`tokio::process::Command` = pipe / `portable-pty` = PTY duplex)
+- line-buffered stdout/stderr capture → `external_cli:stdout_chunk` / `stderr_chunk` イベント
+- timeout / cancel
+- changed files diff (top-level snapshot)
+- output truncation (1 MiB cap)
+- `ExternalCliCapabilityChecked` / `Planned` / `Started` / `Finished` / `Failed` イベント emit
 
 ### Task Envelope
 

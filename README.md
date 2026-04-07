@@ -8,10 +8,12 @@ NexMAGI は Tauri ベースのデスクトップアプリで、複数のAIエー
 
 - **3Dアクリルキューブ**による直感的なパイプライン表示
 - **マルチモデル対応** — OpenAI GPT-5.x / Gemini 3.x / Claude 4.x
+- **ローカル LLM 対応** — Ollama (OpenAI互換 HTTP) を preflight + ランタイムフォールバック付きで実行
+- **External CLI runtime** — ローカル `claude` / `codex` をターミナル埋め込み (xterm.js / PTY) で直接実行
 - **品質ゲート + リフレクション** — 自動検証・修正ループ
 - **並列グループ + ジャッジ** — Mixture of Agents で結果を統合
 - **Coordinator 観測層** — Plan / Workers / Artifacts / DAG / Eval メトリクス
-- **アダプターレジストリ** — internal sidecar / local LLM / remote API を統一管理
+- **アダプターレジストリ** — internal sidecar / local LLM (HTTP) / external CLI / remote API を統一管理
 - **ユーザー自身のAPIキー管理** — 設定ページから登録、サーバー側 .env フォールバックなし
 
 ## アーキテクチャ
@@ -63,6 +65,27 @@ npm run tauri:dev
 - ハンドオフコンテキストの自動伝播
 - 動的タスク分解 (planner → 動的ステップ生成)
 
+### ローカル LLM (Ollama)
+- OpenAI互換 HTTP プロバイダ (`http://localhost:11434/v1`)
+- **Preflight** — `/v1/models` で疎通 + モデル存在確認してから chat 呼び出し
+- **ランタイムフォールバック** — `local_preferred` タスクで連絡不通 / `model_not_found` → `remote_api` へ自動リトライ
+- 設定画面から health refresh + モデル一覧取得
+- 既定モデル: `qwen2.5-coder:14b`
+
+### External CLI runtime (Claude Code / Codex / Generic)
+- ローカルの `claude` / `codex` CLI をそのまま実行バックエンドとして使用
+- Claude Pro / Max や ChatGPT Plus / Pro の既存サブスクでログイン済みであれば API キー不要
+- 共通 trait (`ExternalCliAdapter`) + capability matrix で runtime を抽象化
+  - Claude Code: file read/write, shell exec, local auth, workspace, streaming, PTY
+  - Codex: scaffold (`codex -p` 前提、flag layout は実機で検証予定)
+  - Generic: 設定駆動 (`/bin/sh -c ...`)、テスト / 任意 CLI に利用
+- **デュアルモード terminal** — `cli-terminal.html` ページに2種類のビューア
+  - Phase 1: パイプ経由のストリーミング (xterm.js 読み取り専用)
+  - Phase 2: `portable-pty` による PTY duplex (キー入力 → 子プロセス、ファイル編集確認等に応答可能)
+- **Capability gate** — 必須 capability がアダプタに無ければ spawn 前に `CapabilityMismatch` で拒否
+- **Artifact provenance** — 実行後 `runtime` / `cwd` / `exit_code` / `changed_files` / `capability_check_passed` など全て artifact metadata に永続化
+- **Judge は強制 remote** — 個人サブスクを judge に使わないよう hard rule で保護
+
 ### Coordinator 観測層
 - ワークフロー開始時に **CoordinatorPlan** を生成（実行は既存の OrchestrationManager が担う）
 - **Named Workers**: role × max_parallelism で論理ワーカーを生成し、task をラウンドロビン割当
@@ -94,11 +117,13 @@ npm run tauri:dev
 
 | レイヤー | 技術 |
 |---------|------|
-| デスクトップ | Tauri 2.x + Rust |
-| フロントエンド | Vanilla JS + CSS (3D transforms) |
+| デスクトップ | Tauri 2.x + Rust (tokio, reqwest, portable-pty) |
+| フロントエンド | Vanilla JS + CSS (3D transforms), xterm.js 5.x |
 | バックエンド | FastAPI + SQLAlchemy |
 | データベース | MySQL 8.0 + Redis |
-| AI 実行 | Python (OpenAI / Gemini / Anthropic SDK) |
+| AI 実行 (クラウド) | Python (OpenAI / Gemini / Anthropic SDK) |
+| AI 実行 (ローカル HTTP) | Ollama (OpenAI互換 API, `qwen2.5-coder:14b` など) |
+| AI 実行 (外部 CLI) | `claude` (Claude Code) / `codex` / generic CLI |
 | 暗号化 | Fernet (cryptography) |
 
 ## DB テーブル概要

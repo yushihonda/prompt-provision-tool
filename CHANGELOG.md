@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — Local LLM (Ollama)
+- **OpenAI互換 HTTP provider** (`sidecar/app/providers/http_provider.py`) — Ollama を最初のターゲットに、vLLM / LM Studio / llama-cpp も同経路で対応可能な generic provider
+- **Preflight** — `GET /v1/models` で疎通確認 + モデル存在確認を先に行い、`connect_error` / `model_not_found` の場合は chat 呼び出しをスキップして早期失敗
+- **Runtime fallback** — `local_preferred` タスクで recoverable エラー → `remote_api` に 1回のみ自動リトライ、`fallback_applied` / `local_error_reason` / `preflight_status` を artifact に記録
+- **Discovery helpers** (`sidecar/app/providers/discovery.py`) — `ping()` / `list_models()` を例外なしの構造化 dict API として提供
+- **Backend adapter health API** (`/api/adapters/{id}/health/refresh`, `/api/adapters/{id}/models`) — health status を `healthy | degraded | unreachable | unknown` で永続化
+- **Tauri commands** — `local_llm_ping` / `local_llm_list_models` で frontend から直接 Ollama 疎通確認
+- **設定画面 UI** — adapter 設定ページに health badge + モデルドロップダウン、`qwen2.5-coder:14b` を既定モデルに
+- **Artifact provenance** — `preflight_status` / `local_error_reason` / `local_model_requested` を全フォールバック経路で記録
+
+### Added — External CLI runtime (Claude Code / Codex / Generic)
+- **共有 Rust trait** (`external_cli_traits.rs`) — `ExternalCliAdapter` trait、`ExternalCliRuntimeKind` / `ExternalCliCapability` / `ExternalCliExecutionStatus` enum、共有 request/result/config 型
+- **Registry** (`external_cli_registry.rs`) — 型付き `Arc<dyn ExternalCliAdapter>` マップ、`with_defaults()` で3 runtime を登録
+- **Concrete adapters** — Claude Code (完全実装) / Codex (scaffold、`codex --help` での flag 検証は TODO) / Generic (`/bin/sh -c`, テスト / 任意 CLI に利用)
+- **Generic runner** (`external_cli_runner.rs`) — runtime非依存の spawn / capture / timeout / cwd 検証 / changed_files diff / output truncation / unified event emission
+- **Phase 1 パイプモード** (`external_cli.rs`) — `tokio::process::Command` による stdout/stderr ラインバッファ capture + xterm.js 読み取り専用ターミナル
+- **Phase 2 PTY モード** (`external_cli_pty.rs`) — `portable-pty` を使った duplex PTY、キー入力 → 子プロセス、ファイル編集確認等のインタラクティブなワークフローに対応
+- **Capability gate** — タスクの `required_capabilities` と adapter の declared capabilities を比較、mismatch は spawn 前に `CapabilityMismatch` で拒否 + 失敗イベント emit
+- **Unified event family** — `external_cli:planned/capability_checked/started/stdout_chunk/stderr_chunk/finished/failed` の7種、payload に `runtime` / `adapter_id` / `transport=pipe|pty` を含む
+- **Backend routing** — `resolve_execution_kind()` で `http_provider` / `external_cli` / `internal` の3分岐、judge タスクは hard rule で external_cli から除外
+- **Bundle + sidecar bypass** — `execution_kind=external_cli` の bundle は sidecar が `delegated_to_external_cli_runtime` marker を返して bypass、desktop Rust の `consume_external_cli_bundle` Tauri command がフェッチから completion POST までを担当
+- **Artifact provenance unified shape** — Claude / Codex / Generic すべて同じキーセット (`runtime`, `cwd`, `command_line_preview`, `cli_status`, `exit_code`, `duration_ms`, `changed_files`, `capability_check_passed`, `required_capabilities`, `workspace_id/mode/path` 等) を `build_external_cli_provenance()` で永続化
+- **Frontend — `cli-terminal.html`** — 新ページ: ランタイム選択ドロップダウン、ストリーミングターミナルカード、PTYターミナルカード、status badge、cwd/exit_code/changed_files 表示
+- **Nav** — "External CLI" ナビエントリを追加
+- **既定モデル** — seed adapters に `claude-code-local` / `codex-local` を登録
+
+### Tests
+- sidecar: 28 (Ollama preflight + runtime fallback)
+- backend: 22 (local adapter health + external CLI adapter seed + routing + provenance)
+- Rust: 31 (trait, registry, runner, all adapters, PTY, local LLM)
+- 計 81 unit tests pass + 実機 `claude -p "..."` smoke 成功
+
 ## [3.0.0] - 2026-04-06
 
 ### Breaking Changes
