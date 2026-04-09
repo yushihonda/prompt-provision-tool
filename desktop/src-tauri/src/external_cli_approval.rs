@@ -93,8 +93,17 @@ pub async fn request_shell_approval(
     let approval_id = uuid::Uuid::new_v4().to_string();
     let rx = gate.register(approval_id.clone());
 
-    let prompt_preview = if prompt.len() > 200 {
-        &prompt[..200]
+    // Slice at a char boundary — raw byte indexing panics on
+    // multi-byte prompts (Japanese/emoji). See feedback memory
+    // "Rust string slicing must respect char boundaries".
+    let prompt_preview_owned: String;
+    let prompt_preview: &str = if prompt.len() > 200 {
+        let mut cut = 200;
+        while cut > 0 && !prompt.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        prompt_preview_owned = prompt[..cut].to_string();
+        &prompt_preview_owned
     } else {
         prompt
     };

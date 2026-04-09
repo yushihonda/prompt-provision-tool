@@ -65,7 +65,18 @@ pub fn build_command_line_preview(command: &str, args: &[String]) -> String {
     }
     let line = parts.join(" ");
     if line.len() > 400 {
-        format!("{}...", &line[..400])
+        // Slice at a char boundary — not a raw byte offset — so
+        // multi-byte prompts (Japanese, emoji, etc.) don't panic here.
+        // Past incident: a Japanese prompt hit byte 400 mid-codepoint,
+        // panicked inside consume_external_cli_bundle's async future,
+        // and the Tauri IPC Promise hung forever on the JS side.
+        let cut = line
+            .char_indices()
+            .take_while(|(i, _)| *i <= 400)
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        format!("{}...", &line[..cut])
     } else {
         line
     }
@@ -270,6 +281,20 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
 // generic runner
 // ───────────────────────────────────────────────
 
+fn runner_trace(msg: &str) {
+    use std::io::Write;
+    let home = std::env::var("HOME").ok();
+    let path = match home {
+        Some(h) => std::path::PathBuf::from(h)
+            .join("Library/Application Support/com.nexmagi.desktop/external_cli_runtime_trace.log"),
+        None => std::path::PathBuf::from("/tmp/external_cli_runtime_trace.log"),
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let ts = chrono::Utc::now().to_rfc3339();
+        let _ = writeln!(f, "{} [runner] {}", ts, msg);
+    }
+}
+
 pub async fn run_external_cli_with_adapter(
     registry: &ExternalCliRegistry,
     approval_gate: Option<&ApprovalGate>,
@@ -277,6 +302,7 @@ pub async fn run_external_cli_with_adapter(
     req: ExternalCliExecutionRequest,
     cancel: Arc<AtomicBool>,
 ) -> ExternalCliExecutionResult {
+    runner_trace(&format!("ENTER task_id={} adapter_id={} cwd={}", req.task_id, req.adapter_id, req.cwd));
     let started_at = now_iso();
     let started_instant = Instant::now();
     let runtime_str = req.runtime.as_str();
@@ -296,6 +322,7 @@ pub async fn run_external_cli_with_adapter(
         },
     );
 
+    runner_trace(&format!("registry_lookup task_id={} adapter_id={}", req.task_id, req.adapter_id));
     // 1. registry lookup
     let adapter = match registry.get(&req.adapter_id) {
         Some(a) => a,
@@ -413,6 +440,7 @@ pub async fn run_external_cli_with_adapter(
         }
     }
 
+    runner_trace(&format!("adapter_found task_id={}", req.task_id));
     // 2. environment validation
     if let Err(reason) = adapter.validate_environment() {
         let status = ExternalCliExecutionStatus::MissingBinary;
@@ -489,6 +517,7 @@ pub async fn run_external_cli_with_adapter(
         );
     }
 
+    runner_trace(&format!("pre_cwd_validate task_id={} cwd={}", req.task_id, req.cwd));
     // 4. cwd
     let cwd = match validate_cwd(&req.cwd) {
         Ok(p) => p,
@@ -517,6 +546,7 @@ pub async fn run_external_cli_with_adapter(
         }
     };
 
+    runner_trace(&format!("cwd_validated task_id={} cwd={}", req.task_id, cwd.display()));
     // 5. command + prompt
     let prompt = match adapter.build_prompt(&req) {
         Ok(p) => p,
@@ -552,10 +582,12 @@ pub async fn run_external_cli_with_adapter(
     };
     let preview = build_command_line_preview(&command, &args);
 
+    runner_trace(&format!("command_built task_id={} command={} args_len={}", req.task_id, command, args.len()));
     // 6. snapshot files
     let started_files = snapshot_top_level(&cwd);
 
     // 7. spawn
+    runner_trace(&format!("pre_spawn task_id={}", req.task_id));
     let mut cmd = Command::new(&command);
     cmd.args(&args)
         .current_dir(&cwd)
@@ -568,7 +600,10 @@ pub async fn run_external_cli_with_adapter(
     }
 
     let mut child = match cmd.spawn() {
-        Ok(c) => c,
+        Ok(c) => {
+            runner_trace(&format!("spawned task_id={} pid={:?}", req.task_id, c.id()));
+            c
+        },
         Err(e) => {
             let status = adapter.classify_failure(None, "", "", Some(e.kind()));
             let reason = format!("{}: {}", status.as_str(), e);
@@ -635,8 +670,10 @@ pub async fn run_external_cli_with_adapter(
         STDERR_EVENT,
     ));
 
+    runner_trace(&format!("waiting task_id={} timeout_ms={}", req.task_id, req.timeout_ms));
     let timeout = Duration::from_millis(req.timeout_ms.max(1));
     let wait_result = tokio::time::timeout(timeout, child.wait()).await;
+    runner_trace(&format!("wait_returned task_id={}", req.task_id));
 
     let mut interim_status = ExternalCliExecutionStatus::Pending;
     let mut exit_code: Option<i32> = None;
@@ -666,8 +703,11 @@ pub async fn run_external_cli_with_adapter(
         }
     }
 
+    runner_trace(&format!("collecting_stdout task_id={}", req.task_id));
     let stdout_text = stdout_handle.await.unwrap_or_default();
+    runner_trace(&format!("collecting_stderr task_id={}", req.task_id));
     let stderr_text = stderr_handle.await.unwrap_or_default();
+    runner_trace(&format!("streams_collected task_id={} stdout_len={} stderr_len={}", req.task_id, stdout_text.len(), stderr_text.len()));
     let (stdout_trunc, stdout_truncated) = truncate_output(&stdout_text, MAX_OUTPUT_BYTES);
     let (stderr_trunc, stderr_truncated) = truncate_output(&stderr_text, MAX_OUTPUT_BYTES);
     let changed_files = diff_changed_files(&cwd, &started_files);

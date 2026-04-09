@@ -2199,7 +2199,14 @@ fn send_sidecar_command(
     eprintln!("[sidecar] waiting for response to '{}'...", cmd_name);
     let line = match rx.recv_timeout(timeout) {
         Ok((Ok(line), returned_stdout)) => {
-            eprintln!("[sidecar] got response for '{}': {} bytes, preview: {}", cmd_name, line.len(), &line[..line.len().min(500)]);
+            // Preview bounded to 500 bytes at a char boundary so
+            // non-ASCII sidecar output (e.g. Japanese error messages)
+            // doesn't panic this debug log line.
+            let mut preview_cut = line.len().min(500);
+            while preview_cut > 0 && !line.is_char_boundary(preview_cut) {
+                preview_cut -= 1;
+            }
+            eprintln!("[sidecar] got response for '{}': {} bytes, preview: {}", cmd_name, line.len(), &line[..preview_cut]);
             runtime.stdout = Some(returned_stdout);
             line
         }
