@@ -1,13 +1,11 @@
-"""External CLI adapter support — currently only Claude Code.
+"""外部 CLI アダプタ連携
 
-Builds the bundle payload that the Rust runtime layer uses to spawn the
-external CLI. Distinct from internal cli_provider (local_worker) which
-runs a packaged adapter binary owned by the app itself.
+Rust ランタイム層が外部 CLI を起動するための bundle payload を組み立てる。
+内蔵の cli_provider (local_worker) とは異なり、ユーザーがローカルに
+インストール済みの外部 CLI (Claude Code / Codex / Generic) を使う。
 
-Claude Code is a *user-installed external* CLI tied to the user's
-personal Pro/Max subscription. We never carry an Anthropic API key on
-this path — auth is whatever the user has already done locally with
-`claude login`.
+Claude Code はユーザー個人の Pro/Max サブスクに紐付く外部 CLI。
+Anthropic API キーは一切載せず、`claude login` で済んだ認証をそのまま使う。
 """
 from __future__ import annotations
 
@@ -19,7 +17,7 @@ from app.models import CoordinatorAdapter
 ADAPTER_NAME_CLAUDE_CODE = "claude-code-local"
 ADAPTER_NAME_CODEX = "codex-local"
 ADAPTER_NAME_CURSOR = "cursor-local"
-DEFAULT_CLAUDE_TIMEOUT_MS = 900_000  # 15 min
+DEFAULT_CLAUDE_TIMEOUT_MS = 900_000  # 15分
 
 
 def build_external_cli_payload(
@@ -39,10 +37,11 @@ def build_external_cli_payload(
     workspace_path: Optional[str] = None,
     approval_policy: Optional[str] = None,
     selection_reason: Optional[str] = None,
+    cli_model: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """Convert a CoordinatorAdapter row into the runtime external_cli payload.
+    """CoordinatorAdapter 行をランタイム用 external_cli payload に変換する。
 
-    Returns None for adapters that are not external_cli transport.
+    external_cli トランスポートでないアダプタの場合は None を返す。
     """
     if adapter is None or adapter.transport != "external_cli":
         return None
@@ -62,7 +61,13 @@ def build_external_cli_payload(
 
     return {
         "transport": "external_cli",
-        "adapter_id": adapter.adapter_id,
+        # adapter_id はデスクトップ Rust ExternalCliRegistry の検索キー。
+        # 組み込みアダプタは "claude-code-local" / "codex-local" / "generic-cli" を
+        # adapter_config().adapter_id として返す（DB の UUID ではない）。
+        # よってここでは human-readable な adapter.name を送る。
+        # DB UUID は監査/来歴用に adapter_db_id として別途保持。
+        "adapter_id": adapter.name,
+        "adapter_db_id": adapter.adapter_id,
         "adapter_name": adapter.name,
         "runtime": runtime,
         "command": command,
@@ -82,6 +87,10 @@ def build_external_cli_payload(
         "workspace_path": workspace_path,
         "approval_policy": approval_policy,
         "selection_reason": selection_reason,
+        # CLI 専用モデル ID (例: "claude-sonnet-4-6")。
+        # Rust runner が -m/--model として CLI コマンドに注入する。
+        # None の場合は CLI のプロファイルデフォルトに従う。
+        "cli_model": cli_model,
     }
 
 

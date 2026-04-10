@@ -1,13 +1,11 @@
-"""Workflow step execution metadata schema.
+"""ワークフローステップの実行メタデータスキーマ
 
-Lives inside `WorkflowSkill.config_json` under the `execution_config`
-key. No DB migration — `config_json` is already a free-form Text column.
+`WorkflowSkill.config_json` の `execution_config` キー内に格納される。
+`config_json` は既存の自由形式 Text 列なので DB マイグレーション不要。
 
-Legacy step rows (no `execution_config` key) are interpreted as the
-default config, which routes through the existing HTTP/internal
-provider path with read-only approval and no workspace. This means
-adding the schema does NOT change behavior for any currently-defined
-workflow.
+レガシー行 (`execution_config` キーなし) はデフォルト設定として解釈され、
+従来の HTTP/internal プロバイダ経路 + read_only 承認 + ワークスペースなし
+で動作する。既存のワークフロー定義には一切影響しない。
 """
 from __future__ import annotations
 
@@ -25,7 +23,7 @@ ApprovalPolicy = Literal["read_only", "ask_before_shell", "allow_shell", "allow_
 
 
 class StepExecutionMeta(BaseModel):
-    """`execution` block — picks runtime + adapter."""
+    """`execution` ブロック — ランタイムとアダプタの選択。"""
     model_config = ConfigDict(extra="allow")
 
     execution_kind: ExecutionKind = "auto"
@@ -34,10 +32,14 @@ class StepExecutionMeta(BaseModel):
     required_capabilities: list[str] = Field(default_factory=list)
     cli_runtime_hint: Optional[str] = None  # "claude_code" | "codex" | "generic"
     cwd_hint: Optional[str] = None
+    # CLI 専用: 外部 CLI バイナリに渡すモデル ID
+    # (例: "claude-sonnet-4-6", "gpt-5-codex")
+    # プロバイダランタイムでは無視される（プロバイダは親 Skill 行の model_type を使用）
+    cli_model: Optional[str] = None
 
 
 class StepWorkspaceMeta(BaseModel):
-    """`workspace` block — workspace lifecycle preferences."""
+    """`workspace` ブロック — ワークスペースライフサイクル設定。"""
     model_config = ConfigDict(extra="allow")
 
     workspace_policy: WorkspacePolicy = "none"
@@ -47,7 +49,7 @@ class StepWorkspaceMeta(BaseModel):
 
 
 class StepApprovalMeta(BaseModel):
-    """`approval` block — what the step is allowed to do at runtime."""
+    """`approval` ブロック — ステップ実行時の権限制御。"""
     model_config = ConfigDict(extra="allow")
 
     policy: ApprovalPolicy = "read_only"
@@ -56,7 +58,7 @@ class StepApprovalMeta(BaseModel):
 
 
 class StepArtifactContract(BaseModel):
-    """`artifact_contract` block — informational hint about expected output."""
+    """`artifact_contract` ブロック — 期待される出力形式のヒント。"""
     model_config = ConfigDict(extra="allow")
 
     expected_type: Optional[str] = None
@@ -65,11 +67,10 @@ class StepArtifactContract(BaseModel):
 
 
 class StepExecutionConfig(BaseModel):
-    """Full execution metadata for a workflow step.
+    """ワークフローステップの実行メタデータ全体。
 
-    Persisted as JSON inside `WorkflowSkill.config_json` under
-    `execution_config`. Forward-compatible: unknown keys at any level
-    are preserved (extra='allow').
+    `WorkflowSkill.config_json` の `execution_config` キーに JSON として永続化。
+    前方互換: 各階層の未知キーは保持される (extra='allow')。
     """
     model_config = ConfigDict(extra="allow")
 
@@ -81,23 +82,22 @@ class StepExecutionConfig(BaseModel):
 
 
 def default_step_execution_config() -> StepExecutionConfig:
-    """Return the legacy-equivalent default config.
+    """レガシー互換のデフォルト設定を返す。
 
-    A row without `execution_config` should produce identical behavior
-    to before this PR: auto routing, no workspace, read_only approval.
+    `execution_config` キーのない行はこの設定と同じ動作になる:
+    auto ルーティング / ワークスペースなし / read_only 承認。
     """
     return StepExecutionConfig()
 
 
 def parse_execution_config(raw_config_json: Any) -> StepExecutionConfig:
-    """Read a `WorkflowSkill.config_json` value (string or dict) and
-    return the normalized `StepExecutionConfig`.
+    """config_json (文字列 or dict) を読み取り、正規化した StepExecutionConfig を返す。
 
-    Failure modes (all return default + log warning):
-    - raw is None or empty
-    - raw is not valid JSON
-    - raw is JSON but has no `execution_config` key
-    - `execution_config` is malformed against the schema
+    以下の場合はすべてデフォルト + 警告ログ:
+    - 値が None または空
+    - JSON として不正
+    - `execution_config` キーが存在しない
+    - スキーマバリデーション失敗
     """
     if raw_config_json is None or raw_config_json == "":
         return default_step_execution_config()
@@ -109,29 +109,23 @@ def parse_execution_config(raw_config_json: Any) -> StepExecutionConfig:
         try:
             data = json.loads(raw_config_json)
         except json.JSONDecodeError as e:
-            logger.warning("workflow_skill config_json is not valid JSON: %s", e)
+            logger.warning("config_json が有効な JSON ではありません: %s", e)
             return default_step_execution_config()
     elif isinstance(raw_config_json, dict):
         data = raw_config_json
     else:
-        logger.warning(
-            "workflow_skill config_json has unexpected type %s",
-            type(raw_config_json).__name__,
-        )
+        logger.warning("config_json の型が想定外です: %s", type(raw_config_json).__name__)
         return default_step_execution_config()
 
     exec_config = data.get("execution_config")
     if not isinstance(exec_config, dict):
-        # Legacy row — no execution_config block at all.
+        # レガシー行 — execution_config ブロックなし
         return default_step_execution_config()
 
     try:
         return StepExecutionConfig.model_validate(exec_config)
     except ValidationError as e:
-        logger.warning(
-            "workflow_skill execution_config failed schema validation, falling back to default: %s",
-            e,
-        )
+        logger.warning("execution_config のスキーマバリデーション失敗、デフォルトにフォールバック: %s", e)
         return default_step_execution_config()
 
 
@@ -139,10 +133,10 @@ def merge_execution_config_into_config_json(
     raw_config_json: Any,
     new_execution_config: StepExecutionConfig,
 ) -> str:
-    """Update an existing `config_json` blob with a new
-    `execution_config` while preserving every other key.
+    """既存の config_json に新しい execution_config をマージする。
 
-    Returns the merged JSON string ready to write back to the column.
+    他のキーは保持したまま、execution_config のみ上書きする。
+    書き戻し用の JSON 文字列を返す。
     """
     base: dict[str, Any]
     if raw_config_json is None or raw_config_json == "":
@@ -162,10 +156,78 @@ def merge_execution_config_into_config_json(
     return json.dumps(base, ensure_ascii=False)
 
 
+def merge_step_execution_config_chain(
+    *configs: Optional[StepExecutionConfig],
+) -> StepExecutionConfig:
+    """StepExecutionConfig を左から右へ順にマージする。
+
+    Workflow → WorkflowGroup → Skill → WorkflowSkill の継承チェーンで使用。
+    後の設定が前の設定をブロック単位で上書きする。
+    None やデフォルト相当のエントリは何も寄与しない。
+    """
+    result: Optional[StepExecutionConfig] = None
+    for cfg in configs:
+        if cfg is None:
+            continue
+        result = merge_step_execution_configs(result, cfg)
+    return result if result is not None else default_step_execution_config()
+
+
+def merge_step_execution_configs(
+    parent: Optional[StepExecutionConfig],
+    override: Optional[StepExecutionConfig],
+) -> StepExecutionConfig:
+    """親 (スキルレベルデフォルト) と子 (ステップレベル) の設定をブロック単位でマージする。
+
+    ポリシー:
+    - override のブロックがデフォルトと異なる場合、ブロック全体を置換（フィールド単位の深いマージはしない）
+    - それ以外は親のブロックを保持
+    - schema_version は override 優先、なければ親
+
+    ブロック単位の置換により「execution_kind=external_cli を設定したのに
+    親の workspace_policy=shared が暗黙的に引き継がれる」という微妙なバグを防ぐ。
+    """
+    if parent is None:
+        parent = default_step_execution_config()
+    if override is None:
+        override = default_step_execution_config()
+    default = default_step_execution_config()
+
+    def _block_set(override_block, default_block) -> bool:
+        return override_block.model_dump() != default_block.model_dump()
+
+    merged_execution = (
+        override.execution if _block_set(override.execution, default.execution)
+        else parent.execution
+    )
+    merged_workspace = (
+        override.workspace if _block_set(override.workspace, default.workspace)
+        else parent.workspace
+    )
+    merged_approval = (
+        override.approval if _block_set(override.approval, default.approval)
+        else parent.approval
+    )
+    merged_artifact = (
+        override.artifact_contract
+        if _block_set(override.artifact_contract, default.artifact_contract)
+        else parent.artifact_contract
+    )
+
+    return StepExecutionConfig(
+        schema_version=override.schema_version or parent.schema_version,
+        execution=merged_execution,
+        workspace=merged_workspace,
+        approval=merged_approval,
+        artifact_contract=merged_artifact,
+    )
+
+
 def is_legacy_step(config: StepExecutionConfig) -> bool:
-    """True if this config is indistinguishable from the legacy default
-    (i.e. nothing was set explicitly). Used by routing to short-circuit
-    to the existing path.
+    """レガシーデフォルトと区別がつかないか判定する。
+
+    何も明示設定されていない場合に True を返す。
+    ルーティングで既存パスへのショートカットに使用。
     """
     default = default_step_execution_config()
     return config.model_dump() == default.model_dump()

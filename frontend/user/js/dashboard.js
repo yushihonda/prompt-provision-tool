@@ -76,9 +76,21 @@ function renderUserWorkflows() {
         .map((item, idx) => {
             const wf = item.workflow;
             const skillCount = (item.skills || []).length;
-            const modelDisplay = typeof formatModelDisplay === 'function'
-                ? formatModelDisplay(wf.parent_model_type || '', null, {})
-                : (wf.parent_model_type || '-');
+            // workflow.config_json から実効ランタイム（API / CLI: <adapter>）を解決する。
+            // CLI モードでは parent_model_type の代わりに cli_model
+            // （またはランタイム名フォールバック）を表示する。
+            const wfCtx = { workflow: { config_json: wf.config_json } };
+            const wfResolved = window.runtimeResolver
+                ? window.runtimeResolver.resolveEffectiveRuntime(wfCtx)
+                : { kind: 'api' };
+            const modelDisplay = (wfResolved.kind === 'cli' && window.runtimeResolver)
+                ? window.runtimeResolver.effectiveModelLabel(wfCtx, '')
+                : (typeof formatModelDisplay === 'function'
+                    ? formatModelDisplay(wf.parent_model_type || '', null, {})
+                    : (wf.parent_model_type || '-'));
+            const wfRuntimeChip = window.runtimeResolver
+                ? window.runtimeResolver.renderResolvedRuntimeChip(wfCtx)
+                : '';
             const profiles = item.step_profiles || [];
             const stepGroups = item.step_groups || [];
             let flowHtml = '';
@@ -122,6 +134,7 @@ function renderUserWorkflows() {
                         <div class="card-meta">
                             <span><strong>${skillCount}</strong> steps</span>
                             <span class="meta-divider">|</span>
+                            ${wfRuntimeChip || ''}
                             <span>${modelDisplay}</span>
                         </div>
                         ${flowHtml ? `<div class="card-figure">${flowHtml}</div>` : ''}
@@ -145,7 +158,16 @@ function renderSkills() {
 
     container.innerHTML = skills.map((skill, idx) => {
         const isExecuting = executingSkillId && skill.id === executingSkillId;
-        const modelDisplay = formatModelDisplay(skill.model_type, null, skill);
+        const skCtx = { skill: { config_json: skill.config_json } };
+        const skResolved = window.runtimeResolver
+            ? window.runtimeResolver.resolveEffectiveRuntime(skCtx)
+            : { kind: 'api' };
+        const modelDisplay = (skResolved.kind === 'cli' && window.runtimeResolver)
+            ? window.runtimeResolver.effectiveModelLabel(skCtx, '')
+            : formatModelDisplay(skill.model_type, null, skill);
+        const skRuntimeChip = window.runtimeResolver
+            ? window.runtimeResolver.renderResolvedRuntimeChip(skCtx)
+            : '';
         return `
         <article class="card-wrapper ${isExecuting ? 'card-executing' : ''}" data-skill-id="${skill.id}">
             <div class="card-circle">
@@ -158,6 +180,7 @@ function renderSkills() {
                 <h3 class="card-title">${skill.name}${isExecuting ? '<span class="executing-badge">実行中</span>' : ''}</h3>
                 <p class="card-desc">${skill.description || '説明なし'}</p>
                 <div class="card-meta">
+                    ${skRuntimeChip || ''}
                     <span>${modelDisplay}</span>
                 </div>
             </div>

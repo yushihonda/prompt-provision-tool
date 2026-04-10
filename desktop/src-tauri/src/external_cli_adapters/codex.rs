@@ -1,20 +1,20 @@
-//! OpenAI Codex CLI (`codex`) adapter — scaffold.
+//! OpenAI Codex CLI (`codex`) アダプター — スキャフォールド。
 //!
-//! Codex invocation contract (verified against codex-cli 0.21.0):
+//! Codex 呼び出しコントラクト（codex-cli 0.21.0 で検証済み）:
 //!
 //!   codex exec [--skip-git-repo-check] -s <sandbox> -C <cwd> "<prompt>"
 //!
-//! - `exec` is the non-interactive subcommand (interactive mode has no
-//!   prompt argument and would hang the runner).
-//! - `-s read-only | workspace-write | danger-full-access` maps to the
-//!   step's allow_writes / allow_shell flags.
-//! - `-C <cwd>` tells Codex which directory to treat as the workspace
-//!   root. We also chdir the child process to the same directory.
-//! - `--skip-git-repo-check` allows Codex to run in directories that
-//!   are not git repositories (test workspaces, temp dirs).
-//! - The prompt is a positional argument. If `-` is passed, Codex
-//!   reads from stdin; we always pass it inline.
-//! - `-p` on Codex is profile, NOT prompt. Do not reuse Claude's -p.
+//! - `exec` は非インタラクティブサブコマンド（インタラクティブモードは
+//!   プロンプト引数がなくランナーがハングする）。
+//! - `-s read-only | workspace-write | danger-full-access` はステップの
+//!   allow_writes / allow_shell フラグにマッピングされる。
+//! - `-C <cwd>` はワークスペースルートとして扱うディレクトリを Codex に指示する。
+//!   子プロセスも同じディレクトリに chdir する。
+//! - `--skip-git-repo-check` は git リポジトリでないディレクトリ（テスト用
+//!   ワークスペース、一時ディレクトリ）での Codex 実行を許可する。
+//! - プロンプトは位置引数である。`-` を渡すと Codex は stdin から読み取るが、
+//!   ここでは常にインラインで渡す。
+//! - Codex の `-p` はプロファイルであり、プロンプトではない。Claude の -p を再利用しないこと。
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -58,9 +58,17 @@ impl CodexAdapter {
                     "LC_ALL".into(),
                     "TERM".into(),
                     "TMPDIR".into(),
-                    "OPENAI_API_KEY".into(),
+                    // OPENAI_API_KEY は意図的に転送しない。
+                    // ユーザーはローカル Codex CLI の ChatGPT Plus/Pro
+                    // サブスクリプション認証（codex login）を使用するために
+                    // 「CLI」を選択する。API キーが存在すると Codex はそれを
+                    // 優先して API クレジットを消費する — まさにここで
+                    // 避けたいことである。
                 ],
                 metadata: HashMap::new(),
+                risk_level: Some("medium".into()),
+                requires_workspace: true,
+                default_approval_policy: Some("allow_write".into()),
             },
         }
     }
@@ -78,9 +86,9 @@ impl ExternalCliAdapter for CodexAdapter {
     }
 
     fn validate_environment(&self) -> Result<(), String> {
-        // TODO: probe `which codex`. Currently permissive so registry
-        // construction does not fail on machines without `codex`; the
-        // runner reports MissingBinary on spawn failure instead.
+        // TODO: `which codex` を検査する。現在は寛容にしており、`codex` が
+        // ないマシンでもレジストリ構築が失敗しないようにしている。
+        // 代わりにランナーが起動失敗時に MissingBinary を報告する。
         Ok(())
     }
 
@@ -88,9 +96,9 @@ impl ExternalCliAdapter for CodexAdapter {
         &self,
         req: &ExternalCliExecutionRequest,
     ) -> Result<(String, Vec<String>), String> {
-        // Map step approval policy -> codex sandbox policy.
-        // Claude Code-style flags don't exist here; use the `exec`
-        // subcommand with -s (sandbox) and -C (cwd).
+        // ステップ承認ポリシー -> Codex サンドボックスポリシーのマッピング。
+        // Claude Code スタイルのフラグはここには存在しない。`exec`
+        // サブコマンドと -s (sandbox) および -C (cwd) を使用する。
         let sandbox = if req.allow_shell {
             "danger-full-access"
         } else if req.allow_writes {
@@ -106,10 +114,20 @@ impl ExternalCliAdapter for CodexAdapter {
         args.push(sandbox.to_string());
         args.push("-C".into());
         args.push(req.cwd.clone());
-        // Any extra user-provided args go next.
+        // オプショナルなモデルオーバーライド（例: "gpt-5-codex"）。Codex は
+        // モデル選択に -m を使用する（-p ではない; -p はプロファイル）。
+        // None の場合はフラグを完全にスキップし、Codex がデフォルトの
+        // プロファイルモデルにフォールバックするようにする。
+        if let Some(model) = req.cli_model.as_deref() {
+            if !model.is_empty() {
+                args.push("-m".into());
+                args.push(model.to_string());
+            }
+        }
+        // ユーザー提供の追加引数はその後に続く。
         args.extend(self.cfg.default_args.iter().cloned());
         args.extend(req.args.iter().cloned());
-        // Prompt is a positional argument.
+        // プロンプトは位置引数。
         args.push(req.prompt.clone());
         Ok((self.cfg.command.clone(), args))
     }
@@ -175,6 +193,7 @@ mod tests {
             workspace_path: None,
             approval_policy: None,
             selection_reason: None,
+            cli_model: None,
             env_overrides: HashMap::new(),
             metadata: HashMap::new(),
         }
@@ -187,15 +206,15 @@ mod tests {
         assert_eq!(cmd, "codex");
         assert_eq!(args[0], "exec");
         assert_eq!(args[1], "--skip-git-repo-check");
-        // -s read-only for read-only approval.
+        // -s read-only は読み取り専用承認用。
         let s_idx = args.iter().position(|a| a == "-s").unwrap();
         assert_eq!(args[s_idx + 1], "read-only");
-        // -C /cwd.
+        // -C で作業ディレクトリを指定。
         let c_idx = args.iter().position(|a| a == "-C").unwrap();
         assert_eq!(args[c_idx + 1], "/Users/me/project");
-        // Prompt is the last positional.
+        // プロンプトは最後の位置引数。
         assert_eq!(args.last().unwrap(), "hello");
-        // Codex must NOT use -p (that's profile, not prompt).
+        // Codex は -p を使ってはいけない（プロファイルであり、プロンプトではない）。
         assert!(!args.contains(&"-p".to_string()));
     }
 
@@ -217,7 +236,7 @@ mod tests {
         let caps = &a.adapter_config().capabilities;
         assert!(caps.contains(&ExternalCliCapability::FileWrite));
         assert!(caps.contains(&ExternalCliCapability::ShellExec));
-        // Codex scaffold does not declare PTY support yet — that's intentional.
+        // Codex スキャフォールドはまだ PTY サポートを宣言していない — これは意図的である。
         assert!(!caps.contains(&ExternalCliCapability::Pty));
     }
 }

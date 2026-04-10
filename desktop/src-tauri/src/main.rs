@@ -522,6 +522,8 @@ struct AppendWorkflowRunEventInput {
     idempotency_key: String,
     schema_version: Option<i64>,
     payload_json: Value,
+    event_namespace: Option<String>,
+    event_seq: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1302,6 +1304,24 @@ fn migrate_workflow_run_events_table(conn: &Connection) -> Result<(), DesktopErr
         [],
     )?;
 
+    // ── Session layer columns ──
+    if !columns.contains("event_namespace") {
+        conn.execute(
+            "ALTER TABLE workflow_run_events ADD COLUMN event_namespace TEXT",
+            [],
+        )?;
+    }
+    if !columns.contains("event_seq") {
+        conn.execute(
+            "ALTER TABLE workflow_run_events ADD COLUMN event_seq INTEGER",
+            [],
+        )?;
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workflow_run_events_namespace ON workflow_run_events(event_namespace)",
+        [],
+    )?;
+
     Ok(())
 }
 
@@ -1407,6 +1427,15 @@ fn initialize_storage_internal(app: &AppHandle) -> Result<StorageSummary, Deskto
     )?;
 
     migrate_workflow_run_events_table(&conn)?;
+
+    // ── Add session_id to workflow_runs ──
+    {
+        let wr_columns = table_columns(&conn, "workflow_runs")?;
+        if !wr_columns.contains("session_id") {
+            conn.execute("ALTER TABLE workflow_runs ADD COLUMN session_id TEXT", [])?;
+        }
+    }
+
     initialize_continuation_locks(&conn)?;
 
     let engine_mode: String = conn.query_row(
@@ -1561,9 +1590,11 @@ fn append_workflow_run_event_internal(
             origin_layer,
             idempotency_key,
             schema_version,
-            payload_json
+            payload_json,
+            event_namespace,
+            event_seq
         )
-        VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
         params![
             event_id,
@@ -1580,6 +1611,8 @@ fn append_workflow_run_event_internal(
             input.idempotency_key,
             schema_version,
             payload_json,
+            input.event_namespace,
+            input.event_seq,
         ],
     )?;
 
@@ -1660,6 +1693,8 @@ fn append_sidecar_event_batch(
                 idempotency_key: draft.event_idempotency_key.clone(),
                 schema_version: Some(1),
                 payload_json: draft.payload_json.clone(),
+                event_namespace: None,
+                event_seq: None,
             },
         )?;
         event_ids_by_key.insert(draft.event_key.clone(), row.event_id.clone());
@@ -2421,6 +2456,8 @@ fn simulate_continuation(
                 "delta_instruction_hash": delta_instruction_hash,
                 "continuation_dedupe_key": continuation_dedupe_key,
             }),
+            event_namespace: None,
+            event_seq: None,
         },
     )
     .map_err(|err| err.to_string())?;
@@ -2459,6 +2496,8 @@ fn simulate_continuation(
                 "continuation_dedupe_key": continuation_dedupe_key,
                 "lock_acquired": acquired,
             }),
+            event_namespace: None,
+            event_seq: None,
         },
     )
     .map_err(|err| err.to_string())?;
@@ -2487,6 +2526,8 @@ fn simulate_continuation(
                 "continuation_dedupe_key": continuation_dedupe_key,
                 "lock_event_id": lock_event.event_id,
             }),
+            event_namespace: None,
+            event_seq: None,
         },
     )
     .map_err(|err| err.to_string())?;
@@ -2849,9 +2890,12 @@ fn main() {
             external_cli_runtime::consume_external_cli_bundle,
             external_cli_approval::external_cli_approve,
             external_cli_approval::external_cli_reject,
+            external_cli_approval::submit_workflow_approval_response,
             workspaces::workspace_ensure_dir,
             workspaces::workspace_promote,
             workspaces::workspace_cleanup,
+            workspaces::read_workspace_file,
+            workspaces::workspace_list_active,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

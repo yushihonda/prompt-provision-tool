@@ -68,12 +68,16 @@ class WorkerScheduler:
                 self._error_count += 1
                 logger.error(f"Execution {execution_id} failed: {e}")
 
-                # エラーをサーバーに報告
+                # エラーをサーバーに報告 (external_cli の失敗 meta を載せる)
+                cli_meta = getattr(e, "external_cli_meta", None)
+                provider_meta = getattr(e, "provider_meta", None)
                 try:
                     await upload_error(
                         execution_id,
                         str(e),
                         auth_override=auth_override,
+                        external_cli_meta=cli_meta if isinstance(cli_meta, dict) else None,
+                        provider_meta=provider_meta if isinstance(provider_meta, dict) else None,
                     )
                 except Exception as upload_err:
                     logger.error(

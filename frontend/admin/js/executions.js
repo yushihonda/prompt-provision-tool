@@ -86,7 +86,7 @@ function renderExecutions() {
     const pageRows = groupedRows.slice(start, start + itemsPerPage);
 
     if (pageRows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--content-text-muted);">実行ログがありません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align: center; color: var(--content-text-muted);">実行ログがありません</td></tr>';
         return;
     }
 
@@ -99,14 +99,23 @@ function renderExecutions() {
     }).join('');
 }
 
+function _runtimeBadgeForExec(execution) {
+    if (window.runtimeBadge && execution && execution.extra_metadata) {
+        return window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata) || '';
+    }
+    return '';
+}
+
 function renderSkillRow(execution) {
     const modelDisplay = formatModelDisplay(execution.model_used, execution);
+    const runtimeBadge = _runtimeBadgeForExec(execution) || '<span style="color:var(--content-text-muted); font-size:11px;">-</span>';
     return `
     <tr>
         <td>${execution.id}</td>
         <td>${formatDate(execution.executed_at)}</td>
         <td>${execution.account_id}</td>
         <td>${escapeHtmlAdmin(execution.skill_name || '-')}</td>
+        <td>${runtimeBadge}</td>
         <td>${modelDisplay}</td>
         <td>${execution.execution_time || '-'}${execution.execution_time ? 'ms' : ''}</td>
         <td>${formatCompact(execution.tokens_used)}</td>
@@ -130,6 +139,10 @@ function renderWorkflowRow(group) {
     const leaderExec = normalExecs.find(e => !e.workflow_skill_id);
     const parentModel = leaderExec?.model_used || normalExecs[0]?.model_used || '-';
     const modelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModel, null, {}) : parentModel;
+    // 親がどのランタイムで実行されたかを要約するリーダーのランタイムバッジを表示。
+    // リーダーにメタデータがない場合は最初の子ステップにフォールバック。
+    const runtimeSourceExec = leaderExec || normalExecs[0];
+    const runtimeBadge = _runtimeBadgeForExec(runtimeSourceExec) || '<span style="color:var(--content-text-muted); font-size:11px;">-</span>';
     const weId = group.workflowExecutionId;
 
     // ミニキューブ + 矢印 + リーダー（ユーザー側と同じ）
@@ -153,6 +166,7 @@ function renderWorkflowRow(group) {
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:12px;perspective:300px;align-items:center;">${skillBars}</div>
         </td>
+        <td>${runtimeBadge}</td>
         <td>${modelDisplay}</td>
         <td>${totalTime ? totalTime + 'ms' : '-'}</td>
         <td>${formatCompact(totalTokens)}</td>
@@ -253,6 +267,9 @@ async function showWorkflowDetail(weId) {
         skillId: exec.skill_id,
         inputData: exec.input_data || null,
         agentProfile: exec.agent_profile || null,
+        // プロベナンス情報をパススルーし、ワークフロー詳細ポップアップで
+        // ステップごとのランタイムバッジをレンダリングできるようにする。
+        extraMetadata: exec.extra_metadata || null,
     }));
     const finalOutput = leaderExec?.output_data || '';
     // coordinator view / synthesis events を取得

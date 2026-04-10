@@ -1,18 +1,17 @@
-//! Desktop-side consumer for `execution_kind=external_cli` bundles.
+//! `execution_kind=external_cli` バンドルのデスクトップ側コンシューマー。
 //!
-//! When the backend bundle response carries
-//! `execution_kind="external_cli"` + `external_cli_payload`, the sidecar
-//! returns a `delegated_to_external_cli_runtime` marker and stops. This
-//! Tauri command picks the same execution up, runs it through the
-//! registry-driven runner, and POSTs the completion back through the
-//! existing `/api/worker/executions/{id}/complete` endpoint with an
-//! `external_cli_meta` field.
+//! バックエンドのバンドルレスポンスが
+//! `execution_kind="external_cli"` + `external_cli_payload` を含む場合、
+//! サイドカーは `delegated_to_external_cli_runtime` マーカーを返して停止する。
+//! この Tauri コマンドが同じ実行を引き取り、レジストリ駆動ランナーを通じて
+//! 実行し、既存の `/api/worker/executions/{id}/complete` エンドポイントに
+//! `external_cli_meta` フィールド付きで完了を POST する。
 //!
-//! Currently this ships **on-demand fetch only** — the frontend
-//! explicitly invokes `consume_external_cli_bundle(execution_id)`
-//! after observing that the execution is sitting in the delegated
-//! state. A background polling loop is a small follow-up; the
-//! contract here is the same.
+//! 現在は**オンデマンドフェッチのみ**で動作する — フロントエンドが
+//! 実行が委譲済み状態にあることを検知した後、明示的に
+//! `consume_external_cli_bundle(execution_id)` を呼び出す。
+//! バックグラウンドポーリングループは小規模な後続作業であり、
+//! ここでのコントラクトは同一である。
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -189,6 +188,10 @@ fn payload_to_request(
             .get("selection_reason")
             .and_then(|v| v.as_str())
             .map(String::from),
+        cli_model: obj
+            .get("cli_model")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         env_overrides,
         metadata: HashMap::new(),
     })
@@ -216,11 +219,15 @@ fn build_external_cli_meta(
         "stdout_truncated": result.stdout_truncated,
         "stderr_truncated": result.stderr_truncated,
         "changed_files": result.changed_files,
+        // ファイル単位のプレビュー (path / size / 先頭 4KB / is_binary /
+        // truncated)。バックエンドがアーティファクトの extra_metadata を
+        // 設定するために使用し、UI が「生成ファイル」パネルを描画できるようにする。
+        "changed_files_preview": result.changed_files_preview,
         "capability_check_passed": result.capability_check_passed,
         "task_id": result.task_id,
         "workflow_run_id": result.workflow_run_id,
-        // Provenance echoed back from the request so completion_service
-        // can build a full audit row from a single dict.
+        // リクエストからエコーバックされた出自情報。completion_service が
+        // 単一の dict から完全な監査行を構築できるようにする。
         "selection_reason": req.selection_reason,
         "approval_policy": req.approval_policy,
         "required_capabilities": required_caps,
@@ -297,6 +304,24 @@ fn post_completion(
     Ok(())
 }
 
+fn trace_log(msg: &str) {
+    // アプリデータディレクトリ内の専用ログファイルに追記する。
+    // Tauri 開発シェルの外からトレースを確認できるようにするため。
+    // eprintln は Tauri ウィンドウプロセス内で stderr が隠されるため使用しない。
+    use std::io::Write;
+    let home = std::env::var("HOME").ok();
+    let path = match home {
+        Some(h) => std::path::PathBuf::from(h)
+            .join("Library/Application Support/com.nexmagi.desktop/external_cli_runtime_trace.log"),
+        None => std::path::PathBuf::from("/tmp/external_cli_runtime_trace.log"),
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let ts = chrono::Utc::now().to_rfc3339();
+        let _ = writeln!(f, "{} {}", ts, msg);
+    }
+    eprintln!("[external_cli_runtime] {}", msg);
+}
+
 #[tauri::command]
 pub async fn consume_external_cli_bundle(
     app: AppHandle,
@@ -304,7 +329,8 @@ pub async fn consume_external_cli_bundle(
     approval_gate: State<'_, ApprovalGate>,
     req: ConsumeExternalCliRequest,
 ) -> Result<ConsumeExternalCliResponse, String> {
-    // Step 1: fetch bundle (sync via spawn_blocking to keep this async-friendly).
+    trace_log(&format!("START execution_id={}", req.execution_id));
+    // ステップ 1: バンドル取得（async フレンドリーに保つため spawn_blocking 経由で同期実行）。
     let api_base = req.api_base.clone();
     let auth_token = req.auth_token.clone();
     let execution_id = req.execution_id;
@@ -313,6 +339,7 @@ pub async fn consume_external_cli_bundle(
     })
     .await
     .map_err(|e| format!("join_fetch: {e}"))??;
+    trace_log(&format!("bundle fetched execution_id={} kind={:?}", execution_id, bundle.execution_kind));
 
     if bundle.execution_kind.as_deref() != Some("external_cli") {
         return Err(format!(
@@ -324,13 +351,14 @@ pub async fn consume_external_cli_bundle(
         .external_cli_payload
         .ok_or_else(|| "external_cli_payload_missing".to_string())?;
     let mut cli_req = payload_to_request(payload)?;
+    trace_log(&format!("payload parsed execution_id={} adapter_id={} cwd={:?} workspace_id={:?} workspace_path={:?}", execution_id, cli_req.adapter_id, cli_req.cwd, cli_req.workspace_id, cli_req.workspace_path));
 
-    // If the bundle reserved a workspace but the path is not yet on
-    // disk, materialize it via crate::workspaces and POST the path
-    // back to the backend. After this the cwd we hand to the adapter
-    // is guaranteed to exist.
+    // バンドルがワークスペースを予約したがパスがまだディスク上にない場合、
+    // crate::workspaces を介して実体化し、パスをバックエンドに POST する。
+    // この処理の後、アダプターに渡す cwd は存在が保証される。
     if let Some(ws_id) = cli_req.workspace_id.clone() {
         if cli_req.workspace_path.is_none() || cli_req.cwd.is_empty() {
+            trace_log(&format!("ensure_dir START execution_id={} ws_id={}", execution_id, ws_id));
             let ensure_req = crate::workspaces::WorkspaceEnsureRequest {
                 api_base: req.api_base.clone(),
                 auth_token: req.auth_token.clone(),
@@ -339,17 +367,19 @@ pub async fn consume_external_cli_bundle(
                 task_id: cli_req.task_id.clone(),
             };
             let ensured = crate::workspaces::workspace_ensure_dir(ensure_req).await?;
+            trace_log(&format!("ensure_dir DONE execution_id={} path={}", execution_id, ensured.workspace_path));
             cli_req.cwd = ensured.workspace_path.clone();
             cli_req.workspace_path = Some(ensured.workspace_path);
         }
     }
 
-    // Keep a clone for the completion POST so we can echo provenance
-    // (selection_reason, approval_policy, capabilities) back to the
-    // backend. The runner consumes the original request.
+    // 完了 POST 用にクローンを保持する。出自情報（selection_reason、
+    // approval_policy、capabilities）をバックエンドにエコーバックするため。
+    // ランナーは元のリクエストを消費する。
     let cli_req_for_post = cli_req.clone();
 
-    // Step 2: run via registry-driven runner.
+    // ステップ 2: レジストリ駆動ランナー経由で実行。
+    trace_log(&format!("run_adapter START execution_id={}", execution_id));
     let cancel = Arc::new(AtomicBool::new(false));
     let result = run_external_cli_with_adapter(
         &registry,
@@ -359,8 +389,9 @@ pub async fn consume_external_cli_bundle(
         cancel,
     )
     .await;
+    trace_log(&format!("run_adapter DONE execution_id={} status={:?} exit={:?}", execution_id, result.status, result.exit_code));
 
-    // Step 3: post completion (best effort).
+    // ステップ 3: 完了を POST（ベストエフォート）。
     let api_base = req.api_base.clone();
     let auth_token = req.auth_token.clone();
     let result_for_post = result.clone();
@@ -379,6 +410,7 @@ pub async fn consume_external_cli_bundle(
     if let Err(e) = post_outcome {
         eprintln!("[external_cli_runtime] post_completion error: {e}");
     }
+    trace_log(&format!("END execution_id={} posted={}", execution_id, completion_posted));
 
     Ok(ConsumeExternalCliResponse {
         execution_id,

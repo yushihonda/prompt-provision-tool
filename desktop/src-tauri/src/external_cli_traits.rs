@@ -1,18 +1,18 @@
-//! Shared types and the `ExternalCliAdapter` trait.
+//! 共有型と `ExternalCliAdapter` トレイト。
 //!
-//! Generalizes the Claude-Code-only path so Codex / Generic CLIs can
-//! plug in via the same interface.
+//! Claude Code 専用パスを汎化し、Codex / Generic CLI が
+//! 同一インターフェースでプラグインできるようにする。
 //!
-//! - shared enums (`ExternalCliRuntimeKind`, `ExternalCliCapability`,
-//!   `ExternalCliExecutionStatus`)
-//! - shared request/result/config types
-//! - the `ExternalCliAdapter` trait that concrete adapters implement
-//! - the generic runner lives in `external_cli_runner.rs` and consumes
-//!   anything that implements this trait
+//! - 共有 enum（`ExternalCliRuntimeKind`、`ExternalCliCapability`、
+//!   `ExternalCliExecutionStatus`）
+//! - 共有リクエスト/結果/設定型
+//! - 具象アダプターが実装する `ExternalCliAdapter` トレイト
+//! - 汎用ランナーは `external_cli_runner.rs` に実装され、
+//!   このトレイトを実装するものを消費する
 //!
-//! The `external_cli.rs` module keeps its public Tauri command
-//! signatures; internally it now constructs a request and dispatches via
-//! the registry + this trait.
+//! `external_cli.rs` モジュールは公開 Tauri コマンドシグネチャを保持し、
+//! 内部的にはリクエストを構築してレジストリ + このトレイト経由で
+//! ディスパッチする。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -118,6 +118,15 @@ pub struct ExternalCliAdapterConfig {
     pub env_keys_passthrough: Vec<String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+    /// リスクレベル: low, medium, high, critical
+    #[serde(default)]
+    pub risk_level: Option<String>,
+    /// このアダプターが隔離されたワークスペースを必要とするかどうか
+    #[serde(default)]
+    pub requires_workspace: bool,
+    /// ステップが指定しない場合のデフォルト承認ポリシー
+    #[serde(default)]
+    pub default_approval_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +156,12 @@ pub struct ExternalCliExecutionRequest {
     pub approval_policy: Option<String>,
     #[serde(default)]
     pub selection_reason: Option<String>,
+    /// CLI 専用モデル ID（例: "claude-sonnet-4-6"、"gpt-5-codex"）。
+    /// 指定時はアダプターがランタイム固有のフラグ（Claude Code は `--model`、
+    /// Codex は `-m`）を介して起動された CLI に転送する。
+    /// None の場合は CLI のデフォルトプロファイルモデルを使用する。
+    #[serde(default)]
+    pub cli_model: Option<String>,
     #[serde(default)]
     pub env_overrides: HashMap<String, String>,
     #[serde(default)]
@@ -169,6 +184,13 @@ pub struct ExternalCliExecutionResult {
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
     pub changed_files: Vec<String>,
+    /// 実行中に生成/変更されたファイルのファイル単位プレビュー。
+    /// 各エントリは path、size、UTF-8 コンテンツの先頭 4KB、
+    /// `truncated` フラグを持つ。変更がない場合は空。バックエンドはこれを
+    /// アーティファクトの extra_metadata に転送し、UI が
+    /// 「生成ファイル」パネルを表示できるようにする。
+    #[serde(default)]
+    pub changed_files_preview: Vec<crate::external_cli_runner::ChangedFilePreview>,
     pub duration_ms: u64,
     pub started_at: String,
     pub finished_at: String,
@@ -177,26 +199,26 @@ pub struct ExternalCliExecutionResult {
     pub metadata: HashMap<String, String>,
 }
 
-/// Trait every concrete external CLI runtime implements.
+/// すべての具象外部 CLI ランタイムが実装するトレイト。
 ///
-/// Concrete adapters own *runtime-specific* behavior:
-/// command construction, prompt wrapping, failure heuristics,
-/// structured-output parsing, capability declaration.
+/// 具象アダプターは*ランタイム固有*の振る舞いを担当する:
+/// コマンド構築、プロンプトラッピング、失敗ヒューリスティクス、
+/// 構造化出力パース、ケイパビリティ宣言。
 ///
-/// The generic runner owns *runtime-agnostic* behavior:
-/// subprocess spawning, timeout, capture, truncation, cwd
-/// validation, changed-file detection, event emission.
+/// 汎用ランナーは*ランタイム非依存*の振る舞いを担当する:
+/// サブプロセス起動、タイムアウト、キャプチャ、切り詰め、
+/// cwd バリデーション、変更ファイル検出、イベント送出。
 pub trait ExternalCliAdapter: Send + Sync {
     fn adapter_config(&self) -> &ExternalCliAdapterConfig;
 
-    /// Verify the runtime can run on this machine right now.
-    /// `Err(reason)` is mapped to `MissingBinary` or `Unsupported` by
-    /// the runner depending on context.
+    /// このマシンでランタイムが現在実行可能か検証する。
+    /// `Err(reason)` はコンテキストに応じてランナーが `MissingBinary`
+    /// または `Unsupported` にマッピングする。
     fn validate_environment(&self) -> Result<(), String>;
 
-    /// Compare task-required capabilities against this adapter's
-    /// declared capabilities. Returns `Err(missing)` listing the
-    /// capabilities that are required but not supported.
+    /// タスクが要求するケイパビリティとこのアダプターが宣言する
+    /// ケイパビリティを比較する。要求されているがサポートされていない
+    /// ケイパビリティのリストを `Err(missing)` として返す。
     fn supports_capabilities(
         &self,
         required: &[ExternalCliCapability],
@@ -272,6 +294,7 @@ pub trait ExternalCliAdapter: Send + Sync {
             stdout_truncated: false,
             stderr_truncated: false,
             changed_files,
+            changed_files_preview: Vec::new(),
             duration_ms,
             started_at,
             finished_at,

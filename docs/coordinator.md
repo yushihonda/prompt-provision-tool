@@ -17,9 +17,12 @@
 | `backend/app/services/coordinator_service.py` | Plan / Worker / Artifact / Event / Workspace / DAG / Provider Router / `resolve_execution_kind` / step workspace allocation |
 | `backend/app/services/coordinator_extensions.py` | Adapter Registry / Task Envelope / Eval Harness / Resume / local adapter health refresh |
 | `backend/app/services/workflow_step_schema.py` | `StepExecutionConfig` + `parse_execution_config` (workflow step に execution / workspace / approval を持たせる) |
+| `backend/app/services/session_service.py` | WorkflowRunSession 管理 (session 作成 / status 遷移 / binding 操作) |
+| `backend/app/services/session_events.py` | 正規化イベント taxonomy (30種) + `emit_session_event` |
+| `backend/app/services/approval_service.py` | 承認リクエスト CRUD + idempotent resolve + session 連携 |
 | `backend/app/services/external_cli_adapters.py` | external_cli bundle payload 構築 (`build_external_cli_payload`) |
 | `backend/app/services/external_cli_capabilities.py` | capability 定数 + `required_capabilities_for_task` |
-| `backend/app/services/completion_service.py` | `build_external_cli_provenance` / `build_http_provider_provenance` + artifact metadata 永続化 |
+| `backend/app/services/completion_service.py` | `build_external_cli_provenance` / `build_http_provider_provenance` + artifact metadata 永続化 + session event emit |
 | `backend/app/api/adapters.py` | `/api/adapters/*` (health refresh / models) |
 | `backend/app/api/user.py` | `/api/user/coordinator/*` エンドポイント |
 | `sidecar/app/providers/http_provider.py` | OpenAI互換 HTTP provider (Ollama) + preflight |
@@ -30,7 +33,8 @@
 | `desktop/src-tauri/src/external_cli_runner.rs` | 汎用 runner (pipe モード, capability gate, changed_files) |
 | `desktop/src-tauri/src/external_cli_pty.rs` | PTY duplex モード (`portable-pty`) |
 | `desktop/src-tauri/src/external_cli_runtime.rs` | `consume_external_cli_bundle` Tauri command |
-| `desktop/src-tauri/src/external_cli_adapters/{claude_code,codex,generic}.rs` | concrete adapters |
+| `desktop/src-tauri/src/external_cli_approval.rs` | 承認ゲート (oneshot + `submit_workflow_approval_response` Tauri command) |
+| `desktop/src-tauri/src/external_cli_adapters/{claude_code,codex,generic}.rs` | concrete adapters (risk/workspace/approval defaults 付き) |
 | `desktop/src-tauri/src/local_llm.rs` | `local_llm_ping` / `local_llm_list_models` Tauri commands |
 | `frontend/user/js/workflow-execute.js` | `loadCoordinatorPlan` / `renderCoordinatorPlan` |
 | `frontend/user/cli-terminal.html` | External CLI ターミナルページ (xterm.js + PTY) |
@@ -46,13 +50,15 @@
 | `coordinator_plans` | `plan_id` (UUID) | ワークフロー実行ごとの事前計画 |
 | `coordinator_workers` | `worker_id` (UUID) | 名前付き論理ワーカー (researcher-1, writer-2 等) |
 | `coordinator_artifacts` | `artifact_id` (UUID) | execution 出力を notes / draft / review / score / final として保存 |
-| `coordinator_events` | `id` | オーケストレーションイベントの時系列ログ |
+| `coordinator_events` | `id` | オーケストレーションイベントの時系列ログ (+session_id / step_id / event_seq / event_namespace) |
 | `coordinator_followup_tasks` | `task_id` (UUID) | 既存タスクから派生する追加タスク |
 | `coordinator_workspaces` | `workspace_id` (UUID) | writes_files=true なタスクの分離ワークスペース |
-| `coordinator_adapters` | `adapter_id` (UUID) | 実行バックエンドのレジストリ |
+| `coordinator_adapters` | `adapter_id` (UUID) | 実行バックエンドのレジストリ (+risk_level / requires_workspace / default_approval_policy / auth_mechanism / supported_capabilities) |
 | `coordinator_eval_runs` | `eval_id` (UUID) | 品質メトリクス履歴 |
+| `approval_requests` | `approval_id` (UUID) | ask_before_shell の durable 承認リクエスト |
 
 `workflow_executions.coordinator_plan_id` で `CoordinatorPlan` と紐付ける。
+`workflow_executions` に session 列 (session_id / session_status / current_step_id / resume_cursor / runtime_bindings / workspace_bindings / approval_summary / artifact_refs) を追加。
 
 ## 主要概念
 
@@ -123,7 +129,7 @@
 
 `route_provider_mode(plan, role, ...)` がルールに従って `provider_mode` を決定する。
 
-### Events
+### Events (Legacy — schema_version="1.0")
 
 | event_type | 発火タイミング |
 |-----------|--------------|
@@ -141,6 +147,72 @@
 | `task_envelope_created` | ポータブルタスク envelope の生成 |
 | `eval_recorded` | 品質メトリクスの履歴記録 |
 | `plan_resumed` / `plan_replayed` | 中断 plan の再開 |
+
+### Normalized Events (schema_version="2.0")
+
+`session_id` / `step_id` / `event_seq` / `event_namespace` 付きで emit される正規化イベント。
+Legacy events と共存し、同じ `coordinator_events` テーブルに格納される。
+
+| namespace | event_type | 発火タイミング |
+|-----------|-----------|--------------|
+| `workflow` | `workflow.session.started` | session 作成 (plan 生成直後) |
+| `workflow` | `workflow.session.step_entered` | current_step_id 更新 |
+| `workflow` | `workflow.session.waiting_approval` | 承認待ちに遷移 |
+| `workflow` | `workflow.session.resumed` | 承認後に再開 |
+| `workflow` | `workflow.session.completed` | ワークフロー正常完了 |
+| `workflow` | `workflow.session.failed` | ワークフロー失敗 |
+| `step` | `step.planned` | タスク計画時 |
+| `step` | `step.started` | Execution 行生成時 |
+| `step` | `step.completed` / `step.failed` | finalize_execution 時 |
+| `step` | `step.retried` | リトライ発生時 |
+| `runtime` | `runtime.selected` | adapter / provider_mode 確定時 |
+| `workspace` | `workspace.created` / `workspace.promoted` / `workspace.cleaned` | workspace 状態遷移時 |
+| `approval` | `approval.requested` / `approval.granted` / `approval.rejected` / `approval.timed_out` | 承認ライフサイクル |
+| `artifact` | `artifact.created` | CoordinatorArtifact 生成時 |
+
+### WorkflowRunSession
+
+> 図: [`diagrams/session-state-machine.mmd`](./diagrams/session-state-machine.mmd)  
+> 図: [`diagrams/session-approval-flow.mmd`](./diagrams/session-approval-flow.mmd)
+
+ワークフロー実行ごとの durable session。`WorkflowExecution` 上の列として実装。
+
+```
+session_id         — "sess_<hex16>"
+session_status     — initializing | running | waiting_approval | paused | completed | failed | cancelled
+current_step_id    — 現在処理中の task_id
+resume_cursor      — JSON {step_id, attempt_no, position}
+runtime_bindings   — JSON {step_id: {adapter_id, runtime, execution_kind, ...}}
+workspace_bindings — JSON {step_id: {workspace_id, mode, path, status}}
+approval_summary   — JSON {pending: [id], granted: [id], rejected: [id]}
+artifact_refs      — JSON {step_id: [artifact_id]}
+```
+
+`session_service.py` が操作を提供:
+- `create_session` / `update_session_status` / `bind_runtime` / `bind_workspace`
+- `update_resume_cursor` / `add_artifact_ref` / `add_approval_ref` / `move_approval_ref`
+- `get_session_state` (API レスポンス用)
+
+### ApprovalRequests (ask_before_shell)
+
+`approval_requests` テーブルで durable に管理。
+
+```
+approval_id       — "apr_<hex16>"
+session_id        — 紐付く session
+step_id           — 対象ステップ
+status            — pending | granted | rejected | timed_out
+approval_policy   — ask_before_shell
+decided_by        — user / system_timeout
+decided_at        — 応答日時
+attempt_no        — 同一 step の何回目の試行か (冪等キー)
+```
+
+`approval_service.py` が操作を提供:
+- `create_approval_request` — pending 作成 + session を waiting_approval に遷移
+- `resolve_approval` — 冪等な応答 (既に resolved なら現状を返す)
+- `create_and_resolve_approval` — Tauri flow 用の atomic 作成+解決
+- `get_pending_approvals` / `get_approvals_for_execution`
 
 ### DAG
 
@@ -230,6 +302,29 @@
 
 `update_adapter_health()` + `refresh_local_adapter_health()` で Ollama 系 adapter の health を probe し、adapter row の `config.last_health_detail` に models 一覧 / latency / 最終 error を書き込む。
 
+#### Adapter hardening (PR C)
+
+`coordinator_adapters` に以下の列を追加:
+
+| 列 | 型 | 説明 | 例 |
+|---|---|---|---|
+| `risk_level` | string(20) | adapter のリスクレベル | low / medium / high / critical |
+| `requires_workspace` | bool | workspace 必須フラグ | true → workspace_policy=none を自動で temp_dir に昇格 |
+| `default_approval_policy` | string(30) | step 未設定時のデフォルト | ask_before_shell / allow_shell |
+| `auth_mechanism` | string(30) | 認証方式 | none / api_key / local_session |
+| `supported_capabilities` | JSON | capability 配列 | ["file_read", "shell_exec", ...] |
+
+`resolve_execution_provider()` が adapter を選択した後、`_get_adapter_defaults(adapter)` で上記を取得し:
+- `requires_workspace=true` かつ step に workspace_policy 未設定 → `temp_dir` に自動昇格
+- `default_approval_policy` が設定されていて step に approval 未設定 → adapter のデフォルトを適用
+
+Rust 側 `ExternalCliAdapterConfig` にも `risk_level` / `requires_workspace` / `default_approval_policy` を追加。各 adapter のデフォルト値:
+- Claude Code: medium / workspace=true / ask_before_shell
+- Codex: medium / workspace=true / allow_write
+- Generic: high / workspace=false / ask_before_shell
+
+`POST /api/worker/adapters/{adapter_id}/health` で Tauri runtime から adapter の health status を sync 可能。
+
 #### External CLI adapter (Claude Code / Codex / Generic)
 
 External CLI adapter は **Rust 側の `ExternalCliRegistry`** に独立して登録される。バックエンドの `CoordinatorAdapter` row は bundle payload 生成と UI 表示用のメタデータであり、実行は Rust の `ExternalCliAdapter` trait 実装が担当する。
@@ -289,15 +384,30 @@ generic runner (`external_cli_runner::run_external_cli_with_adapter`) が runtim
 
 ## API エンドポイント
 
-すべて `/api/user/coordinator/` 配下:
+### Coordinator (`/api/user/coordinator/`)
 
 | method | path | 内容 |
 |-------|------|------|
 | GET | `/plans/{workflow_execution_id}` | plan + workers + artifacts + events + dag + layers + workspaces + followups |
-| GET | `/adapters` | 登録済みアダプター一覧 |
+| GET | `/adapters` | 登録済みアダプター一覧 (risk/workspace/approval defaults 含む) |
 | GET | `/eval/{workflow_execution_id}` | 現在のメトリクス + 履歴 |
 | POST | `/eval/{workflow_execution_id}/snapshot` | メトリクスを履歴に記録 |
 | GET | `/resumable` | 再開可能な plan 一覧 |
+
+### Session + Approval (`/api/user/workflow-executions/`)
+
+| method | path | 内容 |
+|-------|------|------|
+| GET | `/{id}/session` | session state (status / bindings / refs) |
+| GET | `/{id}/events?namespace=` | 正規化イベント一覧 (namespace フィルタ可) |
+| GET | `/{id}/approvals` | 承認リクエスト一覧 |
+| POST | `/{id}/approvals/{approval_id}/respond` | 承認応答 (granted / rejected) |
+
+### Worker (`/api/worker/`)
+
+| method | path | 内容 |
+|-------|------|------|
+| POST | `/adapters/{adapter_id}/health` | adapter health sync (Tauri → backend) |
 
 ## フロントエンド
 
@@ -329,8 +439,10 @@ generic runner (`external_cli_runner::run_external_cli_with_adapter`) が runtim
 |------|------|
 | `CoordinatorPlan` | 観測スナップショット (実行は駆動しない) |
 | `CoordinatorArtifact` | execution 出力を構造化保存 |
-| `CoordinatorEvent` | synthesis_log と並列のイベントログ |
+| `CoordinatorEvent` | synthesis_log と並列のイベントログ + 正規化イベント (schema_version="2.0") |
 | `CoordinatorWorker` | worker pool の論理投影 |
-| `CoordinatorAdapter` | 将来の実行先抽象化 |
+| `CoordinatorAdapter` | 実行先抽象化 (risk / workspace / approval defaults 付き) |
+| Session 列 on `WorkflowExecution` | durable session (status / bindings / resume) |
+| `ApprovalRequest` | ask_before_shell の承認リクエスト lifecycle |
 
-Coordinator 層は完全に観測 + メタデータ層で、抜いても既存実行は動きます。
+Coordinator + Session 層は観測 + メタデータ + 承認制御で、抜いても既存実行は動きます (session 列は全て nullable)。

@@ -1,19 +1,19 @@
-//! Workspace lifecycle — Tauri filesystem side.
+//! ワークスペースライフサイクル — Tauri ファイルシステム側。
 //!
-//! The backend `CoordinatorWorkspace` table holds workspace metadata
-//! (id, plan, task, mode, status) but the actual directories live on
-//! the desktop user's home tree. This module provides the three
-//! Tauri commands that keep the two in sync:
+//! バックエンドの `CoordinatorWorkspace` テーブルはワークスペースメタデータ
+//! （id、plan、task、mode、status）を保持するが、実際のディレクトリは
+//! デスクトップユーザーのホームツリーに存在する。このモジュールは
+//! 両者を同期させる 3 つの Tauri コマンドを提供する:
 //!
-//! 1. `workspace_ensure_dir` — mkdir the absolute path, POST the path
-//!    back to backend so the row transitions `reserved -> active`
-//! 2. `workspace_promote` — backend-only status flip (files kept)
-//! 3. `workspace_cleanup` — optionally rm -rf the directory, then
-//!    POST backend `cleanup` to mark the row `cleaned`
+//! 1. `workspace_ensure_dir` — 絶対パスを mkdir し、バックエンドに
+//!    パスを POST して行を `reserved -> active` に遷移させる
+//! 2. `workspace_promote` — バックエンドのみのステータス変更（ファイルは保持）
+//! 3. `workspace_cleanup` — オプションでディレクトリを rm -rf し、
+//!    バックエンドに `cleanup` を POST して行を `cleaned` にマークする
 //!
-//! Safety: the base workspace root is `~/.nexmagi/workspaces/`. All
-//! paths computed by this module are forced to be inside that root
-//! and `workspace_cleanup` refuses to delete anything outside of it.
+//! 安全性: ワークスペースルートのベースは `~/.nexmagi/workspaces/`。
+//! このモジュールが算出するすべてのパスはそのルート内に強制され、
+//! `workspace_cleanup` はその外部にあるものの削除を拒否する。
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -64,7 +64,7 @@ fn workspaces_root() -> Result<PathBuf, String> {
 }
 
 fn sanitize_segment(s: &str) -> String {
-    // Replace anything that isn't alnum / _ / - with _.
+    // 英数字 / _ / - 以外のすべての文字を _ に置換する。
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -208,12 +208,12 @@ pub async fn workspace_cleanup(
     let res = tokio::task::spawn_blocking(move || -> Result<WorkspaceLifecycleResponse, String> {
         let mut fs_removed = false;
         if req.remove_files {
-            // We only know the workspace_id here, not the plan/task
-            // path. The backend is the source of truth for the path,
-            // but we cannot do a blind rm -rf. Compromise: walk the
-            // workspaces root and remove any directory whose name
-            // ends with `-{workspace_id}`. This is O(plans * tasks)
-            // but workspace_id is a uuid so collisions are impossible.
+            // ここでは workspace_id のみが判明しており、plan/task パスは
+            // 不明。バックエンドがパスの信頼できる情報源だが、盲目的な
+            // rm -rf はできない。妥協案: ワークスペースルートを走査して
+            // 名前が `-{workspace_id}` で終わるディレクトリを削除する。
+            // これは O(plans * tasks) だが workspace_id は UUID なので
+            // 衝突は不可能。
             let root = workspaces_root()?;
             if root.exists() {
                 if let Ok(plan_dirs) = fs::read_dir(&root) {
@@ -231,7 +231,7 @@ pub async fn workspace_cleanup(
                                     .map(|n| n.ends_with(&format!("-{}", req.workspace_id)))
                                     .unwrap_or(false);
                                 if matches && leaf_path.is_dir() {
-                                    // Safety: re-assert that the target is under the workspaces root.
+                                    // 安全性: 対象がワークスペースルート配下であることを再確認する。
                                     assert_inside_root(&leaf_path)?;
                                     fs::remove_dir_all(&leaf_path)
                                         .map_err(|e| format!("rm_failed: {e}"))?;
@@ -255,6 +255,219 @@ pub async fn workspace_cleanup(
     Ok(res)
 }
 
+// ───────────────────────────────────────────────
+// ワークスペースからファイルの全内容を読み取る
+// ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReadWorkspaceFileRequest {
+    pub workspace_id: String,
+    pub relative_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadWorkspaceFileResponse {
+    pub workspace_id: String,
+    pub relative_path: String,
+    pub size: u64,
+    pub content: String,
+    pub is_binary: bool,
+    pub truncated: bool,
+}
+
+const READ_FILE_MAX_BYTES: usize = 5 * 1024 * 1024;
+const READ_FILE_ALLOWED_EXTENSIONS: &[&str] = &[
+    "html", "htm", "css", "js", "mjs", "cjs", "ts", "tsx", "jsx",
+    "json", "yaml", "yml", "toml", "md", "txt", "py", "rb", "rs",
+    "go", "java", "kt", "swift", "c", "cc", "cpp", "h", "hpp", "sh",
+    "bash", "zsh", "sql", "xml", "csv", "ini", "conf", "env",
+    "gitignore", "dockerfile",
+];
+
+fn locate_workspace_dir(workspace_id: &str) -> Result<PathBuf, String> {
+    // ワークスペースルートを走査し、名前が `-{workspace_id}` で終わる
+    // 最初のディレクトリを見つける。workspace_cleanup と同じ検索パターンを
+    // 使用して両者の一貫性を保つ。
+    let root = workspaces_root()?;
+    if !root.exists() {
+        return Err("workspaces root does not exist".into());
+    }
+    let suffix = format!("-{}", workspace_id);
+    let plan_dirs = fs::read_dir(&root)
+        .map_err(|e| format!("read_workspaces_root_failed: {e}"))?;
+    for plan_entry in plan_dirs.flatten() {
+        let plan_path = plan_entry.path();
+        if !plan_path.is_dir() {
+            continue;
+        }
+        if let Ok(leaf_dirs) = fs::read_dir(&plan_path) {
+            for leaf in leaf_dirs.flatten() {
+                let leaf_path = leaf.path();
+                let matches = leaf_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.ends_with(&suffix))
+                    .unwrap_or(false);
+                if matches && leaf_path.is_dir() {
+                    return Ok(leaf_path);
+                }
+            }
+        }
+    }
+    Err(format!("workspace_not_found: {}", workspace_id))
+}
+
+#[tauri::command]
+pub async fn read_workspace_file(
+    req: ReadWorkspaceFileRequest,
+) -> Result<ReadWorkspaceFileResponse, String> {
+    let res = tokio::task::spawn_blocking(move || -> Result<ReadWorkspaceFileResponse, String> {
+        // 1. ID からワークスペースディレクトリを解決
+        let ws_dir = locate_workspace_dir(&req.workspace_id)?;
+
+        // 2. 対象パスを解決する。絶対パスと `..` コンポーネントを禁止して
+        //    呼び出し元がワークスペースから脱出できないようにする。
+        let rel = Path::new(&req.relative_path);
+        if rel.is_absolute() {
+            return Err("absolute_path_not_allowed".into());
+        }
+        for comp in rel.components() {
+            use std::path::Component;
+            match comp {
+                Component::Normal(_) => {}
+                Component::CurDir => {}
+                _ => return Err("path_component_not_allowed".into()),
+            }
+        }
+        let target = ws_dir.join(rel);
+        // 二重安全策: パス正規化後も解決されたパスが
+        // ws_dir 内にあることを確認する。
+        let canon_target = target
+            .canonicalize()
+            .map_err(|e| format!("canonicalize_failed: {e}"))?;
+        let canon_ws_dir = ws_dir
+            .canonicalize()
+            .map_err(|e| format!("canonicalize_ws_failed: {e}"))?;
+        if !canon_target.starts_with(&canon_ws_dir) {
+            return Err("path_escape_blocked".into());
+        }
+        // ~/.nexmagi/workspaces の最上位に対するルート内チェック。
+        assert_inside_root(&canon_target)?;
+
+        // 3. 拡張子ホワイトリスト
+        let ext_lower = canon_target
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        let file_name_lower = canon_target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        let extension_ok = READ_FILE_ALLOWED_EXTENSIONS.contains(&ext_lower.as_str())
+            // 拡張子のないファイルは、小文字化した名前が "dockerfile" /
+            // "makefile" のような既知の設定ファイルに一致する場合のみ許可する。
+            || (ext_lower.is_empty() && matches!(
+                file_name_lower.as_str(),
+                "dockerfile" | "makefile" | "readme" | "license"
+            ));
+        if !extension_ok {
+            return Err(format!("extension_not_allowed: {}", ext_lower));
+        }
+
+        // 4. サイズ上限付きでファイルを読み取る
+        let meta = fs::metadata(&canon_target)
+            .map_err(|e| format!("stat_failed: {e}"))?;
+        if !meta.is_file() {
+            return Err("not_a_regular_file".into());
+        }
+        let size = meta.len();
+        let take = (size as usize).min(READ_FILE_MAX_BYTES);
+        let truncated = size as usize > READ_FILE_MAX_BYTES;
+
+        let mut buf = vec![0u8; take];
+        use std::io::Read;
+        let mut f = fs::File::open(&canon_target)
+            .map_err(|e| format!("open_failed: {e}"))?;
+        f.read_exact(&mut buf)
+            .map_err(|e| format!("read_failed: {e}"))?;
+
+        let (content, is_binary) = match std::str::from_utf8(&buf) {
+            Ok(s) => (s.to_string(), false),
+            Err(_) => (String::new(), true),
+        };
+
+        Ok(ReadWorkspaceFileResponse {
+            workspace_id: req.workspace_id,
+            relative_path: req.relative_path,
+            size,
+            content,
+            is_binary,
+            truncated,
+        })
+    })
+    .await
+    .map_err(|e| format!("join_read_file: {e}"))??;
+    Ok(res)
+}
+
+// ── プランのアクティブなワークスペースを一覧表示 ──
+
+#[derive(Debug, Serialize)]
+pub struct ActiveWorkspaceEntry {
+    pub workspace_dir_name: String,
+    pub absolute_path: String,
+    pub size_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn workspace_list_active(
+    plan_id: String,
+) -> Result<Vec<ActiveWorkspaceEntry>, String> {
+    tokio::task::spawn_blocking(move || -> Result<Vec<ActiveWorkspaceEntry>, String> {
+        let root = workspaces_root()?;
+        let plan_dir = root.join(sanitize_segment(&plan_id));
+        if !plan_dir.exists() || !plan_dir.is_dir() {
+            return Ok(vec![]);
+        }
+        let mut entries = vec![];
+        let rd = fs::read_dir(&plan_dir).map_err(|e| format!("read_dir: {e}"))?;
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let size = dir_size_quick(&path);
+            entries.push(ActiveWorkspaceEntry {
+                workspace_dir_name: entry.file_name().to_string_lossy().into_owned(),
+                absolute_path: path.to_string_lossy().into_owned(),
+                size_bytes: size,
+            });
+        }
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| format!("join_list_active: {e}"))?
+}
+
+fn dir_size_quick(dir: &std::path::Path) -> u64 {
+    let mut total: u64 = 0;
+    if let Ok(rd) = fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let meta = entry.metadata();
+            if let Ok(m) = meta {
+                if m.is_file() {
+                    total += m.len();
+                } else if m.is_dir() {
+                    total += dir_size_quick(&entry.path());
+                }
+            }
+        }
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,7 +483,7 @@ mod tests {
     #[test]
     fn sanitize_segment_replaces_bad_chars() {
         assert_eq!(sanitize_segment("foo/bar"), "foo_bar");
-        // dots, slash, and space are all replaced individually.
+        // ドット、スラッシュ、スペースはそれぞれ個別に置換される。
         assert_eq!(sanitize_segment("../escape"), "___escape");
         assert_eq!(sanitize_segment("a b.c"), "a_b_c");
         assert_eq!(sanitize_segment("safe-id_42"), "safe-id_42");
@@ -286,8 +499,8 @@ mod tests {
     fn assert_inside_root_allows_subpath() {
         let root = workspaces_root().unwrap();
         let path = root.join("plan1").join("task1-ws1");
-        // Even if the path does not exist, the fallback branch passes
-        // it through string comparison.
+        // パスが存在しない場合でも、フォールバックブランチは
+        // 文字列比較で通過する。
         assert!(assert_inside_root(&path).is_ok());
     }
 

@@ -1,10 +1,8 @@
-// External CLI approval modal — subscribes to
-// `external_cli:approval_requested` events and prompts the user to
-// allow or reject a shell-capable step at runtime.
+// External CLI 承認モーダル — `external_cli:approval_requested` イベントを
+// 購読し、シェル実行可能なステップの許可・拒否をユーザーに確認する。
 //
-// Loaded on any page that can trigger CLI execution (cli-terminal,
-// workflow-execute). The modal uses SweetAlert2 so it inherits the
-// existing app styling.
+// CLI 実行をトリガーできるページ（cli-terminal, workflow-execute）で
+// 読み込まれる。モーダルは SweetAlert2 を使用し、既存のアプリスタイルを継承する。
 
 (function () {
     'use strict';
@@ -56,31 +54,66 @@
                 allowEscapeKey: false,
             });
             if (result.isConfirmed) {
-                await approve(p.approval_id);
+                await approve(p.approval_id, p);
             } else {
-                await reject(p.approval_id);
+                await reject(p.approval_id, p);
             }
         });
     }
 
-    async function approve(approvalId) {
+    async function approve(approvalId, payload) {
         try {
-            await tauri.core.invoke('external_cli_approve', {
-                req: { approval_id: approvalId },
-            });
+            // バックエンドと同期する統合コマンドを優先
+            await submitWorkflowApproval(approvalId, 'granted', payload);
         } catch (e) {
-            console.error('external_cli_approve failed', e);
+            // レガシーコマンドへフォールバック
+            try {
+                await tauri.core.invoke('external_cli_approve', {
+                    req: { approval_id: approvalId },
+                });
+            } catch (e2) {
+                console.error('external_cli_approve failed', e2);
+            }
         }
     }
 
-    async function reject(approvalId) {
+    async function reject(approvalId, payload) {
         try {
-            await tauri.core.invoke('external_cli_reject', {
-                req: { approval_id: approvalId },
-            });
+            await submitWorkflowApproval(approvalId, 'rejected', payload);
         } catch (e) {
-            console.error('external_cli_reject failed', e);
+            try {
+                await tauri.core.invoke('external_cli_reject', {
+                    req: { approval_id: approvalId },
+                });
+            } catch (e2) {
+                console.error('external_cli_reject failed', e2);
+            }
         }
+    }
+
+    async function submitWorkflowApproval(approvalId, decision, payload) {
+        const rt = window.NexMAGIRuntime;
+        const session = rt ? rt.getAuthSession() : null;
+        const apiBase = rt ? rt.getApiBase() : '';
+        const token = session ? (await session).token : '';
+        // イベントペイロードまたはグローバル状態から workflow_execution_id を抽出
+        const wfExecId = (payload && payload.workflow_run_id)
+            ? parseInt(payload.workflow_run_id, 10)
+            : (window.workflowExecutionId || 0);
+        await tauri.core.invoke('submit_workflow_approval_response', {
+            req: {
+                approval_id: approvalId,
+                decision: decision,
+                api_base: apiBase,
+                auth_token: token,
+                workflow_execution_id: wfExecId,
+                step_id: (payload && payload.task_id) || null,
+                adapter_id: (payload && payload.adapter_id) || null,
+                runtime: (payload && payload.runtime) || null,
+                cwd: (payload && payload.cwd) || null,
+                prompt_preview: (payload && payload.prompt_preview) || null,
+            },
+        });
     }
 
     function escapeHtml(s) {

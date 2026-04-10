@@ -117,8 +117,153 @@
         }
         html += `</div>`;
 
+        // --- 生成ファイルパネル（CLI 実行のみ） ---
+        // extra_metadata から changed_files_preview を読み取る。バックエンドが
+        // Rust ランナーの再帰的ワークスペース diff から値を設定する。
+        // 各エントリは折りたたみ可能なコードブロックとしてレンダリングされる。
+        html += renderGeneratedFilesPanel(execution.extra_metadata);
+
         html += '</div>';
         return html;
+    }
+
+    /**
+     * CoordinatorArtifact の extra_metadata blob から「生成ファイル」セクションを
+     * レンダリングする。プレビューがない場合は '' を返し、非 CLI 実行
+     * （およびファイルを書き込まなかった実行）に空パネルが表示されないようにする。
+     */
+    function renderGeneratedFilesPanel(extraMeta) {
+        if (!extraMeta) return '';
+        const previews = extraMeta.changed_files_preview;
+        if (!Array.isArray(previews) || previews.length === 0) return '';
+        const wsId = extraMeta.workspace_id || '';
+        const esc = escapeHtml;
+        let html = '<div style="margin-top:14px; border:1px solid rgba(0,0,0,0.06); border-radius:8px; overflow:hidden;">';
+        html += `<div style="padding:10px 14px; background:rgba(14,165,233,0.08); border-bottom:1px solid rgba(0,0,0,0.06); font-size:12px; font-weight:700; color:var(--content-text);">`;
+        html += `生成ファイル <span style="color:#6b7280; font-weight:500;">(${previews.length})</span>`;
+        html += `</div>`;
+        html += '<div style="padding:8px 14px;">';
+        for (const f of previews) {
+            const sizeStr = formatFileSize(f.size);
+            const truncatedNote = f.truncated ? ' <span style="color:#f59e0b;">(先頭4KBのみ)</span>' : '';
+            html += `<details style="margin-bottom:6px;">`;
+            html += `<summary style="cursor:pointer; padding:6px 8px; background:rgba(0,0,0,0.03); border-radius:4px; font-size:12px; font-family:monospace; display:flex; justify-content:space-between; align-items:center; gap:8px;">`;
+            html += `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;">${esc(f.path)}</span>`;
+            html += `<span style="font-size:10px; color:#6b7280; flex-shrink:0;">${sizeStr}${truncatedNote}</span>`;
+            if (wsId && !f.is_binary) {
+                html += `<button type="button" onclick="event.preventDefault(); event.stopPropagation(); execDetailModal._openFullFile('${esc(wsId)}', '${esc(f.path)}')" style="font-size:10px; padding:2px 8px; background:var(--accent, #7c3aed); color:#fff; border:none; border-radius:4px; cursor:pointer; flex-shrink:0;">全文</button>`;
+            }
+            html += `</summary>`;
+            if (f.is_binary) {
+                html += `<div style="padding:8px; color:#6b7280; font-size:11px; font-style:italic;">(バイナリファイル — プレビュー不可)</div>`;
+            } else {
+                html += `<pre style="margin:4px 0 0 0; padding:10px; background:rgba(0,0,0,0.04); border-radius:4px; font-size:11px; line-height:1.5; overflow-x:auto; max-height:300px;"><code>${esc(f.preview)}</code></pre>`;
+            }
+            html += `</details>`;
+        }
+        html += '</div></div>';
+        return html;
+    }
+
+    /**
+     * Open a Tauri-side file read for the given workspace + path and
+     * show the full content in a modal with copy + download buttons.
+     * Falls back to a friendly error if not running inside Tauri.
+     */
+    async function openFullFile(workspaceId, relativePath) {
+        const tauriCoreInvoke = window.__TAURI__?.core?.invoke;
+        if (!tauriCoreInvoke) {
+            if (typeof showAlert === 'function') {
+                showAlert('全文表示はデスクトップアプリ内でのみ利用できます', 'warning');
+            }
+            return;
+        }
+        try {
+            const res = await tauriCoreInvoke('read_workspace_file', {
+                req: {
+                    workspace_id: workspaceId,
+                    relative_path: relativePath,
+                },
+            });
+            _showFullFileModal(res);
+        } catch (err) {
+            if (typeof showAlert === 'function') {
+                showAlert('ファイル取得に失敗しました: ' + err, 'error');
+            } else {
+                console.error('read_workspace_file failed:', err);
+            }
+        }
+    }
+
+    function _showFullFileModal(file) {
+        const esc = escapeHtml;
+        const sizeStr = formatFileSize(file.size);
+        const truncatedNote = file.truncated ? ' <span style="color:#f59e0b;">(先頭5MBのみ)</span>' : '';
+        const copyId = 'full-file-copy-' + Date.now();
+        const dlName = (file.relative_path || 'file').split('/').pop();
+        const html = `
+            <div style="text-align:left;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid rgba(0,0,0,0.08); gap:8px;">
+                    <div style="font-family:monospace; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(file.relative_path)}</div>
+                    <div style="font-size:11px; color:#6b7280; flex-shrink:0;">${sizeStr}${truncatedNote}</div>
+                </div>
+                <div style="display:flex; gap:8px; margin-bottom:10px;">
+                    <button type="button" onclick="execDetailModal._copyFullFile('${copyId}', this)" style="font-size:11px; padding:6px 12px; background:var(--accent, #7c3aed); color:#fff; border:none; border-radius:6px; cursor:pointer;">コピー</button>
+                    <button type="button" onclick="execDetailModal._downloadFullFile('${copyId}', '${esc(dlName)}')" style="font-size:11px; padding:6px 12px; background:#10b981; color:#fff; border:none; border-radius:6px; cursor:pointer;">ダウンロード</button>
+                </div>
+                <pre id="${copyId}" style="margin:0; padding:14px; background:rgba(0,0,0,0.04); border-radius:6px; font-size:11px; line-height:1.5; max-height:60vh; overflow:auto; white-space:pre-wrap; word-wrap:break-word;"><code>${esc(file.content)}</code></pre>
+            </div>
+        `;
+        if (typeof Swal === 'undefined') {
+            console.error('SweetAlert2 not loaded');
+            return;
+        }
+        Swal.fire({
+            title: '生成ファイル全文',
+            html,
+            width: '900px',
+            showConfirmButton: false,
+            showCloseButton: true,
+        });
+    }
+
+    function _copyFullFile(elementId, btn) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        const text = el.textContent || '';
+        navigator.clipboard.writeText(text)
+            .then(() => {
+                if (btn) {
+                    const orig = btn.textContent;
+                    btn.textContent = 'コピーしました ✓';
+                    setTimeout(() => { btn.textContent = orig; }, 1500);
+                }
+            })
+            .catch((e) => {
+                console.error('clipboard write failed:', e);
+            });
+    }
+
+    function _downloadFullFile(elementId, filename) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        const text = el.textContent || '';
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename || 'file.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function formatFileSize(bytes) {
+        if (bytes == null) return '-';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
     }
 
     async function execDetailCopyOutput(id, btn) {
@@ -167,7 +312,7 @@
      * @param {Array}   [opts.groups]          ワークフローのグループ構造（あれば並列表示対応）
      */
     function buildWorkflowFlowHTML(opts) {
-        const { finalOutput, allStepResults, workflowName, groups, stageMeta, leaderModel, coordinatorData } = opts;
+        const { finalOutput, allStepResults, workflowName, groups, stageMeta, leaderModel, coordinatorData, leaderExec } = opts;
         const esc = escapeHtml;
         const sc = (s) => s === 'success' ? '#28a745' : s === 'processing' ? '#7c3aed' : s === 'error' ? '#dc3545' : '#ccc';
         const si = (s) => s === 'success' ? '&#10003;' : s === 'processing' ? '&#9679;' : s === 'error' ? '&#10007;' : '&#9711;';
@@ -184,7 +329,7 @@
             implement: '#4caf50', verification: '#e91e63',
         }[(profile || '').toLowerCase()] || '#9e9e9e');
 
-        // Coordinator メタを workflow_skill_id でマップ
+        // Coordinator のメタデータを workflow_skill_id でマッピング
         const coordTaskByWsId = {};
         const coordJudgedTasks = new Set();
         if (coordinatorData?.plan?.tasks) {
@@ -205,11 +350,8 @@
             remote_only: '#dc3545', hybrid_auto: '#fd7e14',
         }[m] || null);
         function coordRoleBadge(_role) { return ''; }
-        function coordProviderBadge(mode) {
-            if (!mode) return '';
-            const c = coordModeColor(mode);
-            return `<span style="display:inline-block; font-size:7px; padding:1px 5px; border-radius:3px; font-weight:700; text-transform:uppercase; background:${c}18; color:${c}; margin-top:2px;">${mode.replace('_', ' ')}</span>`;
-        }
+        // 統合ランタイムバッジ (runtime-badge.js) に置き換え済み。
+        function coordProviderBadge(_mode) { return ''; }
 
         // stepOrder → stepResult のマップ
         const stepByOrder = {};
@@ -362,6 +504,9 @@
                     </div>
                     <div class="wf-node-label" style="margin-top:10px;">
                         <div class="wf-node-name" style="font-size:10px; max-width:100px;">${esc(sk.skill_name || 'Step ' + (stepIdx+1))}</div>
+                        ${(window.runtimeBadge && step && step.extraMetadata)
+                            ? `<div style="margin:3px 0;">${window.runtimeBadge.renderRuntimeBadge(step.extraMetadata) || ''}</div>`
+                            : ''}
                         <div class="wf-node-model" style="font-size:9px;">${typeof formatModelDisplay === 'function' ? formatModelDisplay(sk.model_type || '', null, sk) : esc(sk.model_type || '')}</div>
                         ${provBadge}
                     </div>
@@ -386,7 +531,7 @@
         // ミニキューブ用CSS変数のオーバーライド
         html += `<div class="wf-pipeline wf-pipeline-mini" style="perspective:600px; padding:20px 8px 30px; justify-content:center; margin:0 auto; --cube-size:50px;">`;
 
-        // Build rendering groups: use original groups if available, else wrap allSteps as serial
+        // レンダリンググループを構築: 元のグループがあればそれを使い、なければ allSteps を serial でラップ
         const renderGroups = (groups && groups.length > 0)
             ? groups
             : [{ execution_type: 'serial', skills: allSteps }];
@@ -461,6 +606,9 @@
                 </div>
                 <div class="wf-node-label" style="margin-top:10px;">
                     <div class="wf-node-name" style="font-size:10px; max-width:100px;">結果統合</div>
+                    ${(window.runtimeBadge && leaderExec && leaderExec.extra_metadata)
+                        ? `<div style="margin:3px 0;">${window.runtimeBadge.renderRuntimeBadge(leaderExec.extra_metadata) || ''}</div>`
+                        : ''}
                     <div class="wf-node-model" style="font-size:9px;">${typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderModel || allSteps[0]?.model_type || '', null, {}) : esc(leaderModel || allSteps[0]?.model_type || '')}</div>
                 </div>
             </div>
@@ -487,6 +635,56 @@
             </div>`;
         }
         html += `</div>`;
+        html += `</div>`;
+
+        // --- 全ステップの生成ファイル一覧 (CLI ステップのみ) ---
+        // allStepResults / leaderExec が持っている extraMetadata.changed_files_preview
+        // をまとめて単一パネルにする。CLI を使ったステップが何も書かなければ空文字を返す。
+        const aggregated = [];
+        for (const s of (allStepResults || [])) {
+            if (s && s.extraMetadata && Array.isArray(s.extraMetadata.changed_files_preview) && s.extraMetadata.changed_files_preview.length) {
+                aggregated.push({
+                    stepName: s.stepName || `Step ${s.stepOrder}`,
+                    previews: s.extraMetadata.changed_files_preview,
+                    workspaceId: s.extraMetadata.workspace_id || '',
+                });
+            }
+        }
+        if (leaderExec && leaderExec.extra_metadata && Array.isArray(leaderExec.extra_metadata.changed_files_preview) && leaderExec.extra_metadata.changed_files_preview.length) {
+            aggregated.push({
+                stepName: '結果統合',
+                previews: leaderExec.extra_metadata.changed_files_preview,
+                workspaceId: leaderExec.extra_metadata.workspace_id || '',
+            });
+        }
+        if (aggregated.length > 0) {
+            html += '<div style="margin-top:14px; border:1px solid rgba(0,0,0,0.06); border-radius:8px; overflow:hidden;">';
+            html += `<div style="padding:10px 14px; background:rgba(14,165,233,0.08); border-bottom:1px solid rgba(0,0,0,0.06); font-size:12px; font-weight:700; color:var(--content-text);">生成ファイル</div>`;
+            html += '<div style="padding:8px 14px;">';
+            for (const block of aggregated) {
+                html += `<div style="font-size:11px; color:#6b7280; font-weight:600; margin:6px 0 4px;">${esc(block.stepName)}</div>`;
+                for (const f of block.previews) {
+                    const sizeStr = formatFileSize(f.size);
+                    const truncatedNote = f.truncated ? ' <span style="color:#f59e0b;">(先頭4KBのみ)</span>' : '';
+                    html += `<details style="margin-bottom:4px;">`;
+                    html += `<summary style="cursor:pointer; padding:6px 8px; background:rgba(0,0,0,0.03); border-radius:4px; font-size:11px; font-family:monospace; display:flex; justify-content:space-between; align-items:center; gap:8px;">`;
+                    html += `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;">${esc(f.path)}</span>`;
+                    html += `<span style="font-size:10px; color:#6b7280; flex-shrink:0;">${sizeStr}${truncatedNote}</span>`;
+                    if (block.workspaceId && !f.is_binary) {
+                        html += `<button type="button" onclick="event.preventDefault(); event.stopPropagation(); execDetailModal._openFullFile('${esc(block.workspaceId)}', '${esc(f.path)}')" style="font-size:10px; padding:2px 8px; background:var(--accent, #7c3aed); color:#fff; border:none; border-radius:4px; cursor:pointer; flex-shrink:0;">全文</button>`;
+                    }
+                    html += `</summary>`;
+                    if (f.is_binary) {
+                        html += `<div style="padding:8px; color:#6b7280; font-size:10px; font-style:italic;">(バイナリファイル — プレビュー不可)</div>`;
+                    } else {
+                        html += `<pre style="margin:4px 0 0 0; padding:10px; background:rgba(0,0,0,0.04); border-radius:4px; font-size:10px; line-height:1.5; overflow-x:auto; max-height:280px;"><code>${esc(f.preview)}</code></pre>`;
+                    }
+                    html += `</details>`;
+                }
+            }
+            html += '</div></div>';
+        }
+
         html += `</div>`;
         return html;
     }
@@ -614,11 +812,17 @@
             leaderModel: leaderModel || leaderExec?.model_used || '',
             stageMeta: stageMeta || {},
             coordinatorData,
+            leaderExec,
         });
 
         const modelHtml = typeof formatModelDisplay === 'function'
             ? formatModelDisplay(leaderExec?.model_used || '', null, {})
             : esc(leaderExec?.model_used || '-');
+        // リーダーの extra_metadata からランタイムバッジを取得し、
+        // ヘッダーに "cli://claude" / "http://remote" 等を即座に表示する。
+        const headerRuntimeBadgeHtml = (window.runtimeBadge && leaderExec && leaderExec.extra_metadata)
+            ? window.runtimeBadge.renderRuntimeBadge(leaderExec.extra_metadata)
+            : '';
 
         // Eval メトリクスチップ (完了時のみ)
         let evalHtml = '';
@@ -642,6 +846,7 @@
                     <div style="display: flex; gap: 16px; color: var(--content-text-muted); font-size: 12px; align-items: center; flex-wrap: wrap;">
                         ${extraInfo || ''}
                         <span style="color: var(--accent); font-weight: 600;">${stepCount || allStepResults.length} ステップ</span>
+                        ${headerRuntimeBadgeHtml ? `<span>${headerRuntimeBadgeHtml}</span>` : ''}
                         <span>${modelHtml}</span>
                         <span>合計 ${totalTime || 0}ms</span>
                         <span>${typeof formatCompact === 'function' ? formatCompact(totalTokens) : (totalTokens || 0)} tokens</span>
@@ -661,6 +866,17 @@
         });
     }
 
-    global.execDetailModal = { escapeHtml, buildHtml, execDetailCopyOutput, buildWorkflowFlowHTML, _copyText, _showIOPopup, showWorkflowDetailPopup };
+    global.execDetailModal = {
+        escapeHtml,
+        buildHtml,
+        execDetailCopyOutput,
+        buildWorkflowFlowHTML,
+        _copyText,
+        _showIOPopup,
+        showWorkflowDetailPopup,
+        _openFullFile: openFullFile,
+        _copyFullFile,
+        _downloadFullFile,
+    };
     global.execDetailCopyOutput = execDetailCopyOutput;
 })(typeof window !== 'undefined' ? window : globalThis);

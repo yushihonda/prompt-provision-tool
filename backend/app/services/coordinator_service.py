@@ -17,11 +17,14 @@ Coordinator Service — Plan / Worker / Artifact / Event / Workspace 管理
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.models import (
     CoordinatorPlan,
@@ -35,6 +38,22 @@ from app.models import (
     WorkflowSkill,
     WorkflowGroup,
     Execution,
+)
+from app.services.session_service import (
+    create_session as _create_session,
+    update_session_status as _update_session_status,
+    bind_workspace as _bind_workspace,
+    SESSION_RUNNING,
+)
+from app.services.session_events import (
+    emit_session_lifecycle,
+    emit_step_event,
+    emit_workspace_event,
+    SESSION_STARTED as _SE_SESSION_STARTED,
+    STEP_PLANNED as _SE_STEP_PLANNED,
+    WORKSPACE_CREATED as _SE_WORKSPACE_CREATED,
+    WORKSPACE_PROMOTED as _SE_WORKSPACE_PROMOTED,
+    WORKSPACE_CLEANED as _SE_WORKSPACE_CLEANED,
 )
 
 
@@ -246,6 +265,15 @@ def build_coordinator_plan(
     db.commit()
     db.refresh(plan)
 
+    # ── セッション層: 永続セッション作成 ──
+    session_id: Optional[str] = None
+    try:
+        session_id = _create_session(db, wf_exec)
+        _update_session_status(db, wf_exec, SESSION_RUNNING)
+        db.commit()
+    except Exception:
+        logger.warning("セッション作成失敗、セッション層なしで続行", exc_info=True)
+
     # plan_created イベント
     record_event(
         db, plan_id, EVENT_PLAN_CREATED,
@@ -258,6 +286,23 @@ def build_coordinator_plan(
             task_id=t["task_id"],
             payload={"role": t["role"], "objective": t["objective"]},
         )
+
+    # ── セッションイベント: 正規化セッション＋ステップイベント ──
+    if session_id:
+        try:
+            emit_session_lifecycle(
+                db, session_id, plan_id, _SE_SESSION_STARTED,
+                payload={"task_count": len(tasks), "complexity": complexity},
+            )
+            for t in tasks:
+                emit_step_event(
+                    db, session_id, plan_id, _SE_STEP_PLANNED,
+                    step_id=t["task_id"],
+                    payload={"role": t["role"], "objective": t["objective"]},
+                )
+            db.commit()
+        except Exception:
+            logger.warning("セッションイベント発行失敗", exc_info=True)
 
     # 名前付き worker を自動生成し、role 単位で task をラウンドロビン割当
     try:
@@ -805,6 +850,18 @@ def resolve_execution_provider(
         )
 
     payload = build_provider_payload(adapter, model=task.get("model"))
+
+    # ── アダプタハードニング: デフォルト値を適用 ──
+    adapter_defaults = {}
+    if adapter:
+        adapter_defaults = _get_adapter_defaults(adapter)
+        # workspace 必須アダプタで step に workspace 未設定 → temp_dir に自動昇格
+        if adapter_defaults.get("requires_workspace") and not task.get("_workspace_policy"):
+            task.setdefault("_workspace_policy", "temp_dir")
+        # step に承認ポリシー未設定 → アダプタのデフォルトを適用
+        if adapter_defaults.get("default_approval_policy") and not task.get("_approval_policy"):
+            task["_approval_policy"] = adapter_defaults["default_approval_policy"]
+
     return {
         "provider_mode": mode,
         "selection_reason": reason,
@@ -812,7 +869,28 @@ def resolve_execution_provider(
         "adapter_name": adapter.name if adapter else None,
         "provider_payload": payload,
         "fallback_occurred": fallback_occurred,
+        "adapter_defaults": adapter_defaults,
     }
+
+
+def _get_adapter_defaults(adapter) -> Dict[str, Any]:
+    """アダプタ行からハードニングデフォルト値を抽出する。"""
+    defaults = {}
+    if getattr(adapter, "risk_level", None):
+        defaults["risk_level"] = adapter.risk_level
+    if getattr(adapter, "requires_workspace", None):
+        defaults["requires_workspace"] = bool(adapter.requires_workspace)
+    if getattr(adapter, "default_approval_policy", None):
+        defaults["default_approval_policy"] = adapter.default_approval_policy
+    if getattr(adapter, "auth_mechanism", None):
+        defaults["auth_mechanism"] = adapter.auth_mechanism
+    caps = getattr(adapter, "supported_capabilities", None)
+    if caps:
+        try:
+            defaults["supported_capabilities"] = json.loads(caps) if isinstance(caps, str) else caps
+        except (ValueError, TypeError):
+            pass
+    return defaults
 
 
 # ───────────────────────────────────────────────
@@ -879,6 +957,10 @@ def _apply_step_config_to_task(task: Dict[str, Any], step_config) -> None:
         task["_candidate_adapter_names"] = list(exec_meta.candidate_adapters)
     if exec_meta.required_capabilities:
         task["_step_required_capabilities"] = list(exec_meta.required_capabilities)
+    # CLI-only model id (e.g. "claude-sonnet-4-6"). Surfaced to the
+    # external_cli payload builder which forwards it to the Rust runner.
+    if getattr(exec_meta, "cli_model", None):
+        task["_cli_model"] = exec_meta.cli_model
 
 
 def _maybe_allocate_step_workspace(
@@ -978,8 +1060,13 @@ def resolve_execution_kind(
         if role != ROLE_JUDGE:
             _maybe_allocate_step_workspace(db, plan, task, step_config)
 
-    # Hard rule: judge never goes external_cli even if opted in.
-    if role == ROLE_JUDGE:
+    # Judge routing: previously hard-coded to HTTP provider. We now
+    # honor prefer_external_cli when the group's judge_execution_config
+    # opts in (worker.py reads group.config_json.judge_execution_config
+    # and stamps prefer_external_cli / cli_runtime_hint on the task).
+    # Default behavior (no opt-in) stays HTTP provider so existing
+    # workflows are unchanged.
+    if role == ROLE_JUDGE and not bool(task.get("prefer_external_cli", False)):
         provider_result = resolve_execution_provider(db, plan, task, retry_count=retry_count)
         return {
             "execution_kind": EXECUTION_KIND_HTTP_PROVIDER,
@@ -987,13 +1074,22 @@ def resolve_execution_kind(
             "adapter_name": provider_result.get("adapter_name"),
             "runtime": None,
             "required_capabilities": [],
-            "selection_reason": "judge_forced_remote",
+            "selection_reason": "judge_default_remote",
             "provider_payload": provider_result.get("provider_payload"),
             "external_cli_payload": None,
         }
 
     prefer_cli = bool(task.get("prefer_external_cli", False))
     cli_runtime_hint = task.get("cli_runtime_hint")  # e.g. "claude_code" / "codex"
+
+    # Track every reason we silently downgrade an external_cli request
+    # to the HTTP provider path. The previous behavior was to `pass` and
+    # let routing fall through, which made it impossible to tell from
+    # the artifact whether a step actually ran on CLI or got demoted.
+    # We collect reasons here and stamp them on the result + the task
+    # envelope (worker.py reads `_external_cli_fallback_reason` and
+    # forwards it into artifact metadata).
+    fallback_reason: Optional[str] = None
 
     if prefer_cli and (cli_runtime_hint or task.get("_preferred_adapter_name")):
         # Find an enabled external_cli adapter. Resolution order:
@@ -1025,6 +1121,28 @@ def resolve_execution_kind(
                 if cfg.get("runtime") == cli_runtime_hint:
                     target = a
                     break
+        if target is None:
+            # Adapter resolution exhausted: neither preferred_adapter,
+            # candidate_adapters, nor cli_runtime_hint matched an
+            # enabled external_cli row. Without explicit logging this
+            # used to be invisible — the step would silently degrade to
+            # http_provider with no clue why.
+            requested = (
+                task.get("_preferred_adapter_name")
+                or (task.get("_candidate_adapter_names") or [None])[0]
+                or cli_runtime_hint
+                or "unknown"
+            )
+            fallback_reason = (
+                f"external_cli_fallback:adapter_not_found:requested={requested}"
+            )
+            logger.warning(
+                "external_cli demoted to http_provider: %s "
+                "(task_id=%s workflow_skill_id=%s)",
+                fallback_reason,
+                task.get("task_id"),
+                task.get("workflow_skill_id"),
+            )
         if target is not None:
             # Approval policy enforcement.
             # If the step's required_capabilities exceed what the
@@ -1070,8 +1188,24 @@ def resolve_execution_kind(
             cwd = workspace_path or task.get("cwd_hint")
             if not cwd:
                 # Without a cwd we cannot run an external CLI safely.
-                # Fall through to the HTTP provider path.
-                pass
+                # Fall through to the HTTP provider path — but record
+                # WHY so the artifact metadata makes it obvious. The
+                # most common cause is "workspace_policy is set but the
+                # desktop client (Tauri) has not yet written back a
+                # workspace_path", which historically looked identical
+                # to a successful HTTP run in the execution log.
+                fallback_reason = (
+                    f"external_cli_fallback:cwd_unavailable"
+                    f":adapter={target.name}"
+                    f":workspace_id={workspace_id or 'none'}"
+                )
+                logger.warning(
+                    "external_cli demoted to http_provider: %s "
+                    "(task_id=%s workflow_skill_id=%s)",
+                    fallback_reason,
+                    task.get("task_id"),
+                    task.get("workflow_skill_id"),
+                )
             else:
                 required_caps = required_capabilities_for_task(
                     role=role,
@@ -1110,6 +1244,7 @@ def resolve_execution_kind(
                     workspace_path=workspace_path,
                     approval_policy=task.get("_approval_policy"),
                     selection_reason=selection_reason,
+                    cli_model=task.get("_cli_model"),
                 )
                 return {
                     "execution_kind": EXECUTION_KIND_EXTERNAL_CLI,
@@ -1124,13 +1259,30 @@ def resolve_execution_kind(
 
     # Default path — existing HTTP/internal routing.
     provider_result = resolve_execution_provider(db, plan, task, retry_count=retry_count)
+    base_reason = provider_result.get("selection_reason")
+    if fallback_reason is not None:
+        # We *wanted* external_cli but ended up here. Combine the
+        # original provider selection reason with the fallback cause so
+        # the artifact carries both ("why this provider" + "why not CLI").
+        combined_reason = (
+            f"{fallback_reason}|provider={base_reason}"
+            if base_reason
+            else fallback_reason
+        )
+        # Stash on the task envelope so worker.py can include it on
+        # the artifact metadata even when it doesn't introspect the
+        # routing result directly.
+        task["_external_cli_fallback_reason"] = fallback_reason
+    else:
+        combined_reason = base_reason
     return {
         "execution_kind": EXECUTION_KIND_HTTP_PROVIDER,
         "adapter_id": provider_result.get("adapter_id"),
         "adapter_name": provider_result.get("adapter_name"),
         "runtime": None,
         "required_capabilities": [],
-        "selection_reason": provider_result.get("selection_reason"),
+        "selection_reason": combined_reason,
+        "external_cli_fallback_reason": fallback_reason,
         "provider_payload": provider_result.get("provider_payload"),
         "external_cli_payload": None,
     }
@@ -1164,6 +1316,43 @@ def get_events_for_plan(db: Session, plan_id: str, limit: int = 200) -> List[Coo
 #  メタデータ上で管理する。実体ディレクトリはクライアント側 (Tauri) が管理する。
 # ───────────────────────────────────────────────
 
+
+def _emit_workspace_session_event(
+    db: Session,
+    plan_id: str,
+    task_id: Optional[str],
+    event_type: str,
+    ws: CoordinatorWorkspace,
+) -> None:
+    """正規化ワークスペースセッションイベントを発行する（ベストエフォート）。"""
+    try:
+        wf_exec = (
+            db.query(WorkflowExecution)
+            .filter(WorkflowExecution.coordinator_plan_id == plan_id)
+            .first()
+        )
+        if wf_exec and wf_exec.session_id:
+            emit_workspace_event(
+                db, wf_exec.session_id, plan_id, event_type,
+                step_id=task_id or "",
+                payload={
+                    "workspace_id": ws.workspace_id,
+                    "mode": ws.mode,
+                    "status": ws.status,
+                    "workspace_path": ws.workspace_path,
+                },
+            )
+            _bind_workspace(db, wf_exec, task_id or "", {
+                "workspace_id": ws.workspace_id,
+                "mode": ws.mode,
+                "status": ws.status,
+                "path": ws.workspace_path,
+            })
+            db.commit()
+    except Exception:
+        logger.debug("ワークスペースセッションイベント発行失敗", exc_info=True)
+
+
 def reserve_workspace(
     db: Session,
     plan_id: str,
@@ -1191,6 +1380,8 @@ def reserve_workspace(
         task_id=task_id,
         payload={"workspace_id": ws.workspace_id, "mode": mode, "worker_id": worker_id},
     )
+    # ── セッションイベント: ワークスペース作成 ──
+    _emit_workspace_session_event(db, plan_id, task_id, _SE_WORKSPACE_CREATED, ws)
     return ws
 
 
@@ -1221,6 +1412,7 @@ def promote_workspace(db: Session, workspace_id: str) -> Optional[CoordinatorWor
         task_id=ws.task_id,
         payload={"workspace_id": workspace_id},
     )
+    _emit_workspace_session_event(db, ws.plan_id, ws.task_id, _SE_WORKSPACE_PROMOTED, ws)
     return ws
 
 
@@ -1237,6 +1429,7 @@ def cleanup_workspace(db: Session, workspace_id: str) -> Optional[CoordinatorWor
         task_id=ws.task_id,
         payload={"workspace_id": workspace_id},
     )
+    _emit_workspace_session_event(db, ws.plan_id, ws.task_id, _SE_WORKSPACE_CLEANED, ws)
     return ws
 
 

@@ -15,6 +15,16 @@ from app.models import Account, DailyExecutionCount, Execution, WorkflowExecutio
 from app.utils.pricing import calculate_token_cost
 from app.config import settings
 from app.services.agent_profiles import detect_readonly_violation, extract_verdict, normalize_agent_profile
+from app.services.session_service import bind_runtime, add_artifact_ref
+from app.services.session_events import (
+    emit_step_event,
+    emit_runtime_event,
+    emit_artifact_event,
+    STEP_COMPLETED,
+    STEP_FAILED,
+    RUNTIME_SELECTED,
+    ARTIFACT_CREATED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,8 +245,17 @@ def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
     except Exception as _e:
         logger.warning(f"CoordinatorEvent dispatch failed: {_e}")
 
-    # 永続メモリ更新（成功時、通常スキルのみ）
-    if execution.status == "success" and not role and execution.workflow_skill_id:
+    # 永続メモリ更新（成功時、通常スキル、HTTP プロバイダ経路のみ）
+    # external_cli ステップは output_data が runner の起動ログ + stdout なので、
+    # そのまま memory に積むと next run の prompt 末尾に CLI のメタログが
+    # 流れ込んで Codex/Claude が「過去の作業ログを読み上げるだけのモード」に
+    # 入ってしまうことが観測された。CLI ステップではメモリ更新をスキップする。
+    if (
+        execution.status == "success"
+        and not role
+        and execution.workflow_skill_id
+        and getattr(execution, "execution_kind", None) != "external_cli"
+    ):
         try:
             from app.services.memory_service import update_memory
             summary_for_mem = _summarize_output(execution.output_data)
@@ -249,21 +268,27 @@ def _persist_workflow_metadata(db: Session, execution: Execution) -> None:
 
 
 def build_external_cli_provenance(external_cli_meta: dict) -> dict:
-    """Convert sidecar/Rust-side `external_cli_meta` into the artifact
-    provenance shape persisted onto CoordinatorArtifact.extra_metadata.
+    """sidecar/Rust 側の external_cli_meta を CoordinatorArtifact.extra_metadata 用の
+    アーティファクト来歴形式に変換する。
 
-    This is a pure function — exposed at module top level so it can be
-    unit tested without spinning up an Execution / Workflow / Plan
-    graph.
+    純粋関数。Execution / Workflow / Plan グラフなしでテスト可能。
     """
     return {
-        "step_execution_kind": "external_cli",  # unified base key (shared with build_http_provider_provenance)
+        "step_execution_kind": "external_cli",  # 統一基底キー (build_http_provider_provenance と共有)
         "execution_kind": "external_cli",
         "adapter_type": "external_cli",
         "adapter_id": external_cli_meta.get("adapter_id"),
         "adapter_name": external_cli_meta.get("adapter_name"),
+        # プロバイダ来歴と同じキー名で selected/actual を複製する。
+        # external_cli 実行時に route fallback がデフォルト (internal-sidecar) を
+        # 埋めてしまうのを防ぎ、アーティファクト閲覧側が正しいアダプタを参照できるようにする。
+        "selected_adapter_id": external_cli_meta.get("adapter_id"),
+        "selected_adapter_name": external_cli_meta.get("adapter_name"),
+        "actual_adapter_id": external_cli_meta.get("adapter_id"),
+        "actual_adapter_name": external_cli_meta.get("adapter_name"),
         "runtime": external_cli_meta.get("runtime"),
         "selection_reason": external_cli_meta.get("selection_reason"),
+        "provider_selection_reason": external_cli_meta.get("selection_reason"),
         "approval_policy": external_cli_meta.get("approval_policy"),
         "cwd": external_cli_meta.get("cwd"),
         "command": external_cli_meta.get("command"),
@@ -275,6 +300,9 @@ def build_external_cli_provenance(external_cli_meta: dict) -> dict:
         "stderr_truncated": external_cli_meta.get("stderr_truncated"),
         "changed_files": external_cli_meta.get("changed_files") or [],
         "changed_files_count": len(external_cli_meta.get("changed_files") or []),
+        # ファイル別プレビュー (パス, サイズ, 先頭 4KB)。
+        # 実行詳細モーダルの「生成ファイル」パネルで CLI 出力を確認可能にする。
+        "changed_files_preview": external_cli_meta.get("changed_files_preview") or [],
         "capability_check_passed": external_cli_meta.get("capability_check_passed"),
         "allow_writes": external_cli_meta.get("allow_writes"),
         "allow_shell": external_cli_meta.get("allow_shell"),
@@ -282,16 +310,20 @@ def build_external_cli_provenance(external_cli_meta: dict) -> dict:
         "workspace_id": external_cli_meta.get("workspace_id"),
         "workspace_mode": external_cli_meta.get("workspace_mode"),
         "workspace_path": external_cli_meta.get("workspace_path"),
+        # 実行元来歴: どのエクゼキュータがこの実行を生成したか。
+        # Rust デスクトップは未設定 (不在で推定)。Python local_worker は
+        # "local_worker.python" を設定し、監査証跡で2つのランタイムを区別する。
+        "executor_source": external_cli_meta.get("executor_source"),
+        "started_at": external_cli_meta.get("started_at"),
+        "finished_at": external_cli_meta.get("finished_at"),
     }
 
 
 def build_http_provider_provenance(provider_meta: dict) -> dict:
-    """Complement to build_external_cli_provenance for the HTTP /
-    internal provider path. Returns the unified base keys so a single
-    artifact reader can render either runtime kind.
+    """build_external_cli_provenance の HTTP/internal プロバイダ版。
+    アーティファクト閲覧側がどちらのランタイムでも同じキーで読めるよう統一形式で返す。
 
-    `provider_meta` here is the existing dict produced by
-    `_run_with_runtime_fallback` plus whatever the planner attached.
+    `provider_meta` は `_run_with_runtime_fallback` の出力 + planner が付与した情報。
     """
     return {
         "step_execution_kind": "http_provider",
@@ -314,6 +346,21 @@ def build_http_provider_provenance(provider_meta: dict) -> dict:
         "preflight_status": provider_meta.get("preflight_status"),
         "local_error_reason": provider_meta.get("local_error_reason"),
         "local_model_requested": provider_meta.get("local_model_requested"),
+        # Surfaces a step that *requested* external_cli but got demoted
+        # external_cli を要求したが HTTP パスに降格されたステップの理由。
+        # worker.py の resolve_execution_kind が provider_payload に付与する。
+        # アーティファクトに残すことで降格が監査可能になる。
+        "external_cli_fallback_reason": provider_meta.get(
+            "external_cli_fallback_reason"
+        ),
+        # ルーティング層の例外検知: worker.py のプロバイダルーティング全体が
+        # 例外を投げた場合でも実行はデフォルト HTTP パスで続行される。
+        # このマーカーにより「実質ルーティングなしで走った」ことが明示される。
+        "routing_failed": provider_meta.get("routing_failed"),
+        # ワークスペース来歴: HTTP ステップがワークスペースを使用した場合に含む
+        "workspace_id": provider_meta.get("workspace_id"),
+        "workspace_mode": provider_meta.get("workspace_mode"),
+        "workspace_path": provider_meta.get("workspace_path"),
     }
 
 
@@ -347,7 +394,15 @@ def finalize_execution(
     from app.utils.skill_utils import sanitize_output
 
     # サニタイズ（テンプレートが渡された場合のみ）
-    if status_result == "success" and template_text:
+    # external_cli ステップの output は CLI runner の起動ログ + stdout で、
+    # スキル本文の echo を含むのが正常。これに sanitize_output をかけると
+    # 「Current Skill Prompt: [REDACTED]」のように本文が消えて、後続の
+    # verify ステップやメモリ集計が壊れる。CLI 経路ではサニタイズしない。
+    if (
+        status_result == "success"
+        and template_text
+        and external_cli_meta is None
+    ):
         try:
             output = sanitize_output(
                 output_text=output,
@@ -388,8 +443,15 @@ def finalize_execution(
         f"tokens={tokens_used}, cost={execution.cost}"
     )
 
-    # CoordinatorArtifact 生成 (成功した execution の出力を構造化保存)
-    if status_result == "success" and execution.workflow_execution_id:
+    # CoordinatorArtifact 生成
+    # - 成功した execution: 通常のアーティファクト生成
+    # - 失敗した external_cli execution: 失敗 artifact を残す (audit のため)
+    #   silent fallback と区別がつかなくなることを防ぐ。
+    should_record = (
+        execution.workflow_execution_id and
+        (status_result == "success" or external_cli_meta is not None)
+    )
+    if should_record:
         try:
             _record_coordinator_artifact(
                 db, execution, output, model_used,
@@ -475,9 +537,14 @@ def _record_coordinator_artifact(
             provider_meta.get("actual_adapter_name"),
             provider_meta.get("fallback_applied"),
         )
-    else:
+    elif external_cli_meta is None:
         # Legacy path: no execution-result provenance available. Re-run routing
         # to at least populate selected_*. Marked legacy on purpose.
+        # Skip entirely when external_cli_meta is present — that branch is
+        # handled below by build_external_cli_provenance() and re-running
+        # the provider router here would otherwise overwrite the actual
+        # adapter (claude-code-local) with the http_provider default
+        # (internal-sidecar), which is exactly the bug we hit before.
         # TODO: remove once all provider paths emit provider_meta.
         try:
             if execution.workflow_skill_id:
@@ -530,6 +597,36 @@ def _record_coordinator_artifact(
             external_cli_meta.get("status"),
         )
 
+    # Pull routing-layer sentinels out of input_data. worker.py stamps
+    # `_nexmagi_routing_failed` when its provider routing block raised
+    # an exception (so the run continued with no real routing) and the
+    # external_cli demote-to-http path stamps
+    # `_nexmagi_external_cli_fallback_reason` via the same channel.
+    # Without this we'd have no audit trail on the artifact when those
+    # branches fire — exactly the silent-failure mode option 3 was
+    # supposed to fix.
+    routing_failed_sentinel: Optional[str] = None
+    cli_fallback_sentinel: Optional[str] = None
+    try:
+        if execution.input_data:
+            parsed_input = (
+                json.loads(execution.input_data)
+                if isinstance(execution.input_data, str)
+                else execution.input_data
+            )
+            if isinstance(parsed_input, dict):
+                routing_failed_sentinel = parsed_input.get("_nexmagi_routing_failed")
+                cli_fallback_sentinel = parsed_input.get(
+                    "_nexmagi_external_cli_fallback_reason"
+                )
+    except Exception:  # noqa: BLE001
+        pass
+
+    if routing_failed_sentinel:
+        provenance["routing_failed"] = routing_failed_sentinel
+    if cli_fallback_sentinel:
+        provenance["external_cli_fallback_reason"] = cli_fallback_sentinel
+
     # Task / workflow context for traceability (task_id was already computed above).
     extra_metadata = {
         "agent_profile": profile,
@@ -564,6 +661,48 @@ def _record_coordinator_artifact(
                                  artifact_id=artifact.artifact_id)
     except Exception as _e:
         logger.warning(f"Worker status update failed for task {task_id}: {_e}")
+
+    # ── セッションイベント: ステップ/ランタイム/アーティファクト ──
+    try:
+        wf_exec = db.query(WorkflowExecution).filter(
+            WorkflowExecution.id == execution.workflow_execution_id
+        ).first()
+        if wf_exec and wf_exec.session_id:
+            session_id = wf_exec.session_id
+            plan_id = plan.plan_id
+            step_status = "success" if execution.status == "success" else "failed"
+            step_event_type = STEP_COMPLETED if step_status == "success" else STEP_FAILED
+            emit_step_event(
+                db, session_id, plan_id, step_event_type,
+                step_id=task_id,
+                payload={"execution_id": execution.id, "model": model_used, "status": step_status},
+            )
+            # ランタイム来歴をセッションにバインド
+            runtime_binding = {
+                k: v for k, v in provenance.items()
+                if k.startswith("selected_") or k.startswith("actual_") or k in (
+                    "fallback_applied", "fallback_reason", "step_execution_kind",
+                    "cli_runtime", "cli_adapter_id",
+                )
+            }
+            runtime_binding["execution_kind"] = execution.execution_kind
+            bind_runtime(db, wf_exec, task_id, runtime_binding)
+            emit_runtime_event(
+                db, session_id, plan_id, RUNTIME_SELECTED,
+                step_id=task_id,
+                payload=runtime_binding,
+            )
+            # アーティファクト参照をセッションに記録
+            add_artifact_ref(db, wf_exec, task_id, artifact.artifact_id)
+            emit_artifact_event(
+                db, session_id, plan_id, ARTIFACT_CREATED,
+                step_id=task_id,
+                artifact_id=artifact.artifact_id,
+                payload={"artifact_type": artifact_type, "role": role},
+            )
+            db.commit()
+    except Exception as exc:
+        logger.debug("completion_service セッションイベント発行失敗: %s", exc)
 
 
 def _update_account_stats(
@@ -707,6 +846,32 @@ def trigger_workflow_continuation(
                     wf_exec.status = "error"
                     wf_exec.error_message = f"親スキル実行エラー: {execution.error_message or 'unknown'}"
                 wf_exec.completed_at = datetime.now(jst)
+
+                # ── セッションイベント: ワークフロー完了/失敗 ──
+                if wf_exec.session_id and wf_exec.coordinator_plan_id:
+                    try:
+                        from app.services.session_service import update_session_status, SESSION_COMPLETED, SESSION_FAILED
+                        from app.services.session_events import (
+                            emit_session_lifecycle,
+                            SESSION_COMPLETED as _SE_COMPLETED,
+                            SESSION_FAILED as _SE_FAILED,
+                        )
+                        if execution.status == "success":
+                            update_session_status(db, wf_exec, SESSION_COMPLETED)
+                            emit_session_lifecycle(
+                                db, wf_exec.session_id, wf_exec.coordinator_plan_id,
+                                _SE_COMPLETED,
+                            )
+                        else:
+                            update_session_status(db, wf_exec, SESSION_FAILED)
+                            emit_session_lifecycle(
+                                db, wf_exec.session_id, wf_exec.coordinator_plan_id,
+                                _SE_FAILED,
+                                payload={"error": wf_exec.error_message},
+                            )
+                    except Exception:
+                        logger.debug("セッション完了イベント発行失敗", exc_info=True)
+
                 db.commit()
                 logger.info(
                     f"WorkflowExecution {execution.workflow_execution_id} "

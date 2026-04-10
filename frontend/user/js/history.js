@@ -69,7 +69,7 @@ function renderHistory() {
     const pageRows = groupedRows.slice(start, start + itemsPerPage);
 
     if (pageRows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #a0a0a0;">実行履歴がありません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: #a0a0a0;">実行履歴がありません</td></tr>';
         return;
     }
 
@@ -82,14 +82,23 @@ function renderHistory() {
     }).join('');
 }
 
+function _runtimeBadgeForExec(execution) {
+    if (window.runtimeBadge && execution && execution.extra_metadata) {
+        return window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata) || '';
+    }
+    return '';
+}
+
 function renderSkillRow(execution) {
     const modelDisplay = formatModelDisplay(execution.model_used, execution);
     const statusColor = getStatusColor(execution.status);
+    const runtimeBadge = _runtimeBadgeForExec(execution) || '<span style="color:#a0a0a0; font-size:11px;">-</span>';
 
     return `
     <tr>
         <td>${formatDate(execution.executed_at)}</td>
         <td>${escapeHtmlCommon(execution.skill_name || '-')}</td>
+        <td>${runtimeBadge}</td>
         <td>${modelDisplay}</td>
         <td>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</td>
         <td>${execution.execution_time || '-'}${execution.execution_time ? 'ms' : ''}</td>
@@ -115,6 +124,8 @@ function renderWorkflowRow(group) {
     const leaderExec = normalExecs.find(e => !e.workflow_skill_id);
     const parentModel = leaderExec?.model_used || normalExecs[0]?.model_used || '-';
     const modelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModel, null, {}) : parentModel;
+    const runtimeSourceExec = leaderExec || normalExecs[0];
+    const runtimeBadge = _runtimeBadgeForExec(runtimeSourceExec) || '<span style="color:#a0a0a0; font-size:11px;">-</span>';
     const weId = group.workflowExecutionId;
 
     // 各スキルのミニキューブ（並列グループは縦並べ・小さめ）
@@ -167,6 +178,7 @@ function renderWorkflowRow(group) {
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:12px;perspective:300px;align-items:center;">${skillBars}</div>
         </td>
+        <td>${runtimeBadge}</td>
         <td>${modelDisplay}</td>
         <td>-</td>
         <td>${totalTime ? totalTime + 'ms' : '-'}</td>
@@ -286,6 +298,7 @@ async function showWorkflowDetail(weId) {
             skillId: exec.skill_id,
             inputData: exec.input_data || null,
             agentProfile: exec.agent_profile || null,
+            extraMetadata: exec.extra_metadata || null,
         }));
         const finalOutput = leaderExec?.output_data || '';
         // coordinator view / synthesis events を取得

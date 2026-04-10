@@ -256,8 +256,18 @@
     async function fetchWithDesktopNativeHttp(url, options = {}) {
         const request = await normalizeDesktopRequest(url, options);
         const response = await invokeDesktop('native_http_request', { request });
-        return new Response(base64ToUint8Array(response.bodyBase64), {
-            status: Number(response.status || 0),
+        const status = Number(response.status || 0);
+        // Fetch 仕様により、ステータス 101/103/204/205/304（null body ステータス）
+        // では body を持つ Response の構築が許可されない。これらの場合は
+        // 空の Uint8Array の代わりに null を渡す。ブラウザ/WebView は
+        // "Response cannot have a body with the given status" で
+        // リジェクトする。
+        const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+        const body = NULL_BODY_STATUSES.has(status)
+            ? null
+            : base64ToUint8Array(response.bodyBase64);
+        return new Response(body, {
+            status,
             statusText: response.statusText || '',
             headers: response.headers || {},
         });
@@ -513,6 +523,9 @@
 
         return {
             async append(eventType, options = {}) {
+                // ドット区切りの event_type プレフィックスから event_namespace を導出（例: "step.completed" → "step"）
+                const eventNamespace = options.eventNamespace
+                    || (eventType.includes('.') ? eventType.split('.')[0] : null);
                 const event = {
                     eventType,
                     runId: options.runId ?? state.runId,
@@ -527,6 +540,8 @@
                     idempotencyKey: options.idempotencyKey,
                     schemaVersion: options.schemaVersion ?? state.schemaVersion,
                     payloadJson: options.payloadJson ?? {},
+                    eventNamespace: eventNamespace,
+                    eventSeq: options.eventSeq ?? null,
                 };
                 const row = await appendWorkflowRunEvent(event);
 
@@ -547,7 +562,7 @@
     void ensureRuntimeConfig();
 
     // -----------------------------------------------------------------------
-    // Orchestration API (multi-terminal workflow execution)
+    // オーケストレーション API（マルチターミナル ワークフロー実行）
     // -----------------------------------------------------------------------
 
     async function startOrchestratedWorkflow(input) {

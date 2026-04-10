@@ -1,5 +1,5 @@
-//! Claude Code (`claude`) adapter — concrete implementation of
-//! `ExternalCliAdapter` for the local `claude` CLI.
+//! Claude Code (`claude`) アダプター — ローカル `claude` CLI 用の
+//! `ExternalCliAdapter` 具象実装。
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -48,6 +48,9 @@ impl ClaudeCodeAdapter {
                     "ANTHROPIC_CONFIG_DIR".into(),
                 ],
                 metadata: HashMap::new(),
+                risk_level: Some("medium".into()),
+                requires_workspace: true,
+                default_approval_policy: Some("ask_before_shell".into()),
             },
         }
     }
@@ -65,10 +68,9 @@ impl ExternalCliAdapter for ClaudeCodeAdapter {
     }
 
     fn validate_environment(&self) -> Result<(), String> {
-        // TODO: real `which claude` check. Placeholder always succeeds
-        // so the registry can be constructed even on machines without
-        // `claude` installed; the runner will report MissingBinary on
-        // spawn failure.
+        // TODO: 実際の `which claude` チェック。プレースホルダーとして常に成功する。
+        // `claude` がインストールされていないマシンでもレジストリを構築できるようにするため。
+        // ランナーが起動失敗時に MissingBinary を報告する。
         Ok(())
     }
 
@@ -78,6 +80,26 @@ impl ExternalCliAdapter for ClaudeCodeAdapter {
     ) -> Result<(String, Vec<String>), String> {
         let mut args: Vec<String> = self.cfg.default_args.clone();
         args.extend(req.args.iter().cloned());
+        // オプショナルなモデルオーバーライド（例: "claude-sonnet-4-6"）。
+        // Claude Code は --model NAME を受け付ける。None = デフォルトプロファイルモデル。
+        if let Some(model) = req.cli_model.as_deref() {
+            if !model.is_empty() {
+                args.push("--model".into());
+                args.push(model.to_string());
+            }
+        }
+        // パーミッションモードマッピング（Codex サンドボックスフラグレイヤーに対応）。
+        // このフラグがないと claude は Edit/Write ツールを拒否し、
+        // ワークフローの「実装」ステップは書き込む内容のテキスト説明のみを返し、
+        // cwd が空のままになる。allow_shell は最強モードを意味し、
+        // allow_writes のみでもファイル編集には十分である。
+        if req.allow_shell {
+            args.push("--permission-mode".into());
+            args.push("bypassPermissions".into());
+        } else if req.allow_writes {
+            args.push("--permission-mode".into());
+            args.push("acceptEdits".into());
+        }
         args.push("-p".into());
         args.push(req.prompt.clone());
         Ok((self.cfg.command.clone(), args))
@@ -132,6 +154,7 @@ mod tests {
             workspace_path: None,
             approval_policy: None,
             selection_reason: None,
+            cli_model: None,
             env_overrides: HashMap::new(),
             metadata: HashMap::new(),
         }

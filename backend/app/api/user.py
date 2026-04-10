@@ -26,8 +26,8 @@ router = APIRouter(prefix="/api/user", tags=["ユーザー"])
 
 def _build_coordinator_view(db, wf_exec):
     """
-    ワークフロー実行の現在状態から coordinator view と synthesis events を動的生成。
-    DB追加なし — 既存 Execution レコードから全て計算。
+    ワークフロー実行の現在状態から coordinator view と synthesis events を動的生成する。
+    DB への追加なし — 既存の Execution レコードから全て計算する。
     """
     from app.services.agent_profiles import normalize_agent_profile
 
@@ -326,6 +326,13 @@ async def list_available_skills(
         if enable_deep_think is None:
             enable_deep_think = True
 
+        cfg_out = None
+        if getattr(skill, "config_json", None):
+            try:
+                cfg_out = json.loads(skill.config_json) if isinstance(skill.config_json, str) else skill.config_json
+            except (json.JSONDecodeError, TypeError):
+                cfg_out = None
+
         skill_dict = {
             "id": skill.id,
             "name": skill.name,
@@ -333,6 +340,7 @@ async def list_available_skills(
             "model_type": skill.model_type,
             "allows_file_output": skill.allows_file_output,
             "enable_deep_think": bool(enable_deep_think),  # 明示的にboolに変換
+            "config_json": cfg_out,
         }
         items.append(skill_dict)
 
@@ -389,6 +397,13 @@ async def get_skill_detail(
     if enable_deep_think is None:
         enable_deep_think = True
 
+    cfg_out = None
+    if getattr(skill, "config_json", None):
+        try:
+            cfg_out = json.loads(skill.config_json) if isinstance(skill.config_json, str) else skill.config_json
+        except (json.JSONDecodeError, TypeError):
+            cfg_out = None
+
     return {
         "id": skill.id,
         "name": skill.name,
@@ -397,6 +412,7 @@ async def get_skill_detail(
         "input_schema": input_schema,
         "allows_file_output": skill.allows_file_output,
         "enable_deep_think": bool(enable_deep_think),
+        "config_json": cfg_out,
     }
 
 
@@ -500,6 +516,13 @@ async def list_user_workflows(
             # グループ未定義の場合は全ステップを直列1グループとして扱う
             step_groups = [StepGroupInfo(execution_type="serial", count=len(wf_skills))]
 
+        wf_cfg_out = None
+        if getattr(wf, "config_json", None):
+            try:
+                wf_cfg_out = json.loads(wf.config_json) if isinstance(wf.config_json, str) else wf.config_json
+            except (json.JSONDecodeError, TypeError):
+                wf_cfg_out = None
+
         result.append(
             UserWorkflowSummary(
                 workflow=WorkflowListItem(
@@ -508,6 +531,7 @@ async def list_user_workflows(
                     description=wf.description,
                     is_active=wf.is_active,
                     parent_model_type=wf.parent_model_type,
+                    config_json=wf_cfg_out,
                     created_at=wf.created_at,
                     updated_at=wf.updated_at,
                 ),
@@ -566,6 +590,16 @@ async def get_user_workflow_detail(
         .all()
     )
 
+    def _parse_cfg(raw):
+        if not raw:
+            return None
+        if isinstance(raw, dict):
+            return raw
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
     skills: List[UserWorkflowDetailSkill] = []
     for ws in wf_skills:
         s = ws.skill
@@ -584,6 +618,8 @@ async def get_user_workflow_detail(
                 agent_profile=getattr(ws, "agent_profile", None),
                 model_type=s.model_type,
                 enable_deep_think=bool(edt),
+                config_json=_parse_cfg(getattr(ws, "config_json", None)),
+                skill_config_json=_parse_cfg(getattr(s, "config_json", None)),
             )
         )
 
@@ -636,12 +672,17 @@ async def get_user_workflow_detail(
                     "input_mapping": input_mapping_parsed,
                     "agent_profile": getattr(ws, "agent_profile", None),
                     "enable_deep_think": bool(edt),
+                    # ステップ単位の execution_config オーバーライド。フロントエンドが
+                    # 各ノードの実効ランタイムを解決できるようにする。
+                    "config_json": _parse_cfg(getattr(ws, "config_json", None)),
                 })
         groups_data.append({
             "id": grp.id,
             "group_order": grp.group_order,
             "group_name": grp.group_name,
             "execution_type": grp.execution_type,
+            # グループ単位の execution_config デフォルト（継承チェーン用）。
+            "config_json": _parse_cfg(getattr(grp, "config_json", None)),
             "skills": grp_skills,
         })
 
@@ -651,6 +692,8 @@ async def get_user_workflow_detail(
         description=wf.description,
         is_active=wf.is_active,
         parent_model_type=wf.parent_model_type,
+        # ワークフロー単位の execution_config（継承チェーンの最上位）。
+        config_json=_parse_cfg(getattr(wf, "config_json", None)),
         created_at=wf.created_at,
         updated_at=wf.updated_at,
         groups=groups_data,
@@ -727,6 +770,26 @@ async def list_my_executions(
         if output_format is None:
             output_format = 'txt'  # デフォルト値
 
+        # 来歴 / ランタイムメタデータは CoordinatorArtifact.extra_metadata に格納
+        # される（executions.extra_metadata ではない）。この execution_id の
+        # 最新アーティファクトを検索し、その extra_metadata を返す。
+        extra_meta = None
+        try:
+            from app.models import CoordinatorArtifact
+            art = (
+                db.query(CoordinatorArtifact)
+                .filter(CoordinatorArtifact.execution_id == execution.id)
+                .order_by(CoordinatorArtifact.id.desc())
+                .first()
+            )
+            if art and art.extra_metadata:
+                try:
+                    extra_meta = json.loads(art.extra_metadata) if isinstance(art.extra_metadata, str) else art.extra_metadata
+                except (json.JSONDecodeError, TypeError):
+                    extra_meta = None
+        except Exception:  # noqa: BLE001
+            extra_meta = None
+
         execution_dict = {
             "id": execution.id,
             "account_id": execution.account_id,
@@ -752,7 +815,14 @@ async def list_my_executions(
             "parallel_group_id": (execution.workflow_skill.group_id if execution.workflow_skill and execution.workflow_skill.group and execution.workflow_skill.group.execution_type == 'parallel' else None),
             "agent_profile": getattr(execution, 'agent_profile', None),
             "reflection_loop": getattr(execution, 'reflection_loop', 0),
-            "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None
+            "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None,
+            # フロントエンドのポーリングループが SSE ストリーミング（HTTP）と
+            # Tauri の consume_external_cli_bundle（CLI）を切り替えるための
+            # ルーティングフィールド。dispatch_mode はレガシーの「どこで」ヒント、
+            # execution_kind は新しい「どのように」ヒント。
+            "dispatch_mode": getattr(execution, 'dispatch_mode', 'server'),
+            "execution_kind": getattr(execution, 'execution_kind', 'http_provider'),
+            "extra_metadata": extra_meta,
         }
         items.append(execution_dict)
 
@@ -819,6 +889,174 @@ async def get_workflow_execution_status(
     }
 
 
+@router.get("/workflow-executions/{wf_execution_id}/approvals")
+async def get_workflow_execution_approvals(
+    wf_execution_id: int,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """承認リクエスト一覧を返す。"""
+    from app.services.approval_service import get_approvals_for_execution
+    wf_exec = db.query(WorkflowExecution).filter(
+        WorkflowExecution.id == wf_execution_id,
+        WorkflowExecution.account_id == current_user.id,
+    ).first()
+    if not wf_exec:
+        raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
+    approvals = get_approvals_for_execution(db, wf_execution_id)
+    return {
+        "approvals": [
+            {
+                "approval_id": a.approval_id,
+                "session_id": a.session_id,
+                "step_id": a.step_id,
+                "adapter_id": a.adapter_id,
+                "runtime": a.runtime,
+                "approval_policy": a.approval_policy,
+                "status": a.status,
+                "prompt_preview": a.prompt_preview,
+                "cwd": a.cwd,
+                "decided_by": a.decided_by,
+                "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+                "attempt_no": a.attempt_no,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in approvals
+        ],
+    }
+
+
+@router.post("/workflow-executions/{wf_execution_id}/approvals/{approval_id}/respond")
+async def respond_to_approval(
+    wf_execution_id: int,
+    approval_id: str,
+    decision: str = "granted",
+    decided_by: str = None,
+    step_id: str = None,
+    adapter_id: str = None,
+    runtime: str = None,
+    approval_policy: str = "ask_before_shell",
+    prompt_preview: str = None,
+    cwd: str = None,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """承認リクエストに応答する（granted/rejected）。冪等。
+
+    Tauri フロー: バックエンドに承認リクエストが未作成の場合は
+    作成と解決を同時に行う。
+    """
+    from app.services.approval_service import resolve_approval, create_and_resolve_approval
+    from app.models import ApprovalRequest as _AR
+
+    actor = decided_by or getattr(current_user, "email", None) or "user"
+
+    wf_exec = db.query(WorkflowExecution).filter(
+        WorkflowExecution.id == wf_execution_id,
+        WorkflowExecution.account_id == current_user.id,
+    ).first()
+    if not wf_exec:
+        raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
+
+    existing = db.query(_AR).filter(_AR.approval_id == approval_id).first()
+
+    if not existing:
+        result = create_and_resolve_approval(
+            db,
+            approval_id=approval_id,
+            decision=decision,
+            decided_by=actor,
+            session_id=wf_exec.session_id,
+            plan_id=wf_exec.coordinator_plan_id,
+            step_id=step_id,
+            workflow_execution_id=wf_execution_id,
+            adapter_id=adapter_id,
+            runtime=runtime,
+            approval_policy=approval_policy,
+            prompt_preview=prompt_preview,
+            cwd=cwd,
+        )
+    else:
+        result = resolve_approval(db, approval_id, decision=decision, decided_by=actor)
+
+    if not result:
+        raise HTTPException(status_code=404, detail="承認リクエストが見つかりません")
+    return {
+        "approval_id": result.approval_id,
+        "status": result.status,
+        "decided_by": result.decided_by,
+        "decided_at": result.decided_at.isoformat() if result.decided_at else None,
+    }
+
+
+@router.get("/workflow-executions/{wf_execution_id}/session")
+async def get_workflow_execution_session(
+    wf_execution_id: int,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """WorkflowRunSession の状態を返す。session_id 未設定（レガシー実行）の場合は null を返す。"""
+    from app.services.session_service import get_session_state
+    wf_exec = db.query(WorkflowExecution).filter(
+        WorkflowExecution.id == wf_execution_id,
+        WorkflowExecution.account_id == current_user.id,
+    ).first()
+    if not wf_exec:
+        raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
+    state = get_session_state(db, wf_exec)
+    return {"session": state}
+
+
+@router.get("/workflow-executions/{wf_execution_id}/events")
+async def get_workflow_execution_events(
+    wf_execution_id: int,
+    namespace: str = None,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """正規化セッションイベントを返す。namespace でフィルタ可能。"""
+    from app.models import CoordinatorEvent
+    wf_exec = db.query(WorkflowExecution).filter(
+        WorkflowExecution.id == wf_execution_id,
+        WorkflowExecution.account_id == current_user.id,
+    ).first()
+    if not wf_exec:
+        raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
+    if not wf_exec.session_id:
+        return {"events": [], "session_id": None}
+
+    q = db.query(CoordinatorEvent).filter(
+        CoordinatorEvent.session_id == wf_exec.session_id,
+    )
+    if namespace:
+        q = q.filter(CoordinatorEvent.event_namespace == namespace)
+    q = q.order_by(CoordinatorEvent.event_seq.asc().nullslast(), CoordinatorEvent.occurred_at.asc())
+    rows = q.all()
+
+    events = []
+    for r in rows:
+        payload = None
+        if r.payload:
+            try:
+                payload = json.loads(r.payload)
+            except (json.JSONDecodeError, TypeError):
+                payload = r.payload
+        events.append({
+            "id": r.id,
+            "event_type": r.event_type,
+            "event_namespace": r.event_namespace,
+            "event_seq": r.event_seq,
+            "session_id": r.session_id,
+            "step_id": r.step_id,
+            "task_id": r.task_id,
+            "artifact_id": r.artifact_id,
+            "payload": payload,
+            "schema_version": r.schema_version,
+            "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
+        })
+    return {"events": events, "session_id": wf_exec.session_id}
+
+
 @router.get("/executions/{execution_id}", response_model=ExecutionResponse)
 async def get_execution_detail(
     execution_id: int,
@@ -879,6 +1117,24 @@ async def get_execution_detail(
     if output_format is None:
         output_format = "txt"  # デフォルト値
 
+    # coordinator_artifacts からの来歴 / ランタイムメタデータ
+    detail_extra_meta = None
+    try:
+        from app.models import CoordinatorArtifact
+        art = (
+            db.query(CoordinatorArtifact)
+            .filter(CoordinatorArtifact.execution_id == execution.id)
+            .order_by(CoordinatorArtifact.id.desc())
+            .first()
+        )
+        if art and art.extra_metadata:
+            try:
+                detail_extra_meta = json.loads(art.extra_metadata) if isinstance(art.extra_metadata, str) else art.extra_metadata
+            except (json.JSONDecodeError, TypeError):
+                detail_extra_meta = None
+    except Exception:  # noqa: BLE001
+        detail_extra_meta = None
+
     return ExecutionResponse(
         id=execution.id,
         account_id=execution.account_id,
@@ -902,6 +1158,7 @@ async def get_execution_detail(
         agent_profile=getattr(execution, 'agent_profile', None),
         executed_at=execution.executed_at,
         enable_deep_think=bool(enable_deep_think) if enable_deep_think is not None else None,
+        extra_metadata=detail_extra_meta,
     )
 
 
@@ -1134,7 +1391,7 @@ async def get_coordinator_plan(
 
 
 # ───────────────────────────────────────────────
-#  Coordinator Extensions — adapters / eval / resume
+#  Coordinator 拡張 — アダプタ / 評価 / 再開
 # ───────────────────────────────────────────────
 
 @router.get("/coordinator/adapters")

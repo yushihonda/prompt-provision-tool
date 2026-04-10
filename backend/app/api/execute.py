@@ -223,10 +223,32 @@ async def execute_skill(
         seconds=settings.WORKER_LEASE_TTL_SECONDS
     )
 
+    # スキル単体の execution_config（ランタイム選択）。予約キー `_nexmagi_*` で
+    # execution の input_data に付与し、ワークフロープランが無いスタンドアロン
+    # パスでも bundle ビルダー (worker.py) が参照できるようにする。
+    # スキルが非デフォルト設定を宣言している場合のみ付与 — レガシースキルは
+    # 従来どおり動作する。
+    enriched_input_data = dict(request.input_data or {})
+    try:
+        from app.services.workflow_step_schema import (
+            parse_execution_config,
+            is_legacy_step,
+        )
+        skill_exec_cfg = parse_execution_config(getattr(skill, "config_json", None))
+        if not is_legacy_step(skill_exec_cfg):
+            enriched_input_data["_nexmagi_skill_execution_config"] = (
+                skill_exec_cfg.model_dump(mode="json")
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "skill execution_config parse skipped for skill %s: %s",
+            skill.id, exc,
+        )
+
     execution = Execution(
         account_id=current_user.id,
         skill_id=skill.id,
-        input_data=json.dumps(request.input_data, ensure_ascii=False),
+        input_data=json.dumps(enriched_input_data, ensure_ascii=False),
         status="pending_local",
         model_used=skill.model_type,
         enable_deep_think=bool(final_enable_deep_think),
@@ -345,7 +367,7 @@ async def execute_workflow(
     db.commit()
     db.refresh(wf_execution)
 
-    # CoordinatorPlan を生成 (実行を駆動せず、観測用のスナップショット)
+    # CoordinatorPlan を生成（実行を駆動せず、観測用のスナップショット）
     try:
         from app.services.coordinator_service import build_coordinator_plan
         wf_groups_for_plan = (
@@ -356,7 +378,7 @@ async def execute_workflow(
         )
         build_coordinator_plan(db, wf_execution, wf, executable_skills, wf_groups_for_plan)
     except Exception as e:
-        # CoordinatorPlan 生成失敗はワークフロー実行を止めない (best-effort)
+        # CoordinatorPlan 生成失敗はワークフロー実行を止めない（ベストエフォート）
         logger.warning(f"CoordinatorPlan generation failed for wf_execution {wf_execution.id}: {e}")
 
     # 実行モード判定
@@ -428,6 +450,36 @@ async def execute_workflow(
         )
         launched_profiles.append(agent_profile)
 
+        # 4階層の設定チェーンから execution_kind を事前計算する。
+        # フロントエンドのポーリングループが bundle 取得前に適切なランナー
+        # （Tauri の consume_external_cli_bundle か SSE）にディスパッチ
+        # できるようにするため。bundle エンドポイントは同じチェーンを
+        # 再解決してこの値を上書きする — 両者は一致するはず。
+        predicted_kind = "http_provider"
+        try:
+            from app.services.workflow_step_schema import (
+                parse_execution_config,
+                merge_step_execution_config_chain,
+                is_legacy_step,
+            )
+            from app.models import WorkflowGroup as _WG
+            wf_cfg = parse_execution_config(wf.config_json) if (wf and wf.config_json) else None
+            grp_cfg = None
+            if ws.group_id is not None:
+                grp_row = db.query(_WG).filter(_WG.id == ws.group_id).first()
+                if grp_row is not None and getattr(grp_row, "config_json", None):
+                    grp_cfg = parse_execution_config(grp_row.config_json)
+            sk_cfg = parse_execution_config(ws_skill.config_json) if getattr(ws_skill, "config_json", None) else None
+            st_cfg = parse_execution_config(ws.config_json) if ws.config_json else None
+            merged = merge_step_execution_config_chain(wf_cfg, grp_cfg, sk_cfg, st_cfg)
+            if not is_legacy_step(merged) and merged.execution.execution_kind == "external_cli":
+                predicted_kind = "external_cli"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "execution_kind prediction failed for ws_id=%s: %s",
+                ws.id, exc,
+            )
+
         execution = Execution(
             account_id=current_user.id,
             skill_id=ws_skill.id,
@@ -436,6 +488,7 @@ async def execute_workflow(
             skill_order=ws.skill_order,
             input_data=json.dumps(skill_input, ensure_ascii=False),
             status="pending_local",
+            execution_kind=predicted_kind,
             model_used=ws_skill.model_type,
             agent_profile=agent_profile,
             enable_deep_think=bool(skill_deep_think),

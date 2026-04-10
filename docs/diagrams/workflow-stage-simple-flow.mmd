@@ -17,9 +17,19 @@ flowchart TD
     D4 --> D5[synthesis_log: step_complete]
     D5 --> E[Implement Step<br/>agent_profile=implement<br/>色: 緑]
 
-    E --> E1[bundle 生成 + Memory 注入]
+    E --> E0{execution_kind?}
+    E0 -->|http_provider| E1[bundle 生成 + Memory 注入]
+    E0 -->|external_cli| E_CLI[External CLI Runtime<br/>Claude Code / Codex / Generic]
+    E_CLI --> E_APR{approval_policy?}
+    E_APR -->|ask_before_shell| E_WAIT[Session: waiting_approval<br/>approval.requested event]
+    E_WAIT --> E_MODAL[User Modal<br/>approve / reject]
+    E_MODAL -->|approve| E_GRANT[approval.granted<br/>Session: running]
+    E_MODAL -->|reject| E_REJECT[approval.rejected<br/>step.failed]
+    E_APR -->|allow_shell| E_GRANT
+    E_GRANT --> E_SPAWN[CLI spawn + streaming<br/>workspace temp_dir]
+    E_SPAWN --> E3
     E1 --> E2[local_worker 実行]
-    E2 --> E3[completion_service + メモリ更新]
+    E2 --> E3[completion_service + メモリ更新<br/>+ session events: step.completed<br/>+ runtime.selected + artifact.created]
     E3 --> E4[blackboard: implement_result]
     E4 --> E5[synthesis_log: step_complete]
     E5 --> F[Verification Step<br/>agent_profile=verification<br/>色: 桃]
@@ -45,6 +55,14 @@ flowchart TD
         CV4[final_verdict<br/>PASS / FAIL / PARTIAL]
     end
 
+    subgraph Session Layer
+        SL1[session_status<br/>initializing → running → completed]
+        SL2[runtime_bindings<br/>step → adapter/runtime/kind]
+        SL3[workspace_bindings<br/>step → workspace_id/mode/path]
+        SL4[approval_summary<br/>pending / granted / rejected]
+        SL5[normalized events<br/>event_seq + event_namespace]
+    end
+
     subgraph Persistent Memory
         PM1[workflow_memories<br/>workflow × profile]
         PM2[starter_seed<br/>初回のみ適用]
@@ -67,3 +85,16 @@ flowchart TD
     C3 --> PM1
     D3 --> PM1
     E3 --> PM1
+
+    A1 --> SL1
+    C3 --> SL2
+    D3 --> SL2
+    E3 --> SL2
+    E_SPAWN --> SL3
+    E_WAIT --> SL4
+    E_GRANT --> SL4
+    C5 --> SL5
+    D5 --> SL5
+    E5 --> SL5
+    F5 --> SL5
+    L2 --> SL5

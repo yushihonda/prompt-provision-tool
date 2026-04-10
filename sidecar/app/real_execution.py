@@ -74,8 +74,8 @@ class SkillRunResult:
     provider_error_message: str | None = None
     retry_reason: str | None = None
     token_accounting_source: str = "unavailable"
-    # Selected vs actual provider provenance (runtime fallback). Populated by
-    # the http execution path. Other paths leave this None.
+    # 選択されたプロバイダと実際のプロバイダの来歴（ランタイムフォールバック用）。
+    # HTTP 実行パスで設定される。他のパスでは None のまま。
     provider_meta: dict[str, Any] | None = None
 
     def as_payload(self) -> dict[str, Any]:
@@ -195,11 +195,11 @@ def _execute_http_provider(
     bundle_model: str,
     execution_id: int,
 ):
-    """Run a single HTTP provider attempt and return the ProviderResponse.
+    """単一の HTTP プロバイダ試行を実行し ProviderResponse を返す。
 
-    Sync HTTP call wrapped so that runtime-fallback orchestration can drive
-    multiple provider attempts uniformly. Kept thin on purpose: any
-    provider-side error classification lives in providers.errors.
+    同期 HTTP 呼び出しをラップし、ランタイムフォールバックのオーケストレーション
+    が複数のプロバイダ試行を統一的に駆動できるようにする。意図的に薄く保ち、
+    プロバイダ側のエラー分類は providers.errors に委ねる。
     """
     provider = create_provider("http", provider_payload)
     return provider.run(
@@ -219,13 +219,12 @@ async def _run_with_runtime_fallback(
     bundle_model: str,
     execution_id: int,
 ):
-    """Execute via the selected HTTP provider, falling back once on
-    recoverable failures when policy allows.
+    """選択された HTTP プロバイダで実行し、ポリシーが許可する場合は
+    回復可能な失敗時に1回フォールバックする。
 
-    Returns (provider_response, provider_meta) where provider_response is
-    the ProviderResponse used for downstream completion, and provider_meta
-    is a dict carrying selected vs actual provider provenance + fallback
-    diagnostics.
+    (provider_response, provider_meta) を返す。provider_response は
+    下流の完了処理に使う ProviderResponse、provider_meta は選択された
+    プロバイダと実際のプロバイダの来歴 + フォールバック診断情報を持つ dict。
     """
     from app.providers.errors import (
         RecoverableProviderError,
@@ -349,8 +348,8 @@ async def _run_with_runtime_fallback(
         file=sys.stderr,
         flush=True,
     )
-    # Return the fallback response so the existing error reporting path runs,
-    # but augment its message so operators see both attempts in metadata.
+    # フォールバックのレスポンスを返して既存のエラー報告パスを実行させるが、
+    # メッセージを補強して運用者がメタデータで両方の試行を確認できるようにする。
     fallback_response.error_message = (
         f"local_failed:{primary_error.reason}; remote_failed:{fallback_error.reason}; "
         f"{fallback_response.error_message or ''}"
@@ -525,25 +524,46 @@ async def _run_existing_execution(
         # because that would mark the execution finished from the wrong
         # owner.
         if bundle.get("execution_kind") == "external_cli":
+            ext_payload = bundle.get("external_cli_payload") or {}
             print(
                 f"[sidecar-py] external_cli_delegated execution_id={execution_id} "
-                f"adapter={(bundle.get('external_cli_payload') or {}).get('adapter_name')} "
-                f"runtime={(bundle.get('external_cli_payload') or {}).get('runtime')}",
+                f"adapter={ext_payload.get('adapter_name')} "
+                f"runtime={ext_payload.get('runtime')}",
                 file=sys.stderr,
                 flush=True,
             )
+            # Sidecar は external_cli バンドルを実行しない — それらは
+            # desktop Rust ランタイム
+            # (desktop/src-tauri/src/external_cli_runtime.rs) が担当する。
+            # センチネル SkillRunResult を返し、オーケストレーション tick が
+            # このワーカースロットを「解放済み」として扱い、実行を完了扱い
+            # にしないようにする。Rust ランナーはフロントエンドフック
+            # (workflow-execute.js) が consume_external_cli_bundle 経由で
+            # 別途起動し、/api/worker/executions/{id}/complete に実際の
+            # 完了を POST する。
+            #
+            # 重要: 以下のフィールド名は SkillRunResult の dataclass スキーマ
+            # と一致させること（execution_time_ms であり、duration_ms ではない）。
+            # 以前のバージョンではここで TypeError が発生し、Rust ランナーが
+            # 実行する前にオーケストレーションマネージャーまで伝播して
+            # 実行をエラーとしてマークしていた。
             return SkillRunResult(
+                execution_id=execution_id,
                 status="delegated_to_external_cli_runtime",
                 output="",
                 model_used=str(bundle.get("model") or ""),
                 tokens_used=0,
-                duration_ms=int((time.time() - started_at) * 1000),
-                error_code=None,
+                execution_time_ms=int((time.time() - started_at) * 1000),
+                output_format=str(bundle.get("output_format") or "txt"),
+                workflow_execution_id=bundle.get("workflow_execution_id"),
+                workflow_skill_id=bundle.get("workflow_skill_id"),
+                skill_id=bundle.get("skill_id"),
+                skill_order=bundle.get("skill_order"),
                 error_message=None,
                 provider_mode="external_cli",
                 provider_transport="external_cli",
-                provider_adapter=(bundle.get("external_cli_payload") or {}).get("adapter_name") or "external_cli",
-                provider_runtime=(bundle.get("external_cli_payload") or {}).get("runtime") or "external_cli",
+                provider_adapter=ext_payload.get("adapter_name") or "external_cli",
+                provider_runtime=ext_payload.get("runtime") or "external_cli",
                 provider_impl="rust_runtime",
                 token_accounting_source="unavailable",
                 auth_key_source=AUTH_KEY_SOURCE_LOCAL_ENV,
@@ -578,7 +598,7 @@ async def _run_existing_execution(
                 bundle = await _fetch_bundle(api_base, auth_token, execution_id)
                 _prompt = str(bundle.get("final_prompt") or "")
         runtime_info.auth_key_source = _detect_auth_key_source(bundle)
-        # Bundle may also carry a runtime fallback payload (remote retry).
+        # バンドルにはランタイムフォールバック用ペイロード（リモートリトライ）が含まれることもある。
         fallback_provider_payload = None
         if isinstance(bundle.get("fallback_provider_payload"), dict):
             fallback_provider_payload = bundle.get("fallback_provider_payload")

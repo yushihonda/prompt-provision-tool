@@ -1,7 +1,7 @@
-// External CLI terminal viewer — read-only streaming via Tauri events.
-// xterm.js is loaded from CDN by cli-terminal.html.
-// The companion file cli-terminal-pty.js handles full PTY duplex
-// (keystroke -> child stdin) on the same page.
+// External CLI ターミナルビューアー — Tauri イベント経由の読み取り専用ストリーミング。
+// xterm.js は cli-terminal.html から CDN 経由で読み込まれる。
+// 同ページ上の cli-terminal-pty.js がフル PTY 双方向通信
+// （キー入力 -> 子プロセス stdin）を処理する。
 
 (function () {
     'use strict';
@@ -12,7 +12,7 @@
     }
 
     // ───────────────────────────────────────────────
-    // xterm.js terminal setup
+    // xterm.js ターミナルセットアップ
     // ───────────────────────────────────────────────
     let term = null;
 
@@ -68,7 +68,7 @@
     }
 
     // ───────────────────────────────────────────────
-    // status / metadata
+    // ステータス / メタデータ
     // ───────────────────────────────────────────────
     function setStatus(status) {
         const el = document.getElementById('cli-status');
@@ -105,7 +105,7 @@
     }
 
     // ───────────────────────────────────────────────
-    // Tauri event subscriptions
+    // Tauri イベント購読
     // ───────────────────────────────────────────────
     let unlisteners = [];
 
@@ -156,7 +156,7 @@
     }
 
     // ───────────────────────────────────────────────
-    // run button handler
+    // 実行ボタンハンドラー
     // ───────────────────────────────────────────────
     async function onRun() {
         if (!tauri || !tauri.core || !tauri.core.invoke) {
@@ -178,9 +178,9 @@
             return;
         }
 
-        // Read runtime selector — adapter_id and command come
-        // from the registry on the Rust side, so we only need to send the
-        // adapter_id that maps to the chosen runtime.
+        // ランタイムセレクターを読み取る — adapter_id と command は
+        // Rust 側のレジストリから取得するため、選択されたランタイムに
+        // マッピングされる adapter_id を送信するだけでよい。
         const runtimeSel = document.getElementById('cli-runtime-select');
         const runtime = runtimeSel ? runtimeSel.value : 'claude_code';
         const adapterByRuntime = {
@@ -214,8 +214,8 @@
 
         try {
             const result = await tauri.core.invoke('external_cli_run', { req: req });
-            // The 'finished' event already updated UI; here we just refresh the
-            // changed-files list which is only present on the result.
+            // 'finished' イベントで既に UI は更新済み。ここでは result にのみ
+            // 含まれる変更ファイルリストを更新するだけ。
             if (result && Array.isArray(result.changed_files)) {
                 setChangedFiles(result.changed_files);
             }
@@ -227,20 +227,21 @@
     }
 
     // ───────────────────────────────────────────────
-    // bootstrap
+    // ブートストラップ
     // ───────────────────────────────────────────────
     document.addEventListener('DOMContentLoaded', function () {
+        if (typeof initUserLayout === 'function') initUserLayout('cli-terminal.html');
         ensureTerm();
         subscribe();
         const btn = document.getElementById('cli-run-btn');
         if (btn) btn.addEventListener('click', onRun);
-        // Pre-fill cwd with home as a safe default.
+        // 安全なデフォルトとして cwd をホームディレクトリで事前入力。
         const cwdEl = document.getElementById('cli-cwd');
         if (cwdEl && !cwdEl.value) {
             cwdEl.value = '';
             cwdEl.placeholder = '/Users/you/your-project';
         }
-        // Keep adapter label in sync with the runtime selector.
+        // アダプターラベルをランタイムセレクターと同期させる。
         const runtimeSel = document.getElementById('cli-runtime-select');
         const adapterLabel = document.getElementById('cli-runtime-adapter');
         function updateAdapterLabel() {

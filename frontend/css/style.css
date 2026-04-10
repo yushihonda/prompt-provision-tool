@@ -1516,6 +1516,14 @@ body:not(.login-page) {
     margin-bottom: 8px;
     padding-right: 70px;
     color: var(--content-text);
+    /* Reserve room for two lines so single-line and wrapped titles
+       sit at the same height across the grid. */
+    min-height: 2.6em;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
 }
 
 .skills-grid .card-desc {
@@ -1524,6 +1532,12 @@ body:not(.login-page) {
     color: var(--content-text-secondary);
     margin-bottom: 12px;
     padding-right: 65px;
+    /* Two-line clamp keeps card-meta (badge row) aligned across cards. */
+    min-height: 3em;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
 }
 
 .skills-grid .card-meta,
@@ -1535,6 +1549,14 @@ body:not(.login-page) {
     margin-bottom: 8px;
     font-size: 12px;
     color: var(--content-text-muted) !important;
+}
+
+/* Fix the meta row height so cards line up regardless of whether the
+   row wraps onto a second line (long model names + runtime chip). */
+.skills-grid .card-meta {
+    min-height: 44px;
+    flex-wrap: wrap;
+    align-content: center;
 }
 
 .skills-grid .card-meta span,

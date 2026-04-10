@@ -2,9 +2,27 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+# Node.js + @anthropic-ai/claude-code CLI for the external_cli
+# execution path. The worker spawns `claude` as a subprocess when
+# routing returns execution_kind=external_cli. Pinned to Node 20 LTS;
+# bump alongside the desktop runtime to keep behavior aligned.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @anthropic-ai/claude-code \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
+
 COPY local_worker/requirements.txt /tmp/worker-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/worker-requirements.txt
 
 COPY local_worker /app/local_worker
+
+# Workspace for external_cli runs (matches CLI_CWD_HINT in the seed
+# script). The /tmp default in seed_parent_child_runtime_workflows.py
+# is fine for tests; production deployments should override this with
+# a persistent volume mounted at the same path.
+RUN mkdir -p /tmp/nexmagi-cli-workspace
 
 CMD ["python", "-m", "local_worker", "--log-level", "INFO", "daemon"]

@@ -1,24 +1,24 @@
-//! Interactive approval gate for `ask_before_shell` steps.
+//! `ask_before_shell` ステップ用のインタラクティブ承認ゲート。
 //!
-//! When a workflow step is resolved with `approval.policy ==
-//! "ask_before_shell"` and the task needs shell execution, the runner
-//! asks the user for confirmation before spawning. The flow is:
+//! ワークフローステップが `approval.policy == "ask_before_shell"` で解決され、
+//! タスクがシェル実行を必要とする場合、ランナーは起動前にユーザーに確認を求める。
+//! フローは以下の通り:
 //!
-//! 1. runner calls `ApprovalGate::request(app, summary)` which:
-//!    - creates a fresh UUID `approval_id`
-//!    - stores a `tokio::sync::oneshot` sender in the registry
-//!    - emits `external_cli:approval_requested` with the id + summary
-//!    - awaits the matching oneshot (bounded by timeout)
-//! 2. the frontend modal subscribes to the event and asks the user
-//! 3. frontend calls `external_cli_approve(approval_id)` or
-//!    `external_cli_reject(approval_id)` Tauri commands, which resolve
-//!    the oneshot with `Approved` or `Rejected`
-//! 4. the runner receives the decision and either proceeds with shell
-//!    capabilities enabled, or aborts with `CapabilityMismatch`
+//! 1. ランナーが `ApprovalGate::request(app, summary)` を呼び出す:
+//!    - 新しい UUID `approval_id` を生成
+//!    - `tokio::sync::oneshot` の送信側をレジストリに格納
+//!    - id + summary 付きで `external_cli:approval_requested` を送出
+//!    - 対応する oneshot を待機（タイムアウト付き）
+//! 2. フロントエンドのモーダルがイベントを購読してユーザーに問い合わせる
+//! 3. フロントエンドが `external_cli_approve(approval_id)` または
+//!    `external_cli_reject(approval_id)` Tauri コマンドを呼び出し、
+//!    oneshot を `Approved` または `Rejected` で解決する
+//! 4. ランナーが決定を受け取り、シェルケイパビリティを有効にして続行するか、
+//!    `CapabilityMismatch` で中止する
 //!
-//! Timeouts: if the user does not respond in 5 minutes, the request is
-//! treated as rejected. This prevents a background run from blocking
-//! forever.
+//! タイムアウト: ユーザーが 5 分以内に応答しない場合、リクエストは
+//! 拒否として扱われる。これによりバックグラウンド実行が
+//! 永久にブロックされることを防ぐ。
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -56,14 +56,14 @@ pub struct ApprovalGate {
 }
 
 impl ApprovalGate {
-    /// Register a pending approval and return the oneshot receiver.
+    /// 保留中の承認を登録し、oneshot レシーバーを返す。
     pub fn register(&self, approval_id: String) -> oneshot::Receiver<ApprovalDecision> {
         let (tx, rx) = oneshot::channel();
         self.inner.lock().insert(approval_id, tx);
         rx
     }
 
-    /// Resolve a pending approval. Returns true if a sender was found.
+    /// 保留中の承認を解決する。送信側が見つかった場合は true を返す。
     pub fn resolve(&self, approval_id: &str, decision: ApprovalDecision) -> bool {
         let Some(tx) = self.inner.lock().remove(approval_id) else {
             return false;
@@ -71,15 +71,15 @@ impl ApprovalGate {
         tx.send(decision).is_ok()
     }
 
-    /// Drop a pending approval without notifying the receiver (used
-    /// when the runner itself times out).
+    /// レシーバーに通知せずに保留中の承認を破棄する
+    /// （ランナー自体がタイムアウトした場合に使用）。
     pub fn drop_pending(&self, approval_id: &str) {
         self.inner.lock().remove(approval_id);
     }
 }
 
-/// Request approval from the user. Emits `external_cli:approval_requested`
-/// and awaits a response or timeout.
+/// ユーザーに承認を要求する。`external_cli:approval_requested` を送出し、
+/// 応答またはタイムアウトを待機する。
 pub async fn request_shell_approval(
     app: &AppHandle,
     gate: &ApprovalGate,
@@ -93,9 +93,9 @@ pub async fn request_shell_approval(
     let approval_id = uuid::Uuid::new_v4().to_string();
     let rx = gate.register(approval_id.clone());
 
-    // Slice at a char boundary — raw byte indexing panics on
-    // multi-byte prompts (Japanese/emoji). See feedback memory
-    // "Rust string slicing must respect char boundaries".
+    // 文字境界でスライスする — 生のバイトインデックスは
+    // マルチバイトプロンプト（日本語/絵文字）でパニックする。
+    // フィードバックメモリ「Rust string slicing must respect char boundaries」を参照。
     let prompt_preview_owned: String;
     let prompt_preview: &str = if prompt.len() > 200 {
         let mut cut = 200;
@@ -154,6 +154,91 @@ pub async fn external_cli_reject(
     req: ApprovalResolveRequest,
 ) -> Result<bool, String> {
     Ok(gate.resolve(&req.approval_id, ApprovalDecision::Rejected))
+}
+
+/// ローカル oneshot を解決し、かつバックエンドに決定を同期する
+/// 統合承認レスポンス。フロントエンドはワークフローステップに対して
+/// `external_cli_approve` / `external_cli_reject` の代わりにこれを呼び出すべきである。
+#[derive(Debug, Deserialize)]
+pub struct WorkflowApprovalResponse {
+    pub approval_id: String,
+    /// "granted" | "rejected" のいずれか
+    pub decision: String,
+    pub api_base: String,
+    pub auth_token: String,
+    pub workflow_execution_id: i64,
+    /// 作成と解決のためのオプショナルな出自フィールド
+    pub step_id: Option<String>,
+    pub adapter_id: Option<String>,
+    pub runtime: Option<String>,
+    pub cwd: Option<String>,
+    pub prompt_preview: Option<String>,
+}
+
+#[tauri::command]
+pub async fn submit_workflow_approval_response(
+    gate: State<'_, ApprovalGate>,
+    req: WorkflowApprovalResponse,
+) -> Result<bool, String> {
+    // 1. ローカル oneshot を解決
+    let local_decision = match req.decision.as_str() {
+        "granted" => ApprovalDecision::Approved,
+        "rejected" => ApprovalDecision::Rejected,
+        _ => ApprovalDecision::Rejected,
+    };
+    let _ = gate.resolve(&req.approval_id, local_decision);
+
+    // 2. バックエンドに同期（ベストエフォート、ファイア・アンド・フォーゲット）
+    let api_base = req.api_base.clone();
+    let auth_token = req.auth_token.clone();
+    let approval_id = req.approval_id.clone();
+    let decision = req.decision.clone();
+    let wf_exec_id = req.workflow_execution_id;
+    let step_id = req.step_id.clone();
+    let adapter_id = req.adapter_id.clone();
+    let runtime = req.runtime.clone();
+    let cwd = req.cwd.clone();
+    let prompt_preview = req.prompt_preview.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let url = format!(
+            "{}/api/user/workflow-executions/{}/approvals/{}/respond",
+            api_base.trim_end_matches('/'),
+            wf_exec_id,
+            approval_id,
+        );
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .ok();
+        if let Some(client) = client {
+            let mut form = vec![
+                ("decision".to_string(), decision),
+            ];
+            if let Some(sid) = step_id {
+                form.push(("step_id".to_string(), sid));
+            }
+            if let Some(aid) = adapter_id {
+                form.push(("adapter_id".to_string(), aid));
+            }
+            if let Some(rt) = runtime {
+                form.push(("runtime".to_string(), rt));
+            }
+            if let Some(c) = cwd {
+                form.push(("cwd".to_string(), c));
+            }
+            if let Some(pp) = prompt_preview {
+                form.push(("prompt_preview".to_string(), pp));
+            }
+            let _ = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", auth_token))
+                .form(&form)
+                .send();
+        }
+    });
+
+    Ok(true)
 }
 
 #[cfg(test)]

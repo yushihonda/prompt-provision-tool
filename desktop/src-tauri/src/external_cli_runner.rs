@@ -1,16 +1,16 @@
-//! Generic runner for `ExternalCliAdapter` instances.
+//! `ExternalCliAdapter` インスタンス用の汎用ランナー。
 //!
-//! Owns runtime-agnostic concerns:
-//! - cwd validation
-//! - subprocess spawn (pipe mode — PTY mode lives in `external_cli_pty.rs`)
-//! - line-buffered stdout/stderr capture with event streaming
-//! - timeout enforcement
-//! - changed-file diff
-//! - output truncation
-//! - emission of unified `external_cli:*` events
+//! ランタイム非依存の処理を担当する:
+//! - cwd バリデーション
+//! - サブプロセス起動 (パイプモード — PTY モードは `external_cli_pty.rs` に実装)
+//! - 行バッファリングされた stdout/stderr キャプチャとイベントストリーミング
+//! - タイムアウト制御
+//! - 変更ファイル差分検出
+//! - 出力の切り詰め
+//! - 統一的な `external_cli:*` イベントの送出
 //!
-//! Concrete adapters provide command construction, prompt wrapping,
-//! failure classification, and result normalization.
+//! 具象アダプターはコマンド構築、プロンプトラッピング、
+//! 失敗分類、結果正規化を提供する。
 
 use serde::Serialize;
 use std::collections::HashSet;
@@ -43,7 +43,7 @@ const FINISHED_EVENT: &str = "external_cli:finished";
 const FAILED_EVENT: &str = "external_cli:failed";
 
 // ───────────────────────────────────────────────
-// helpers
+// ヘルパー関数
 // ───────────────────────────────────────────────
 
 pub fn truncate_output(s: &str, max_bytes: usize) -> (String, bool) {
@@ -65,11 +65,11 @@ pub fn build_command_line_preview(command: &str, args: &[String]) -> String {
     }
     let line = parts.join(" ");
     if line.len() > 400 {
-        // Slice at a char boundary — not a raw byte offset — so
-        // multi-byte prompts (Japanese, emoji, etc.) don't panic here.
-        // Past incident: a Japanese prompt hit byte 400 mid-codepoint,
-        // panicked inside consume_external_cli_bundle's async future,
-        // and the Tauri IPC Promise hung forever on the JS side.
+        // 文字境界でスライスする — 生のバイトオフセットではない — ので、
+        // マルチバイトプロンプト（日本語、絵文字など）でパニックしない。
+        // 過去の障害: 日本語プロンプトがバイト 400 のコードポイント途中に当たり、
+        // consume_external_cli_bundle の async フューチャー内でパニックし、
+        // JS 側の Tauri IPC Promise が永久にハングした。
         let cut = line
             .char_indices()
             .take_while(|(i, _)| *i <= 400)
@@ -118,6 +118,125 @@ pub fn diff_changed_files(cwd: &Path, before: &HashSet<PathBuf>) -> Vec<String> 
     changed
 }
 
+// ───────────────────────────────────────────────
+// 「生成ファイル」プレビュー用の再帰的ワークスペーススナップショット
+// ───────────────────────────────────────────────
+//
+// ワークスペースツリーを走査する（.git / node_modules / ドットディレクトリを除外）。
+// 暴走した CLI が百万ノードを stat させないようにハード深度制限を設ける。
+// (rel_path -> (size, mtime_ns)) をキャプチャする。
+// diff_changed_files_recursive と組み合わせて新規 + 変更ファイルの両方を検出する。
+
+const SNAPSHOT_MAX_DEPTH: usize = 6;
+const SNAPSHOT_MAX_ENTRIES: usize = 5000;
+const PREVIEW_MAX_FILES: usize = 30;
+const PREVIEW_MAX_BYTES: usize = 4096;
+const PREVIEW_SKIP_DIRS: &[&str] = &[".git", "node_modules", ".venv", "venv", "__pycache__", "target", "dist", "build"];
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct ChangedFilePreview {
+    pub path: String,
+    pub size: u64,
+    /// ファイルの先頭 N バイトを UTF-8 として表示。非 UTF-8 ファイルは
+    /// `is_binary: true` と空のプレビューを返す。
+    pub preview: String,
+    pub is_binary: bool,
+    pub truncated: bool,
+}
+
+pub fn snapshot_recursive(cwd: &Path) -> std::collections::HashMap<PathBuf, (u64, i64)> {
+    let mut out = std::collections::HashMap::new();
+    walk_collect(cwd, cwd, 0, &mut out);
+    out
+}
+
+fn walk_collect(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    out: &mut std::collections::HashMap<PathBuf, (u64, i64)>,
+) {
+    if depth > SNAPSHOT_MAX_DEPTH || out.len() > SNAPSHOT_MAX_ENTRIES {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if PREVIEW_SKIP_DIRS.contains(&name) {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        if meta.is_dir() {
+            walk_collect(root, &p, depth + 1, out);
+        } else if meta.is_file() {
+            // mtime を i64 ナノ秒として使用（ベストエフォート; 取得不可時は 0）。
+            let mtime_ns = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as i64)
+                .unwrap_or(0);
+            if let Ok(rel) = p.strip_prefix(root) {
+                out.insert(rel.to_path_buf(), (meta.len(), mtime_ns));
+            }
+        }
+        if out.len() > SNAPSHOT_MAX_ENTRIES {
+            return;
+        }
+    }
+}
+
+/// 新規ファイル、または実行前のスナップショットから (size, mtime) が
+/// 変化したファイルについて、ファイル単位のプレビューを構築する。
+pub fn collect_changed_file_previews(
+    cwd: &Path,
+    before: &std::collections::HashMap<PathBuf, (u64, i64)>,
+) -> Vec<ChangedFilePreview> {
+    let after = snapshot_recursive(cwd);
+    let mut changed: Vec<(PathBuf, u64)> = Vec::new();
+    for (rel, (size_after, mtime_after)) in after.iter() {
+        match before.get(rel) {
+            Some((size_before, mtime_before))
+                if size_before == size_after && mtime_before == mtime_after =>
+            {
+                // 変更なし
+            }
+            _ => changed.push((rel.clone(), *size_after)),
+        }
+    }
+    changed.sort_by(|a, b| a.0.cmp(&b.0));
+    changed.truncate(PREVIEW_MAX_FILES);
+
+    let mut out: Vec<ChangedFilePreview> = Vec::with_capacity(changed.len());
+    for (rel, size) in changed {
+        let abs = cwd.join(&rel);
+        let mut preview = String::new();
+        let mut is_binary = false;
+        let mut truncated = false;
+        if let Ok(bytes) = std::fs::read(&abs) {
+            let take = bytes.len().min(PREVIEW_MAX_BYTES);
+            truncated = bytes.len() > PREVIEW_MAX_BYTES;
+            match std::str::from_utf8(&bytes[..take]) {
+                Ok(s) => preview = s.to_string(),
+                Err(_) => {
+                    is_binary = true;
+                }
+            }
+        }
+        out.push(ChangedFilePreview {
+            path: rel.to_string_lossy().into_owned(),
+            size,
+            preview,
+            is_binary,
+            truncated,
+        });
+    }
+    out
+}
+
 pub fn validate_cwd(cwd_str: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(cwd_str);
     if !path.is_absolute() {
@@ -158,7 +277,7 @@ fn now_iso() -> String {
 }
 
 // ───────────────────────────────────────────────
-// event payloads
+// イベントペイロード
 // ───────────────────────────────────────────────
 
 #[derive(Serialize, Clone)]
@@ -232,7 +351,7 @@ fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
 }
 
 // ───────────────────────────────────────────────
-// streaming
+// ストリーミング
 // ───────────────────────────────────────────────
 
 async fn stream_lines<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
@@ -278,7 +397,7 @@ async fn stream_lines<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
 }
 
 // ───────────────────────────────────────────────
-// generic runner
+// 汎用ランナー
 // ───────────────────────────────────────────────
 
 fn runner_trace(msg: &str) {
@@ -323,7 +442,7 @@ pub async fn run_external_cli_with_adapter(
     );
 
     runner_trace(&format!("registry_lookup task_id={} adapter_id={}", req.task_id, req.adapter_id));
-    // 1. registry lookup
+    // 1. レジストリ検索
     let adapter = match registry.get(&req.adapter_id) {
         Some(a) => a,
         None => {
@@ -353,11 +472,11 @@ pub async fn run_external_cli_with_adapter(
     };
     let cfg = adapter.adapter_config();
 
-    // 1.5 interactive approval gate (ask_before_shell)
-    // If the step policy is ask_before_shell, we emit an event and
-    // wait for the user to explicitly allow shell execution. Approval
-    // promotes the task's allow_shell flag + adds ShellExec capability
-    // for this single run.
+    // 1.5 インタラクティブ承認ゲート (ask_before_shell)
+    // ステップポリシーが ask_before_shell の場合、イベントを送出して
+    // ユーザーが明示的にシェル実行を許可するのを待つ。承認されると
+    // タスクの allow_shell フラグが昇格し、この単一実行に対して
+    // ShellExec ケイパビリティが追加される。
     let mut req = req;
     if req.approval_policy.as_deref() == Some("ask_before_shell") {
         let gate = match approval_gate {
@@ -441,7 +560,7 @@ pub async fn run_external_cli_with_adapter(
     }
 
     runner_trace(&format!("adapter_found task_id={}", req.task_id));
-    // 2. environment validation
+    // 2. 環境バリデーション
     if let Err(reason) = adapter.validate_environment() {
         let status = ExternalCliExecutionStatus::MissingBinary;
         emit(
@@ -467,7 +586,7 @@ pub async fn run_external_cli_with_adapter(
         );
     }
 
-    // 3. capability check
+    // 3. ケイパビリティチェック
     let cap_check = adapter.supports_capabilities(&req.required_capabilities);
     let (cap_passed, missing_caps): (bool, Vec<ExternalCliCapability>) = match cap_check {
         Ok(()) => (true, vec![]),
@@ -518,7 +637,7 @@ pub async fn run_external_cli_with_adapter(
     }
 
     runner_trace(&format!("pre_cwd_validate task_id={} cwd={}", req.task_id, req.cwd));
-    // 4. cwd
+    // 4. 作業ディレクトリ
     let cwd = match validate_cwd(&req.cwd) {
         Ok(p) => p,
         Err(reason) => {
@@ -547,7 +666,7 @@ pub async fn run_external_cli_with_adapter(
     };
 
     runner_trace(&format!("cwd_validated task_id={} cwd={}", req.task_id, cwd.display()));
-    // 5. command + prompt
+    // 5. コマンド + プロンプト
     let prompt = match adapter.build_prompt(&req) {
         Ok(p) => p,
         Err(e) => {
@@ -562,8 +681,8 @@ pub async fn run_external_cli_with_adapter(
             );
         }
     };
-    // Inject the rendered prompt into the request before asking the
-    // adapter to build args; some adapters read from req.prompt directly.
+    // レンダリング済みプロンプトをリクエストに注入してからアダプターに
+    // 引数構築を依頼する。一部のアダプターは req.prompt を直接参照するため。
     let mut effective_req = req.clone();
     effective_req.prompt = prompt;
     let (command, args) = match adapter.build_command(&effective_req) {
@@ -583,10 +702,13 @@ pub async fn run_external_cli_with_adapter(
     let preview = build_command_line_preview(&command, &args);
 
     runner_trace(&format!("command_built task_id={} command={} args_len={}", req.task_id, command, args.len()));
-    // 6. snapshot files
+    // 6. ファイルスナップショット（レガシー呼び出し元向けのトップレベル Vec<String>
+    //    と、結果エンベロープで返されるリッチな「生成ファイル」プレビュー用の
+    //    再帰的 (path -> size+mtime) マップ）。
     let started_files = snapshot_top_level(&cwd);
+    let started_recursive = snapshot_recursive(&cwd);
 
-    // 7. spawn
+    // 7. プロセス起動
     runner_trace(&format!("pre_spawn task_id={}", req.task_id));
     let mut cmd = Command::new(&command);
     cmd.args(&args)
@@ -711,6 +833,9 @@ pub async fn run_external_cli_with_adapter(
     let (stdout_trunc, stdout_truncated) = truncate_output(&stdout_text, MAX_OUTPUT_BYTES);
     let (stderr_trunc, stderr_truncated) = truncate_output(&stderr_text, MAX_OUTPUT_BYTES);
     let changed_files = diff_changed_files(&cwd, &started_files);
+    // 再帰的 (path → size+mtime) 差分と先頭 4KB プレビュー。
+    // バックエンド / UI がファイル名だけでなく*何が生成されたか*を表示できるようにする。
+    let changed_files_preview = collect_changed_file_previews(&cwd, &started_recursive);
     let duration_ms = started_instant.elapsed().as_millis() as u64;
     let finished_at = now_iso();
 
@@ -728,6 +853,7 @@ pub async fn run_external_cli_with_adapter(
     result.stdout_truncated = stdout_truncated;
     result.stderr_truncated = stderr_truncated;
     result.capability_check_passed = cap_passed;
+    result.changed_files_preview = changed_files_preview;
     if interim_status != ExternalCliExecutionStatus::Pending {
         result.status = interim_status;
     }
@@ -779,6 +905,7 @@ fn error_result(
         stdout_truncated: false,
         stderr_truncated: false,
         changed_files: vec![],
+        changed_files_preview: vec![],
         duration_ms: 0,
         started_at: started_at.clone(),
         finished_at: now_iso(),

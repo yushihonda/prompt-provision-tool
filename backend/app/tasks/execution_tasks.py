@@ -28,6 +28,22 @@ from sqlalchemy import update
 from app.models import (
     Execution, Skill, Workflow, WorkflowSkill, WorkflowExecution, WorkflowGroup,
 )
+from app.services.session_service import (
+    update_session_status,
+    update_resume_cursor,
+    SESSION_RUNNING,
+    SESSION_COMPLETED,
+    SESSION_FAILED,
+)
+from app.services.session_events import (
+    emit_session_lifecycle,
+    emit_step_event,
+    SESSION_STEP_ENTERED,
+    SESSION_COMPLETED as _SE_SESSION_COMPLETED,
+    SESSION_FAILED as _SE_SESSION_FAILED,
+    STEP_STARTED,
+    STEP_RETRIED,
+)
 from app.database import SessionLocal
 from app.encryption import encryption_service
 from app.services.agent_profiles import (
@@ -563,6 +579,22 @@ def _launch_judge(db, wf_exec, group, structured_context, global_input, override
 
     max_order = max((ws.skill_order for ws in group_skills), default=0)
 
+    # Detect "judge runs via external_cli" opt-in. Stored under
+    # WorkflowGroup.config_json.judge_execution_config (a separate key
+    # from execution_config so the regular per-step inheritance chain
+    # is not affected). When present, the worker.py routing block reads
+    # the same field and constructs an external_cli payload using
+    # judge_prompt as the CLI prompt.
+    judge_kind = "http_provider"
+    try:
+        if group.config_json:
+            grp_cfg = json.loads(group.config_json) if isinstance(group.config_json, str) else group.config_json
+            judge_cfg = (grp_cfg or {}).get("judge_execution_config") or {}
+            if judge_cfg.get("execution", {}).get("execution_kind") == "external_cli":
+                judge_kind = "external_cli"
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
+
     judge_exec = Execution(
         account_id=wf_exec.account_id,
         skill_id=None,
@@ -577,6 +609,7 @@ def _launch_judge(db, wf_exec, group, structured_context, global_input, override
         output_format="txt",
         execution_role=ROLE_DEBATE_JUDGE,
         execution_group_id=group.id,
+        execution_kind=judge_kind,
         executed_at=datetime.now(JST),
     )
     db.add(judge_exec)
@@ -1145,6 +1178,42 @@ def _launch_skills(db, wf_exec, skills, structured_context,
             launched_profiles.append(agent_profile)
 
             first_exec = wf_exec.executions[0] if wf_exec.executions else None
+
+            # Pre-compute execution_kind from the 4-level config chain
+            # so the frontend polling loop can dispatch to the right
+            # runner (Tauri's consume_external_cli_bundle vs SSE
+            # streaming) WITHOUT having to fetch a bundle first.
+            #
+            # The bundle endpoint will re-resolve this when it issues
+            # the actual payload — we're just predicting the routing
+            # decision so the row carries a stable hint at creation
+            # time. The two must agree; if they ever drift the bundle
+            # endpoint wins (and overwrites the column).
+            predicted_kind = "http_provider"
+            try:
+                from app.services.workflow_step_schema import (
+                    parse_execution_config,
+                    merge_step_execution_config_chain,
+                    is_legacy_step,
+                )
+                from app.models import WorkflowGroup as _WG
+                wf_cfg = parse_execution_config(workflow.config_json) if (workflow and workflow.config_json) else None
+                grp_cfg = None
+                if ws.group_id is not None:
+                    grp_row = db.query(_WG).filter(_WG.id == ws.group_id).first()
+                    if grp_row is not None and getattr(grp_row, "config_json", None):
+                        grp_cfg = parse_execution_config(grp_row.config_json)
+                skill_cfg = parse_execution_config(skill.config_json) if getattr(skill, "config_json", None) else None
+                step_cfg = parse_execution_config(ws.config_json) if ws.config_json else None
+                merged = merge_step_execution_config_chain(wf_cfg, grp_cfg, skill_cfg, step_cfg)
+                if not is_legacy_step(merged) and merged.execution.execution_kind == "external_cli":
+                    predicted_kind = "external_cli"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "execution_kind prediction failed for ws_id=%s: %s — defaulting to http_provider",
+                    ws.id, exc,
+                )
+
             execution = Execution(
                 account_id=wf_exec.account_id,
                 skill_id=skill.id,
@@ -1154,6 +1223,7 @@ def _launch_skills(db, wf_exec, skills, structured_context,
                 input_data=json.dumps(skill_input, ensure_ascii=False),
                 status="pending_local",
                 dispatch_mode="local",
+                execution_kind=predicted_kind,
                 model_used=skill.model_type,
                 agent_profile=agent_profile,
                 enable_deep_think=bool(deep_think),
@@ -1174,6 +1244,30 @@ def _launch_skills(db, wf_exec, skills, structured_context,
             wf_exec.current_stage = launched_profiles[0]
             _set_handoff_target_profile(wf_exec, launched_profiles[0])
         db.flush()
+
+        # ── セッションイベント: ステップ開始 ──
+        if wf_exec.session_id and wf_exec.coordinator_plan_id:
+            try:
+                for ws_item in skills:
+                    step_id = f"task_{ws_item.id}"
+                    update_session_status(db, wf_exec, SESSION_RUNNING, step_id=step_id)
+                    update_resume_cursor(db, wf_exec, {
+                        "step_id": step_id,
+                        "skill_order": ws_item.skill_order,
+                        "position": "step_started",
+                    })
+                    emit_session_lifecycle(
+                        db, wf_exec.session_id, wf_exec.coordinator_plan_id,
+                        SESSION_STEP_ENTERED, step_id=step_id,
+                    )
+                    emit_step_event(
+                        db, wf_exec.session_id, wf_exec.coordinator_plan_id,
+                        STEP_STARTED, step_id=step_id,
+                        payload={"skill_order": ws_item.skill_order, "predicted_kind": predicted_kind},
+                    )
+            except Exception:
+                logger.debug("_launch_skills セッションイベント発行失敗", exc_info=True)
+
         db.commit()
         logger.info(f"WF {wf_exec.id}: launched {len(skills)} skills")
     except Exception as e:
@@ -1226,6 +1320,28 @@ def _retry_skill(db, wf_exec, ws, failed_ex, per_skill_input,
     wf_exec.current_stage = agent_profile
     _set_handoff_target_profile(wf_exec, agent_profile)
     db.flush()
+
+    # ── セッションイベント: ステップリトライ ──
+    if wf_exec.session_id and wf_exec.coordinator_plan_id:
+        try:
+            step_id = f"task_{ws.id}"
+            emit_step_event(
+                db, wf_exec.session_id, wf_exec.coordinator_plan_id,
+                STEP_RETRIED, step_id=step_id,
+                payload={
+                    "retry_attempt": execution.retry_count,
+                    "failed_execution_id": failed_ex.id,
+                    "error_message": failed_ex.error_message,
+                },
+            )
+            update_resume_cursor(db, wf_exec, {
+                "step_id": step_id,
+                "attempt_no": execution.retry_count,
+                "position": "step_retried",
+            })
+        except Exception:
+            logger.debug("リトライセッションイベント発行失敗", exc_info=True)
+
     db.commit()
     logger.info(f"WF {wf_exec.id}: retry ws={ws.id} (attempt {execution.retry_count}/{ws.max_retries})")
     _notify_next_steps(db, wf_exec, [ws])
@@ -1274,6 +1390,34 @@ def _start_parent_skill(db, wf_exec, workflow, structured_context,
     merged_input["_nexmagi_handoff_refs"] = []
 
     first_exec = wf_exec.executions[0] if wf_exec.executions else None
+
+    # Pre-compute execution_kind for the parent Leader from
+    # workflow.config_json. The parent step is created here as a
+    # synthetic Execution row with no WorkflowSkill — there's no skill
+    # config to merge, only the workflow-level default. If the workflow
+    # opts in to external_cli at the workflow level we honor it here
+    # so the frontend poller dispatches the parent through the same
+    # Tauri Rust runner that handles child external_cli steps.
+    #
+    # This is the same pre-compute logic used in execute.py and
+    # _launch_skills, just narrowed to the workflow level since there
+    # is no skill or step config for the parent.
+    predicted_kind = "http_provider"
+    try:
+        from app.services.workflow_step_schema import (
+            parse_execution_config,
+            is_legacy_step,
+        )
+        if workflow and workflow.config_json:
+            wf_cfg = parse_execution_config(workflow.config_json)
+            if not is_legacy_step(wf_cfg) and wf_cfg.execution.execution_kind == "external_cli":
+                predicted_kind = "external_cli"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "parent execution_kind prediction failed for wf_exec=%s: %s",
+            wf_exec.id, exc,
+        )
+
     try:
         execution = Execution(
             account_id=wf_exec.account_id,
@@ -1284,6 +1428,7 @@ def _start_parent_skill(db, wf_exec, workflow, structured_context,
             input_data=json.dumps(merged_input, ensure_ascii=False),
             status="pending_local",
             dispatch_mode="local",
+            execution_kind=predicted_kind,
             model_used=parent_model,
             agent_profile="default",
             enable_deep_think=bool(workflow.parent_enable_deep_think),

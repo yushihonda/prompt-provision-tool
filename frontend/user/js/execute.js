@@ -19,7 +19,19 @@ async function loadPromptDetail() {
         // スキル情報を表示
         document.getElementById('skill-name').textContent = skillDetail.name;
         document.getElementById('skill-description').textContent = skillDetail.description || '説明なし';
-        document.getElementById('skill-model').innerHTML = formatModelDisplay(skillDetail.model_type, null, skillDetail);
+        // CLI モード: model_type の代わりに cli_model（またはランタイム名）を表示。
+        // ランタイムチップをプレフィックスし、API/CLI が一目でわかるようにする。
+        const skCtx = { skill: { config_json: skillDetail.config_json } };
+        const skResolved = window.runtimeResolver
+            ? window.runtimeResolver.resolveEffectiveRuntime(skCtx)
+            : { kind: 'api' };
+        const modelText = (skResolved.kind === 'cli' && window.runtimeResolver)
+            ? window.runtimeResolver.effectiveModelLabel(skCtx, '')
+            : formatModelDisplay(skillDetail.model_type, null, skillDetail);
+        const headerChip = window.runtimeResolver
+            ? window.runtimeResolver.renderResolvedRuntimeChip(skCtx)
+            : '';
+        document.getElementById('skill-model').innerHTML = `${headerChip ? headerChip + ' ' : ''}${modelText}`;
 
         // ファイル出力オプションの表示/非表示
         const fileOutputContainer = document.getElementById('file-output-container');
@@ -116,6 +128,59 @@ async function restoreActiveExecution() {
     }
 }
 
+// 出力パネル下に「生成ファイル」を描画。CLI ステップのみ意味があり、
+// extra_metadata.changed_files_preview が空ならパネル自体を出さない。
+function _renderSkillGeneratedFilesPanel(execution) {
+    const oldPanel = document.getElementById('skill-generated-files-panel');
+    if (oldPanel) oldPanel.remove();
+
+    const meta = execution && execution.extra_metadata;
+    if (!meta) return;
+    const previews = Array.isArray(meta.changed_files_preview) ? meta.changed_files_preview : [];
+    if (previews.length === 0) return;
+    const wsId = meta.workspace_id || '';
+
+    const outputPanel = document.querySelector('.wf-io-output');
+    if (!outputPanel) return;
+    const wrapper = outputPanel.closest('.card-cutout-wrapper') || outputPanel.parentElement;
+    if (!wrapper || !wrapper.parentElement) return;
+
+    function fmtSize(bytes) {
+        if (bytes == null) return '-';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    }
+    const escFn = (window.execDetailModal && window.execDetailModal.escapeHtml) || ((s) => s);
+
+    const panel = document.createElement('div');
+    panel.id = 'skill-generated-files-panel';
+    panel.style.cssText = 'margin-top:14px; border:1px solid rgba(0,0,0,0.06); border-radius:8px; overflow:hidden; background:#fff;';
+    let inner = `<div style="padding:10px 14px; background:rgba(14,165,233,0.08); border-bottom:1px solid rgba(0,0,0,0.06); font-size:12px; font-weight:700; color:var(--content-text);">生成ファイル <span style="color:#6b7280; font-weight:500;">(${previews.length})</span></div>`;
+    inner += '<div style="padding:8px 14px;">';
+    for (const f of previews) {
+        const sizeStr = fmtSize(f.size);
+        const truncatedNote = f.truncated ? ' <span style="color:#f59e0b;">(先頭4KBのみ)</span>' : '';
+        inner += `<details style="margin-bottom:6px;">`;
+        inner += `<summary style="cursor:pointer; padding:6px 8px; background:rgba(0,0,0,0.03); border-radius:4px; font-size:12px; font-family:monospace; display:flex; justify-content:space-between; align-items:center; gap:8px;">`;
+        inner += `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;">${escFn(f.path)}</span>`;
+        inner += `<span style="font-size:10px; color:#6b7280; flex-shrink:0;">${sizeStr}${truncatedNote}</span>`;
+        if (wsId && !f.is_binary) {
+            inner += `<button type="button" onclick="event.preventDefault(); event.stopPropagation(); execDetailModal._openFullFile('${escFn(wsId)}', '${escFn(f.path)}')" style="font-size:10px; padding:2px 8px; background:var(--accent, #7c3aed); color:#fff; border:none; border-radius:4px; cursor:pointer; flex-shrink:0;">全文</button>`;
+        }
+        inner += `</summary>`;
+        if (f.is_binary) {
+            inner += `<div style="padding:8px; color:#6b7280; font-size:11px; font-style:italic;">(バイナリファイル — プレビュー不可)</div>`;
+        } else {
+            inner += `<pre style="margin:4px 0 0 0; padding:10px; background:rgba(0,0,0,0.04); border-radius:4px; font-size:11px; line-height:1.5; overflow-x:auto; max-height:300px;"><code>${escFn(f.preview)}</code></pre>`;
+        }
+        inner += `</details>`;
+    }
+    inner += '</div>';
+    panel.innerHTML = inner;
+    wrapper.parentElement.insertBefore(panel, wrapper.nextSibling);
+}
+
 function displayExecutionResult(execution, executionIdForDownload = null, outputFormatForDownload = null) {
     // 結果パネルを表示
     showOutputPanel();
@@ -123,10 +188,14 @@ function displayExecutionResult(execution, executionIdForDownload = null, output
     // 結果を表示
     updateOutputContent(execution.output_data || '');
 
-    // モデル表示を更新
+    // モデル表示を更新（runtime バッジ + モデル名）
     const statModel = document.getElementById('stat-model');
     if (statModel) {
-        statModel.innerHTML = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const baseHtml = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const statBadge = (window.runtimeBadge && execution.extra_metadata)
+            ? window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata)
+            : '';
+        statModel.innerHTML = `${statBadge ? statBadge + ' ' : ''}${baseHtml}`;
     }
 
     const statTime = document.getElementById('stat-time');
@@ -142,6 +211,9 @@ function displayExecutionResult(execution, executionIdForDownload = null, output
     // 統計セクションを表示
     const statsEl = document.getElementById('skill-exec-stats');
     if (statsEl) statsEl.style.display = '';
+
+    // 生成ファイル一覧を出力パネルの下にレンダー (CLI スキルのみ)
+    _renderSkillGeneratedFilesPanel(execution);
 
     // 結果パネルにスクロール
     const outputPanel = document.querySelector('.wf-io-output');
@@ -852,12 +924,15 @@ function renderHistory() {
 
     tbody.innerHTML = displayed.map(execution => {
         const modelDisplay = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const runtimeBadge = (window.runtimeBadge && execution.extra_metadata)
+            ? window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata)
+            : '';
         const statusColor = execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'var(--content-text-muted)';
 
         return `
         <tr>
             <td>${formatDate(execution.executed_at)}</td>
-            <td>${modelDisplay}</td>
+            <td>${runtimeBadge ? runtimeBadge + ' ' : ''}${modelDisplay}</td>
             <td>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</td>
             <td>${execution.execution_time}ms</td>
             <td>${formatCompact(execution.tokens_used)}</td>
@@ -908,7 +983,11 @@ async function showHistoryDetail(id) {
             }
         }
 
-        const modelHtml = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const baseModelHtml = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const histRuntimeBadge = (window.runtimeBadge && execution.extra_metadata)
+            ? window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata)
+            : '';
+        const modelHtml = `${histRuntimeBadge ? histRuntimeBadge + ' ' : ''}${baseModelHtml}`;
         const { escapeHtml, buildHtml } = execDetailModal;
 
         let afterSummaryHtml = '';

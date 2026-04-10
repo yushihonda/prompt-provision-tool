@@ -74,6 +74,9 @@ class Skill(Base):
     encrypted_content = Column(Text, nullable=False)  # 暗号化されたスキル内容
     model_type = Column(String(100), nullable=False)
     input_schema = Column(Text)  # JSON形式で入力フィールドの定義を保存
+    # スキルレベルのデフォルト設定用 JSON。execution_config (StepExecutionConfig) を保持し、
+    # スキル単独実行時もワークフロー内実行時もデフォルトランタイム (HTTP / external CLI) を宣言可能。
+    config_json = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     allows_file_output = Column(Boolean, default=False, nullable=False)
     enable_deep_think = Column(Boolean, default=True, nullable=False)
@@ -113,6 +116,10 @@ class Workflow(Base):
     parent_model_type = Column(String(100), nullable=True, default="gpt-4o")
     parent_enable_deep_think = Column(Boolean, default=True, nullable=False)
 
+    # ワークフローレベルの execution_config デフォルト。グループ/スキル/ステップで
+    # 上書きされない限り全ステップに適用。Skill.config_json と同じ JSON 形式。
+    config_json = Column(Text, nullable=True)
+
     # リレーション
     creator = relationship("Account")
     groups = relationship("WorkflowGroup", back_populates="workflow", cascade="all, delete-orphan", order_by="WorkflowGroup.group_order")
@@ -138,6 +145,9 @@ class WorkflowGroup(Base):
     # ジャッジ (並列Group完了後の合議)
     judge_prompt = Column(Text, nullable=True)  # 暗号化プロンプト
     judge_model = Column(String(100), nullable=True)
+    # グループレベルの execution_config デフォルト。Workflow と Skill の間の継承チェーンに位置する。
+    # Skill.config_json / WorkflowSkill.config_json と同じ JSON 形式。
+    config_json = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # リレーション
@@ -211,6 +221,16 @@ class WorkflowExecution(Base):
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
+    # ── セッション層 ──
+    session_id = Column(String(64), nullable=True, unique=True, index=True)
+    session_status = Column(String(30), nullable=True)  # セッション状態 (initializing / running / waiting_approval / completed / failed 等)
+    current_step_id = Column(String(64), nullable=True)  # 現在処理中の task_id
+    resume_cursor = Column(Text, nullable=True)  # 再開位置 JSON: {step_id, attempt_no, position}
+    runtime_bindings = Column(Text, nullable=True)  # ステップ別ランタイム情報 JSON: {step_id: {adapter_id, runtime, ...}}
+    workspace_bindings = Column(Text, nullable=True)  # ステップ別ワークスペース情報 JSON: {step_id: {workspace_id, mode, path, status}}
+    approval_summary = Column(Text, nullable=True)  # 承認サマリー JSON: {pending:[], granted:[], rejected:[]}
+    artifact_refs = Column(Text, nullable=True)  # ステップ別アーティファクト参照 JSON: {step_id: [artifact_id]}
+
     # リレーション
     workflow = relationship("Workflow")
     account = relationship("Account")
@@ -274,6 +294,11 @@ class Execution(Base):
     output_format = Column(String(10), nullable=True, default="txt")
     skill_name_snapshot = Column(String(255), nullable=True)  # 実行時点のスキル名スナップショット
     dispatch_mode = Column(String(30), nullable=False, default="server")
+    # ルーティング判定結果。ワーカー/デスクトップランタイムが実行パスを選択するために使用。
+    # bundle エンドポイントが初回取得時に設定し、フロントエンドのポーリングループが
+    # SSE ストリーミング (HTTP) と Tauri の consume_external_cli_bundle (CLI) を判別する。
+    # 値: "http_provider" (デフォルト) | "external_cli" | "internal"
+    execution_kind = Column(String(30), nullable=False, default="http_provider", server_default="http_provider")
     lease_token_hash = Column(String(128), nullable=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True)
     executed_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -445,6 +470,13 @@ class CoordinatorAdapter(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    # ── アダプタハードニング ──
+    risk_level = Column(String(20), nullable=True)  # リスクレベル (low / medium / high / critical)
+    requires_workspace = Column(Boolean, nullable=True, server_default="0")  # ワークスペース必須フラグ
+    default_approval_policy = Column(String(30), nullable=True)  # デフォルト承認ポリシー (ask_before_shell / allow_shell 等)
+    auth_mechanism = Column(String(30), nullable=True)  # 認証方式 (none / api_key / oauth / local_session)
+    supported_capabilities = Column(Text, nullable=True)  # capability 配列 (JSON)
+
 
 class CoordinatorEvalRun(Base):
     """品質評価ハーネスのランレコード
@@ -512,6 +544,37 @@ class CoordinatorEvent(Base):
     payload = Column(Text(length=16777215), nullable=True)  # JSON
     schema_version = Column(String(20), nullable=False, default="1.0")
     occurred_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    # ── 正規化イベント列 ──
+    session_id = Column(String(64), nullable=True, index=True)  # 紐付くセッション ID
+    step_id = Column(String(64), nullable=True, index=True)  # 対象ステップ ID
+    event_seq = Column(Integer, nullable=True)  # セッション内の連番
+    event_namespace = Column(String(30), nullable=True, index=True)  # イベント名前空間 (workflow / step / runtime / workspace / approval / artifact)
+
+    plan = relationship("CoordinatorPlan")
+
+
+class ApprovalRequest(Base):
+    """承認リクエストテーブル (ask_before_shell 等の durable 承認ゲート)"""
+    __tablename__ = "approval_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    approval_id = Column(String(64), nullable=False, unique=True, index=True)
+    session_id = Column(String(64), nullable=True, index=True)  # 紐付くセッション
+    plan_id = Column(String(64), ForeignKey("coordinator_plans.plan_id", ondelete="CASCADE"), nullable=True, index=True)
+    step_id = Column(String(64), nullable=True, index=True)  # 対象ステップ
+    execution_id = Column(Integer, ForeignKey("executions.id", ondelete="SET NULL"), nullable=True)
+    workflow_execution_id = Column(Integer, ForeignKey("workflow_executions.id", ondelete="CASCADE"), nullable=True, index=True)
+    adapter_id = Column(String(64), nullable=True)  # 対象アダプタ
+    runtime = Column(String(30), nullable=True)  # 対象ランタイム
+    approval_policy = Column(String(30), nullable=False)  # 適用ポリシー
+    status = Column(String(20), nullable=False, server_default="pending")  # 承認状態 (pending / granted / rejected / timed_out)
+    prompt_preview = Column(Text, nullable=True)  # プロンプトのプレビュー
+    cwd = Column(Text, nullable=True)  # 実行ディレクトリ
+    decided_by = Column(String(100), nullable=True)  # 応答者
+    decided_at = Column(DateTime(timezone=True), nullable=True)  # 応答日時
+    attempt_no = Column(Integer, nullable=False, server_default="1")  # 同一ステップの試行回数
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     plan = relationship("CoordinatorPlan")
 

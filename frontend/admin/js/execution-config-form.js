@@ -1,19 +1,19 @@
-// Workflow step "実行ランタイム" form helper.
+// ワークフローステップ「実行ランタイム」フォームヘルパー。
 //
-// Usage from skills.js (or wherever the workflow skill editor lives):
+// skills.js（またはワークフロースキルエディターがある場所）での使用法:
 //
-//   // build the form with current values:
+//   // 現在の値でフォームを構築:
 //   const html = window.executionConfigForm.renderForm(currentExecutionConfig);
-//   // ...inject into the DOM...
+//   // ...DOM に注入...
 //
-//   // collect values back when saving:
+//   // 保存時に値を収集:
 //   const newExecutionConfig = window.executionConfigForm.collectForm(formRoot);
 //   skillItem.config_json = skillItem.config_json || {};
 //   skillItem.config_json.execution_config = newExecutionConfig;
 //
-// The shape mirrors backend/app/services/workflow_step_schema.py
-// `StepExecutionConfig`. Defaults are equivalent to "legacy" — no
-// behavior change for steps that don't touch this section.
+// 形状は backend/app/services/workflow_step_schema.py の
+// `StepExecutionConfig` に対応。デフォルト値は「レガシー」と同等で、
+// このセクションを変更しないステップの動作は変わらない。
 
 (function () {
     'use strict';
@@ -30,6 +30,31 @@
         { value: 'codex-local', label: 'OpenAI Codex (codex-local)' },
         { value: 'generic-cli', label: 'Generic (generic-cli)' },
     ];
+
+    // CLI 側のモデルリスト。選択されたアダプターに基づいて cli_model
+    // セレクターを設定し、各 CLI バイナリが実際に理解するモデルのみを
+    // ユーザーに表示する。Rust アダプターは選択された値を
+    // --model (Claude) または -m (Codex) 経由で転送する。
+    const CLI_MODEL_OPTIONS = {
+        'claude-code-local': [
+            { value: '', label: '(CLI 既定)' },
+            { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+            { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+            { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+        ],
+        'codex-local': [
+            { value: '', label: '(CLI 既定)' },
+            { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
+            { value: 'o4-mini', label: 'o4-mini' },
+        ],
+        'generic-cli': [
+            { value: '', label: '(指定なし)' },
+        ],
+    };
+
+    function modelOptionsFor(adapterId) {
+        return CLI_MODEL_OPTIONS[adapterId] || [{ value: '', label: '(指定なし)' }];
+    }
 
     const CAPABILITY_OPTIONS = [
         'file_read', 'file_write', 'shell_exec', 'workspace_aware',
@@ -60,6 +85,7 @@
                 required_capabilities: [],
                 cli_runtime_hint: null,
                 cwd_hint: null,
+                cli_model: null,
             },
             workspace: {
                 workspace_policy: 'none',
@@ -126,6 +152,11 @@
             + '<label style="font-size:12px; color:#6b7280;">推奨アダプター</label>'
             + renderSelect('execution.preferred_adapter', ADAPTER_OPTIONS, cfg.execution.preferred_adapter || '')
 
+            + '<label style="font-size:12px; color:#6b7280;">CLI モデル (CLI バイナリに渡す --model / -m)</label>'
+            + '<div data-exec-cli-model-mount>'
+            + renderSelect('execution.cli_model', modelOptionsFor(cfg.execution.preferred_adapter || ''), cfg.execution.cli_model || '')
+            + '</div>'
+
             + '<label style="font-size:12px; color:#6b7280;">cwd ヒント (絶対パス、home配下のみ許可)</label>'
             + '<input type="text" data-exec-field="execution.cwd_hint" value="' + escapeHtml(cfg.execution.cwd_hint || '') + '" placeholder="/Users/you/your-project" style="padding:8px 12px; border:1px solid rgba(0,0,0,0.1); border-radius:8px; font-size:13px; font-family:monospace;">'
 
@@ -174,15 +205,17 @@
             let value;
             if (el.type === 'checkbox') value = !!el.checked;
             else value = el.value;
-            // Special handling for share_with_steps comma list.
+            // share_with_steps のカンマ区切りリストの特別処理。
             if (name === 'workspace.share_with_steps') {
                 value = String(value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
             }
-            // null out empty preferred_adapter / cwd_hint.
-            if ((name === 'execution.preferred_adapter' || name === 'execution.cwd_hint') && !value) {
+            // 空の preferred_adapter / cwd_hint / cli_model を null にする。
+            if ((name === 'execution.preferred_adapter'
+                 || name === 'execution.cwd_hint'
+                 || name === 'execution.cli_model') && !value) {
                 value = null;
             }
-            // Walk into out by parts.
+            // パーツに沿って out オブジェクトの中を辿る。
             let cur = out;
             for (let i = 0; i < parts.length - 1; i++) {
                 cur = cur[parts[i]];
@@ -197,10 +230,38 @@
         return out;
     }
 
+    // 新しくレンダリングされたフォームルートに動的挙動を接続する:
+    // ユーザーが preferred_adapter ドロップダウンを変更した際、
+    // CLI モデルのサブセレクトを新しいアダプターのモデルリストに
+    // 合わせて差し替える。冪等 — 同じルートに複数回呼んでも安全。
+    function attachDynamicWiring(rootEl) {
+        if (!rootEl) return;
+        const adapterSel = rootEl.querySelector('select[data-exec-field="execution.preferred_adapter"]');
+        const modelMount = rootEl.querySelector('[data-exec-cli-model-mount]');
+        if (!adapterSel || !modelMount) return;
+        if (adapterSel._execModelWired) return;
+        adapterSel._execModelWired = true;
+        adapterSel.addEventListener('change', function () {
+            const adapterId = adapterSel.value || '';
+            // 現在の選択が新しいリストにまだ存在する場合は保持する。
+            const currentModelSel = modelMount.querySelector('select[data-exec-field="execution.cli_model"]');
+            const currentValue = currentModelSel ? currentModelSel.value : '';
+            const newOptions = modelOptionsFor(adapterId);
+            const stillValid = newOptions.some(function (o) { return String(o.value) === String(currentValue); });
+            modelMount.innerHTML = renderSelect(
+                'execution.cli_model',
+                newOptions,
+                stillValid ? currentValue : ''
+            );
+        });
+    }
+
     window.executionConfigForm = {
         renderForm: renderForm,
         collectForm: collectForm,
         defaultConfig: defaultConfig,
         mergeWithDefaults: mergeWithDefaults,
+        attachDynamicWiring: attachDynamicWiring,
+        modelOptionsFor: modelOptionsFor,
     };
 })();

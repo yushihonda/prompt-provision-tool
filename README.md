@@ -13,7 +13,10 @@ NexMAGI は Tauri ベースのデスクトップアプリで、複数のAIエー
 - **品質ゲート + リフレクション** — 自動検証・修正ループ
 - **並列グループ + ジャッジ** — Mixture of Agents で結果を統合
 - **Coordinator 観測層** — Plan / Workers / Artifacts / DAG / Eval メトリクス
-- **アダプターレジストリ** — internal sidecar / local LLM (HTTP) / external CLI / remote API を統一管理
+- **WorkflowRunSession** — durable session layer (status / resume cursor / runtime bindings / event sequence)
+- **Normalized events** — `workflow.session.*` / `step.*` / `runtime.*` / `workspace.*` / `approval.*` / `artifact.*` の統一イベント体系
+- **ask_before_shell 承認フロー** — shell 実行前に pause/approve/reject する durable approval gate
+- **アダプターレジストリ** — internal sidecar / local LLM (HTTP) / external CLI / remote API を統一管理 (risk / workspace / approval デフォルト付き)
 - **ユーザー自身のAPIキー管理** — 設定ページから登録、サーバー側 .env フォールバックなし
 
 ## アーキテクチャ
@@ -34,9 +37,11 @@ NexMAGI は Tauri ベースのデスクトップアプリで、複数のAIエー
   ├ ユーザー APIキー暗号化保存 (Fernet)
   └ Coordinator 観測層
        ├ CoordinatorPlan / Worker / Artifact / Event
+       ├ WorkflowRunSession (durable session layer)
+       ├ ApprovalRequests (ask_before_shell gate)
        ├ Follow-up tasks / Workspace isolation
        ├ DAG (depends_on → topological sort)
-       └ Adapter Registry / Eval Harness / Resume
+       └ Adapter Registry (risk/workspace/approval defaults) / Eval Harness
 ```
 
 ## クイックスタート (開発環境)
@@ -115,8 +120,27 @@ npm run tauri:dev
 - **DAG**: `depends_on` を解決した実行レイヤーを算出
 - **Workspace Isolation**: `writes_files=true` なタスクの分離ワークスペースをメタデータ管理
 - **Eval Harness**: completeness / revision_rate / judge_pass_rate / local_usage_rate などのメトリクスを履歴記録
-- **Adapter Registry**: internal sidecar / local LLM / remote API を統一インターフェースで登録・検索
+- **Adapter Registry**: internal sidecar / local LLM / remote API を統一インターフェースで登録・検索 (risk / workspace / approval デフォルト付き)
 - **Resume**: 中断した plan を再開し、未完了タスクのみ再実行可能
+
+### WorkflowRunSession (セッション層)
+ワークフロー実行ごとに durable session を作成し、以下を一元管理:
+- **session_status** — `initializing` / `running` / `waiting_approval` / `paused` / `completed` / `failed` / `cancelled`
+- **runtime_bindings** — ステップごとの selected / actual runtime、fallback 情報
+- **workspace_bindings** — ステップごとの workspace id / mode / path / status
+- **approval_summary** — pending / granted / rejected の承認リクエスト参照
+- **resume_cursor** — 再開位置 (step_id + attempt_no + position)
+- **Normalized events** — `workflow.session.*` / `step.*` / `runtime.*` / `workspace.*` / `approval.*` / `artifact.*` の30種のイベントを `event_seq` 付きで append-only 記録
+
+### ask_before_shell 承認フロー
+external_cli ステップで `approval.policy = ask_before_shell` が設定されている場合:
+1. CLI プロセス spawn 前に Tauri が承認リクエストイベントを発行
+2. フロントエンドが SweetAlert モーダルを表示（adapter / runtime / cwd / prompt preview）
+3. ユーザーが許可 or 拒否 → `submit_workflow_approval_response` Tauri コマンドが:
+   - ローカル oneshot を解決（即座に runner に反映）
+   - バックエンドに `POST .../approvals/{id}/respond` で durable record を同期
+4. 許可 → shell capability 付与して CLI 実行、拒否 → step 失敗
+5. session_status が `waiting_approval` ↔ `running` を遷移、artifact metadata に承認証跡を記録
 
 ### ユーザー設定 (API設定ページ)
 - OpenAI / Gemini / Anthropic の API キーを各ユーザーが自分で登録 (Fernet 暗号化保存)
@@ -156,21 +180,23 @@ npm run tauri:dev
 - `workflow_executions` / `executions`
 - `skills` / `account_skills` / `daily_execution_counts`
 
-### Coordinator 観測層 (新規)
+### Coordinator 観測層 + Session 層 (新規)
 - `coordinator_plans` — ワークフロー実行ごとの事前計画
 - `coordinator_workers` — 名前付き論理ワーカー
 - `coordinator_artifacts` — execution 出力を構造化保存
-- `coordinator_events` — オーケストレーションイベントの時系列ログ
+- `coordinator_events` — オーケストレーションイベントの時系列ログ (+session_id / step_id / event_seq / event_namespace)
 - `coordinator_followup_tasks` — 派生タスク
 - `coordinator_workspaces` — workspace 分離メタデータ
-- `coordinator_adapters` — 実行バックエンドのレジストリ
+- `coordinator_adapters` — 実行バックエンドのレジストリ (+risk_level / requires_workspace / default_approval_policy)
 - `coordinator_eval_runs` — 品質メトリクス履歴
+- `approval_requests` — durable 承認リクエスト (ask_before_shell gate)
+- `workflow_executions` に session 列追加 (session_id / session_status / runtime_bindings / workspace_bindings / approval_summary / artifact_refs / resume_cursor)
 
 ## ドキュメント
 
 詳細は [`docs/`](./docs) を参照:
 - [`docs/architecture.md`](./docs/architecture.md) — 全体アーキテクチャ
-- [`docs/coordinator.md`](./docs/coordinator.md) — Coordinator 観測層の設計と API
+- [`docs/coordinator.md`](./docs/coordinator.md) — Coordinator 観測層 + Session + Approval の設計と API
 - [`docs/api-keys.md`](./docs/api-keys.md) — ユーザー API キー設定の仕組み
 
 ## ライセンス

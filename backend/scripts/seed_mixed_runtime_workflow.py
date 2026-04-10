@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
-"""Seed a sample mixed-runtime workflow into the dev database.
+"""混合ランタイムワークフローのサンプルを開発 DB に投入する。
 
-Creates 5 skills + 1 workflow that exercises every supported runtime
-in a single pipeline:
+パイプライン構造（調査 -> 並列実装 -> 検証）:
 
-  1. search_step    -> HTTP provider (Gemini / OpenAI / Anthropic via remote-api)
-  2. plan_step      -> Local Ollama qwen2.5-coder:14b (HTTP provider, local_preferred)
-  3. code_step      -> Claude Code CLI (external_cli, temp_dir workspace, allow_write)
-  4. verify_step    -> Codex CLI (external_cli, share_with_steps=[code_step], read_only)
-  5. judge_step     -> Hard rule: forced remote HTTP provider, never CLI
+  グループ 1（直列）: research_step  -> HTTP provider
+  グループ 2（並列）: claude_impl    -> Claude Code CLI（allow_write）
+                      codex_impl     -> OpenAI Codex CLI（allow_write）
+  グループ 3（直列）: verify_step    -> HTTP provider で両方の出力を比較
 
-Usage:
+使い方:
     cd backend
     python scripts/seed_mixed_runtime_workflow.py [--account-id 1] [--dry-run]
 
-The script is idempotent: rerunning it deletes the old workflow with
-the same name and recreates it with current skill IDs.
+このスクリプトは冪等: 再実行すると同名の古いワークフローを削除し、
+現在のスキル ID で再作成する。
 
-After running, log into the desktop app, navigate to the workflow,
-and trigger it. Each step will route through resolve_execution_kind
-to its declared runtime, with full provenance recorded in artifact
-metadata.
+実行後、desktop アプリにログインしてワークフローに移動し、トリガーする。
+各ステップは resolve_execution_kind を通じて宣言されたランタイムに
+ルーティングされ、完全な来歴がアーティファクトメタデータに記録される。
 """
 from __future__ import annotations
 
@@ -30,7 +27,7 @@ import os
 import sys
 from pathlib import Path
 
-# Make `app.*` importable when run from backend/.
+# backend/ から実行した際に `app.*` をインポート可能にする。
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
@@ -42,11 +39,12 @@ from app.models import (  # noqa: E402
     AccountSkill,
     Skill,
     Workflow,
+    WorkflowGroup,
     WorkflowSkill,
 )
 from app.services.coordinator_extensions import seed_default_adapters  # noqa: E402
 
-WORKFLOW_NAME = "Mixed Runtime Demo (Claude + Codex + API)"
+WORKFLOW_NAME = "Mixed Runtime Demo (research -> parallel impl -> verify)"
 
 
 def execution_config_for(
@@ -62,7 +60,7 @@ def execution_config_for(
     required_capabilities: list[str] | None = None,
     cwd_hint: str | None = None,
 ) -> dict:
-    """Build a config_json blob with execution_config inline."""
+    """execution_config をインラインで含む config_json blob を構築する。"""
     return {
         "execution_config": {
             "schema_version": "1.0",
@@ -117,7 +115,7 @@ def upsert_skill(db, *, name: str, prompt: str, model_type: str, account_id: int
         db.add(skill)
         db.commit()
         db.refresh(skill)
-    # Make sure the account is granted the skill.
+    # アカウントにスキルが付与されていることを確認する。
     if not db.query(AccountSkill).filter(
         AccountSkill.account_id == account_id, AccountSkill.skill_id == skill.id
     ).first():
@@ -138,7 +136,7 @@ def main():
 
     db = SessionLocal()
     try:
-        # Ensure default adapters exist (claude-code-local, codex-local, etc.)
+        # デフォルトアダプタの存在を保証（claude-code-local, codex-local 等）
         if not args.dry_run:
             seed_default_adapters(db)
 
@@ -156,135 +154,143 @@ def main():
         os.makedirs(cwd_hint, exist_ok=True)
         print(f"cwd_hint={cwd_hint}")
 
-        # Define the 5 step prompts.
-        steps = [
+        # グループ構成: 調査 -> 並列（claude|codex） -> 検証
+        groups = [
             {
-                "name": "demo-search-step",
-                "model_type": "gpt-4o-mini",
-                "prompt": (
-                    "You are a research agent. Given the user's topic, list 3 short bullet "
-                    "points summarizing the most important facts. Be concise."
-                ),
-                "config": execution_config_for(
-                    execution_kind="provider",
-                    required_capabilities=[],
-                    approval_policy="read_only",
-                ),
-                "skill_order": 1,
-                "agent_profile": "explore",
+                "group_order": 1,
+                "group_name": "research",
+                "execution_type": "serial",
+                "steps": [
+                    {
+                        "name": "demo-research-step",
+                        "model_type": "gpt-4o-mini",
+                        "prompt": (
+                            "You are a research agent. Given the user's topic, list 3 short "
+                            "bullet points summarizing the most important facts. Be concise."
+                        ),
+                        "config": execution_config_for(
+                            execution_kind="provider",
+                            approval_policy="read_only",
+                        ),
+                        "agent_profile": "explore",
+                    },
+                ],
             },
             {
-                "name": "demo-plan-step",
-                "model_type": "qwen2.5-coder:14b",
-                "prompt": (
-                    "You are a planning agent. Given the research notes, produce a 5-step "
-                    "implementation plan for the topic. Use numbered list."
-                ),
-                "config": execution_config_for(
-                    execution_kind="provider",
-                    required_capabilities=[],
-                    approval_policy="read_only",
-                ),
-                "skill_order": 2,
-                "agent_profile": "plan",
+                "group_order": 2,
+                "group_name": "parallel-implementations",
+                "execution_type": "parallel",
+                "steps": [
+                    {
+                        "name": "demo-claude-impl",
+                        "model_type": "claude_code",
+                        "prompt": (
+                            "You are a coding agent invoked via Claude Code CLI. Based on the "
+                            "research notes, implement a minimal working example for the topic "
+                            "by writing files into the working directory. End with a short "
+                            "summary of what you created."
+                        ),
+                        "config": execution_config_for(
+                            execution_kind="external_cli",
+                            preferred_adapter="claude-code-local",
+                            cli_runtime_hint="claude_code",
+                            workspace_policy="temp_dir",
+                            approval_policy="allow_write",
+                            allow_writes=True,
+                            allow_shell=False,
+                            required_capabilities=["file_read", "file_write", "workspace_aware"],
+                            cwd_hint=cwd_hint,
+                        ),
+                        "agent_profile": "implement",
+                    },
+                    {
+                        "name": "demo-codex-impl",
+                        "model_type": "codex",
+                        "prompt": (
+                            "You are a coding agent invoked via OpenAI Codex CLI. Based on the "
+                            "research notes, implement a minimal working example for the topic "
+                            "by writing files into the working directory. End with a short "
+                            "summary of what you created."
+                        ),
+                        "config": execution_config_for(
+                            execution_kind="external_cli",
+                            preferred_adapter="codex-local",
+                            cli_runtime_hint="codex",
+                            workspace_policy="temp_dir",
+                            approval_policy="allow_write",
+                            allow_writes=True,
+                            allow_shell=False,
+                            required_capabilities=["file_read", "file_write", "workspace_aware"],
+                            cwd_hint=cwd_hint,
+                        ),
+                        "agent_profile": "implement",
+                    },
+                ],
             },
             {
-                "name": "demo-code-step",
-                "model_type": "claude_code",
-                "prompt": (
-                    "You are a coding agent invoked via Claude Code CLI. Implement the plan "
-                    "above by writing the requested files into the working directory. When "
-                    "done, summarize what you changed."
-                ),
-                "config": execution_config_for(
-                    execution_kind="external_cli",
-                    preferred_adapter="claude-code-local",
-                    cli_runtime_hint="claude_code",
-                    workspace_policy="temp_dir",
-                    approval_policy="allow_write",
-                    allow_writes=True,
-                    allow_shell=False,
-                    required_capabilities=["file_read", "file_write", "workspace_aware"],
-                    cwd_hint=cwd_hint,
-                ),
-                "skill_order": 3,
-                "agent_profile": "implement",
-            },
-            {
-                "name": "demo-verify-step",
-                "model_type": "codex",
-                "prompt": (
-                    "You are a verification agent invoked via Codex CLI. Inspect the files "
-                    "in the working directory (do NOT modify them) and report whether they "
-                    "match the plan. Output PASS or FAIL on the first line, then explain."
-                ),
-                "config": execution_config_for(
-                    execution_kind="external_cli",
-                    preferred_adapter="codex-local",
-                    cli_runtime_hint="codex",
-                    workspace_policy="temp_dir",
-                    share_with_steps=["task_3"],  # share with code step (workflow_skill_id=3 -> task_3)
-                    approval_policy="read_only",
-                    required_capabilities=["file_read"],
-                    cwd_hint=cwd_hint,
-                ),
-                "skill_order": 4,
-                "agent_profile": "verification",
-            },
-            {
-                "name": "demo-judge-step",
-                "model_type": "gpt-4o-mini",
-                "prompt": (
-                    "You are a judge. Given the verification report, decide if the work is "
-                    "ACCEPTED or REJECTED. Output the decision on the first line, then a "
-                    "one-sentence rationale."
-                ),
-                "config": execution_config_for(
-                    execution_kind="auto",  # judge is hard-routed to remote regardless
-                    approval_policy="read_only",
-                ),
-                "skill_order": 5,
-                "agent_profile": "verification",
+                "group_order": 3,
+                "group_name": "verify",
+                "execution_type": "serial",
+                "steps": [
+                    {
+                        "name": "demo-verify-step",
+                        "model_type": "gpt-4o-mini",
+                        "prompt": (
+                            "You are a verification judge. Two implementations were produced "
+                            "in parallel (Claude Code and Codex). Compare their outputs, pick "
+                            "the stronger one, and explain why. Output ACCEPTED/REJECTED on "
+                            "the first line, then a short rationale."
+                        ),
+                        "config": execution_config_for(
+                            execution_kind="auto",  # judge is hard-routed to remote regardless
+                            approval_policy="read_only",
+                        ),
+                        "agent_profile": "verification",
+                    },
+                ],
             },
         ]
 
         if args.dry_run:
             print("--- DRY RUN ---")
-            for s in steps:
-                print(f"  step {s['skill_order']}: {s['name']} model={s['model_type']}")
-                print(f"    config={json.dumps(s['config'], ensure_ascii=False)}")
+            for g in groups:
+                print(f"  group {g['group_order']} [{g['execution_type']}] {g['group_name']}")
+                for s in g["steps"]:
+                    print(f"    - {s['name']} model={s['model_type']}")
             return
 
-        # Create skills.
-        skill_rows = []
-        for s in steps:
-            sk = upsert_skill(
-                db,
-                name=s["name"],
-                prompt=s["prompt"],
-                model_type=s["model_type"],
-                account_id=account_id,
-            )
-            skill_rows.append((sk, s))
-            print(f"  upserted skill id={sk.id} name={sk.name}")
+        # 全スキルを upsert し、紐付け用に (skill, spec, group_index) を記録する。
+        skill_entries = []  # list of (skill_row, step_spec, group_dict)
+        for g in groups:
+            for s in g["steps"]:
+                sk = upsert_skill(
+                    db,
+                    name=s["name"],
+                    prompt=s["prompt"],
+                    model_type=s["model_type"],
+                    account_id=account_id,
+                )
+                skill_entries.append((sk, s, g))
+                print(f"  upserted skill id={sk.id} name={sk.name}")
 
-        # Delete prior demo workflow if it exists.
+        # 既存のデモワークフローがあれば削除する。
         prior = db.query(Workflow).filter(
             Workflow.name == WORKFLOW_NAME,
             Workflow.deleted_at.is_(None) if hasattr(Workflow, "deleted_at") else True,
         ).first()
         if prior:
             db.query(WorkflowSkill).filter(WorkflowSkill.workflow_id == prior.id).delete()
+            db.query(WorkflowGroup).filter(WorkflowGroup.workflow_id == prior.id).delete()
             db.delete(prior)
             db.commit()
             print(f"  removed prior workflow id={prior.id}")
 
-        # Create workflow.
+        # ワークフローを作成する。
         wf = Workflow(
             name=WORKFLOW_NAME,
             description=(
-                "Demo workflow that exercises every runtime: HTTP provider for "
-                "search/plan/judge, Claude Code CLI for code, Codex CLI for verify."
+                "Research -> parallel implementation (Claude Code CLI + Codex CLI) -> verify. "
+                "Demonstrates mixed runtime execution in a single workflow."
             ),
             is_active=True,
             created_by=account_id,
@@ -294,19 +300,41 @@ def main():
         db.refresh(wf)
         print(f"created workflow id={wf.id} name={wf.name}")
 
-        # Attach steps with execution_config.
-        for sk, spec in skill_rows:
+        # グループを作成する。
+        group_id_by_order = {}
+        for g in groups:
+            grp = WorkflowGroup(
+                workflow_id=wf.id,
+                group_order=g["group_order"],
+                group_name=g["group_name"],
+                execution_type=g["execution_type"],
+            )
+            db.add(grp)
+            db.commit()
+            db.refresh(grp)
+            group_id_by_order[g["group_order"]] = grp.id
+            print(f"  created group id={grp.id} order={g['group_order']} type={g['execution_type']}")
+
+        # スキルを execution_config + グループ紐付けで添付する。
+        skill_order_counter = 0
+        order_in_group_counter: dict[int, int] = {}
+        for sk, spec, g in skill_entries:
+            skill_order_counter += 1
+            gid = group_id_by_order[g["group_order"]]
+            order_in_group_counter[gid] = order_in_group_counter.get(gid, 0) + 1
             ws = WorkflowSkill(
                 workflow_id=wf.id,
                 skill_id=sk.id,
-                skill_order=spec["skill_order"],
+                skill_order=skill_order_counter,
                 skill_name=spec["name"],
                 config_json=json.dumps(spec["config"], ensure_ascii=False),
                 agent_profile=spec.get("agent_profile"),
+                group_id=gid,
+                order_in_group=order_in_group_counter[gid],
             )
             db.add(ws)
         db.commit()
-        print(f"attached {len(skill_rows)} steps to workflow")
+        print(f"attached {len(skill_entries)} steps across {len(groups)} groups")
 
         print()
         print("=== DONE ===")

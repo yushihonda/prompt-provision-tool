@@ -1,11 +1,11 @@
-//! Generic config-driven adapter.
+//! 汎用の設定駆動アダプター。
 //!
-//! Used for two purposes:
-//! 1. Tests can register a tiny shell script (e.g. `/bin/sh -c 'echo hi'`)
-//!    as a "CLI" and exercise the full runner end-to-end without
-//!    requiring real Claude/Codex authentication.
-//! 2. End users can register their own coding CLIs without changes to
-//!    the Rust code — once a frontend config path exists.
+//! 2 つの目的で使用される:
+//! 1. テストが小さなシェルスクリプト（例: `/bin/sh -c 'echo hi'`）を
+//!    「CLI」として登録し、実際の Claude/Codex 認証なしでランナーの
+//!    エンドツーエンドテストを実行できる。
+//! 2. エンドユーザーが Rust コードの変更なしに独自のコーディング CLI を
+//!    登録できる — フロントエンド設定パスが存在すれば。
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -33,6 +33,9 @@ impl GenericAdapter {
                 capabilities: vec![],
                 env_keys_passthrough: vec!["HOME".into(), "PATH".into(), "TERM".into()],
                 metadata: HashMap::new(),
+                risk_level: Some("high".into()),
+                requires_workspace: false,
+                default_approval_policy: Some("ask_before_shell".into()),
             },
         }
     }
@@ -64,8 +67,8 @@ impl ExternalCliAdapter for GenericAdapter {
         &self,
         req: &ExternalCliExecutionRequest,
     ) -> Result<(String, Vec<String>), String> {
-        // For Generic we treat `prompt` as the script body if `default_args`
-        // looks like ["-c"] (sh-style), otherwise we pass it as a positional.
+        // Generic では `default_args` が ["-c"]（sh スタイル）の場合、
+        // `prompt` をスクリプト本体として扱う。それ以外は位置引数として渡す。
         let mut args: Vec<String> = self.cfg.default_args.clone();
         args.extend(req.args.iter().cloned());
         if !req.prompt.is_empty() {
@@ -134,6 +137,7 @@ mod tests {
             workspace_path: None,
             approval_policy: None,
             selection_reason: None,
+            cli_model: None,
             env_overrides: HashMap::new(),
             metadata: HashMap::new(),
         };

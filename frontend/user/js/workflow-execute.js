@@ -10,6 +10,126 @@ let streamingWorkers = new Map(); // executionId -> worker
 let _wfStageMeta = { currentStage: null, finalVerdict: null, handoffSummary: null, coordinatorView: null, synthesisEvents: [] };
 let desktopWorkflowRun = null;
 
+// External CLI ディスパッチャー — 独立したポーリングループ。
+//
+// 当初は startStepStreaming() と checkAndStartNextStep() にフックする
+// アプローチを試みたが、それらは複数のコードパスで実行され、一部の
+// ワークフロー開始ルート（executeWorkflowWithOrchestration）では
+// 完全にスキップされる。代わりに fire-and-forget のポーリングループを
+// 実行し、2秒ごとに /api/user/executions をスキャンして
+// status=pending_local かつ execution_kind=external_cli でまだ
+// ディスパッチしていない実行を探す。見つかった場合は Tauri の
+// Rust ランナーを直接呼び出す。Rust ランナーは自身でバックエンドに
+// 完了を POST するため、UI の既存ポーリングループが通常の
+// HTTP 実行と同様に結果を拾い上げる。
+//
+// 既存のポーラーにフックせず別ループにする理由:
+// 1. CLI ディスパッチを特定のワークフロー開始パスから分離できる。
+// 2. 冪等: dispatchedExternalCli セットで二重呼び出しを防止。
+// 3. 再初期化なしでワークフロー実行をまたいで動作し続ける。
+// 4. 無効化が容易: Tauri が存在しなければポーリングを停止するだけ。
+const _dispatchedExternalCli = new Set();
+let _externalCliPollerStarted = false;
+
+function _startExternalCliDispatchPoller() {
+    if (_externalCliPollerStarted) return;
+    const tauriCoreInvoke = window.__TAURI__?.core?.invoke;
+    if (!tauriCoreInvoke) {
+        console.log('[external_cli_poller] no Tauri runtime — skipping CLI dispatch poller');
+        return;
+    }
+    _externalCliPollerStarted = true;
+    console.log('[external_cli_poller] started (2s interval)');
+
+    const tick = async () => {
+        try {
+            // apiRequest（既存ヘルパー）を使って、このファイル内の他の呼び出しと
+            // 同じ認証 + ベースURL + Tauri-IPC パスを通す。生の `fetch()` で
+            // 127.0.0.1:8000 にアクセスするとブラウザの CORS プリフライトが
+            // 発生し、バックエンドがリジェクトする。
+            if (typeof apiRequest !== 'function') return;
+            const runtime = window.NexMAGIRuntime;
+            const apiBase = runtime?.getApiBase ? runtime.getApiBase() : window.location.origin;
+            const authToken = runtime?.getAuthToken ? await runtime.getAuthToken() : null;
+            if (!authToken) return;
+            const data = await apiRequest('/api/user/executions?limit=100');
+            const items = Array.isArray(data) ? data : (data && data.items) || [];
+            // 診断 + アクション可能なフィルター。
+            //
+            // ここでは `pending_local` と `processing` の両方を受け入れる
+            // 必要がある。デスクトップの OrchestrationManager は新規作成された
+            // 行を `pending_local` から `processing` に非常に素早く切り替える
+            // （自身の tick でサイドカーワーカーをディスパッチする）ため、
+            // 2秒ポーラーが行を見る時点ではほぼ常に `processing` になっている。
+            // したがって `pending_local` のみでフィルターすると、実質的に
+            // すべての external_cli 行を見逃すことになる。
+            //
+            // 冪等性は `_dispatchedExternalCli` で保証されるため、
+            // ここで `processing` を受け入れても二重ディスパッチにはならない。
+            const inflight = items.filter(e => (
+                e
+                && (e.status === 'pending_local' || e.status === 'processing')
+            ));
+            const externalCli = items.filter(e => e && e.execution_kind === 'external_cli');
+            if (inflight.length > 0 || externalCli.length > 0) {
+                console.log('[external_cli_poller] tick', {
+                    total_items: items.length,
+                    inflight: inflight.length,
+                    external_cli: externalCli.length,
+                    sample_keys: items[0] ? Object.keys(items[0]).filter(k => ['id','status','execution_kind','dispatch_mode'].includes(k)) : null,
+                    inflight_sample: inflight.slice(0, 3).map(e => ({ id: e.id, status: e.status, kind: e.execution_kind })),
+                });
+            }
+            const candidates = items.filter((e) => (
+                e
+                && e.execution_kind === 'external_cli'
+                && (e.status === 'pending_local' || e.status === 'processing')
+                && !_dispatchedExternalCli.has(e.id)
+            ));
+            for (const exec of candidates) {
+                _dispatchedExternalCli.add(exec.id);
+                const dispatchStart = Date.now();
+                console.log('[external_cli_poller] dispatching execution', exec.id, '(dispatched_set_size=' + _dispatchedExternalCli.size + ')');
+                // 進捗ハートビート — ランナーが完了するまで5秒ごとにログ出力し、
+                // ハングした Promise を devtools で明確にする
+                // （ディスパッチが無言で停止したように見えるのを防ぐ）。
+                const heartbeat = setInterval(() => {
+                    console.log('[external_cli_poller] waiting for runner', exec.id, 'elapsed_ms=' + (Date.now() - dispatchStart));
+                }, 5000);
+                tauriCoreInvoke('consume_external_cli_bundle', {
+                    req: {
+                        api_base: apiBase,
+                        auth_token: authToken,
+                        execution_id: exec.id,
+                    },
+                }).then((result) => {
+                    clearInterval(heartbeat);
+                    console.log('[external_cli_poller] runner completed', exec.id, 'elapsed_ms=' + (Date.now() - dispatchStart), result);
+                }).catch((err) => {
+                    clearInterval(heartbeat);
+                    console.error('[external_cli_poller] runner failed', exec.id, 'elapsed_ms=' + (Date.now() - dispatchStart), err);
+                    // 次の tick でリトライを許可するために dispatched セットから
+                    // 削除する — ただし失敗が一時的な場合のみ。現時点ではセットに
+                    // 残してスパムを防止する。ユーザーはワークフローを
+                    // 再実行することで手動リトライが可能。
+                });
+            }
+        } catch (err) {
+            console.error('[external_cli_poller] tick error:', err);
+        }
+    };
+    setInterval(tick, 2000);
+    // 新しい実行が待たなくて済むよう、即座に1回実行する。
+    tick();
+}
+
+// スクリプト読み込み時にポーラーを自動起動（冪等）。
+// tick() 内の認証トークンチェックが未認証ケースを処理するため、
+// ユーザーログインによるゲートは行わない。
+if (typeof window !== 'undefined') {
+    setTimeout(_startExternalCliDispatchPoller, 1000);
+}
+
 async function createDesktopWorkflowRun(workflowExecutionIdValue) {
     if (!window.NexMAGIRuntime.canRecordDesktopEvents()) {
         return;
@@ -265,7 +385,14 @@ async function loadWorkflowDetail() {
         workflowDetail = await apiRequest(`/api/user/workflows/${workflowId}`);
 
         // ワークフロー情報を表示
-        document.getElementById('workflow-name').textContent = workflowDetail.workflow.name;
+        const wfNameText = document.getElementById('workflow-name-text');
+        if (wfNameText) wfNameText.textContent = workflowDetail.workflow.name;
+        const wfChipMount = document.getElementById('workflow-runtime-chip');
+        if (wfChipMount && window.runtimeResolver) {
+            wfChipMount.innerHTML = window.runtimeResolver.renderResolvedRuntimeChip({
+                workflow: { config_json: workflowDetail.workflow.config_json },
+            });
+        }
         document.getElementById('workflow-description').textContent =
             workflowDetail.workflow.description || '説明なし';
 
@@ -418,7 +545,8 @@ async function restoreActiveWorkflowExecution() {
                         errorMessage: exec.error_message,
                         model: exec.model_used,
                         time: exec.execution_time,
-                        tokens: exec.tokens_used
+                        tokens: exec.tokens_used,
+                        extraMetadata: exec.extra_metadata || null,
                     };
                 });
 
@@ -1021,7 +1149,7 @@ function renderWorkflowStageSummary(esc) {
         html += `</div>`;
     }
 
-    // Blackboard refs
+    // Blackboard 参照
     if (refs.length) {
         html += `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">${refs.map(ref => `<span style="font-size:10px; padding:2px 8px; background:rgba(33,150,243,0.08); border-radius:10px; color:#555;">${esc(ref)}</span>`).join('')}</div>`;
     }
@@ -1088,26 +1216,26 @@ function renderFlowView(wfDetail, allStepStatuses) {
     _lastFlowDataKey = dataKey;
     _lastFlowRenderHash = renderHash;
 
-    // Hide the empty placeholder
+    // 空のプレースホルダーを非表示にする
     const emptyEl = document.getElementById('workflow-output-content');
     if (emptyEl) emptyEl.style.display = 'none';
 
     const esc = typeof escapeHtml === 'function' ? escapeHtml : (t => t);
     const profileColors = { default: '#9c27b0', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
-    // SVG icons — used both in cube (wf-cube-icon-img) and profile tag (wf-tag-icon)
+    // SVG アイコン — キューブ (wf-cube-icon-img) とプロファイルタグ (wf-tag-icon) の両方で使用
     function _mkSvg(paths, cls) { return `<svg viewBox="0 0 512 512" class="${cls}">${paths}</svg>`; }
     const _pathExplore = '<path d="M465.6,24H46.4C20.8,24,0,44.8,0,70.5V441.6c0,25.7,20.8,46.4,46.4,46.4h419.2c25.6,0,46.4-20.7,46.4-46.4V70.5C512,44.8,491.2,24,465.6,24zM464,440H48V120h416V440z"/><path d="M368,348.2H144v52.7h224V348.2zM160,384.8v-20.7h192v20.7H160z"/><circle cx="241.6" cy="225.6" r="30.2" fill="none" stroke-width="20"/><path d="M300.8,268.7l16.7,16.8c7,7,18.4,7,25.4,0c7-7,7-18.5,0-25.5l-17-17L300.8,268.7z"/>';
     const _pathPlan = '<path d="M473.2,39.6c-5.2-18.2-19.2-32.1-37.1-37.3C431.1,0.8,426,0,420.4,0H91.6c-30.3,0-55,24.7-55,55v403.4c0.9,29.6,24.7,53.2,54.3,53.6h205.1c10.6,0,20.8-2.2,30.6-6.6c8.2-3.8,15.5-8.9,21.7-15.1L453.8,384.8c6.3-6.3,11.6-13.9,15.1-21.9c4.3-9.4,6.5-19.9,6.5-30.5V55C475.4,49.4,474.7,44.3,473.2,39.6zM303.6,356.5V466.5c-2.5,0.7-5,1-7.6,1H91.4c-5.6-0.1-10.2-4.7-10.3-10.2V55c0-5.8,4.7-10.5,10.5-10.5h328.9c1,0,1.6,0.1,2.9,0.5c3.5,0.9,6.3,3.7,7.4,7.9c0.2,0.5,0.3,1.1,0.3,2.1v277.4c0,2.6-0.3,5.2-1,7.7H320C311,340.1,303.6,347.5,303.6,356.5z"/><rect x="166.5" y="115.3" width="178.9" height="19.9" rx="2.2"/><rect x="166.5" y="192.8" width="178.9" height="19.9" rx="2.2"/><rect x="166.5" y="270.3" width="178.9" height="19.7" rx="2.2"/><rect x="166.5" y="347.9" width="94.5" height="19.9" rx="2.2"/>';
     const _pathImplement = '<path d="M362,300.9v-0.2l-33.3,33.3v78.4c0,12.9-10.5,23.4-23.5,23.4H156c-8.6,0-16.9-0.9-25-2.5V353.2c0-8.4-6.8-15.1-15.1-15.1H35.9c-1.7-8.1-2.5-16.4-2.5-25V99.7c0-12.9,10.5-23.4,23.4-23.4h248.4c13,0,23.5,10.5,23.5,23.4v11l-0.1,7.8l0.1-0.1v0.2l31.8-31.8c-5.9-25-28.4-43.8-55.3-43.8H56.8C25.5,42.9,0,68.4,0,99.7v213.5c0,10.7,1.1,21.4,3.2,31.8c12.7,60.8,60.1,108.3,121.1,120.9c10.3,2.1,21,3.3,31.7,3.3h149.2c31.4,0,56.8-25.5,56.8-56.8v-65.5l0.1-46L362,300.9z"/><path d="M508.4,99.9L455,46.5c-2.8-2.8-6.7-4-10.5-3.5c-0.9-0.1-1.9,0-2.9,0.2c-0.4,0.1-0.8,0.2-1.3,0.3c-1,0.3-1.9,0.6-2.9,1.2c-0.4,0.3-0.9,0.5-1.4,0.9c-0.4,0.3-0.9,0.5-1.3,0.9L202.7,282.1l-28.1,90c-1.3,4.2,2.1,8.4,6.3,8.4c0.6,0,1.2-0.1,1.9-0.3l90-28.1L508.8,116.1C513.2,111.7,513,104.5,508.4,99.9z"/>';
     const _pathVerification = '<path d="M492.7,41l-5-5.4L250.9,252.3l-39.5-42.3c-13.9-14.8-33.5-23.4-53.8-23.4c-18.7,0-36.6,7-50.3,19.8l-5.3,5L218.2,336c7.9,8.4,19,13.3,30.6,13.3c10.5,0,20.5-3.9,28.2-11L488.1,145.1C518.1,117.7,520.1,71,492.7,41z"/><path d="M454.2,231.7v-0.1l-52,47.6v117.7c0,18.9-15.4,34.2-34.2,34.2H86.2c-18.9,0-34.2-15.3-34.2-34.2V115.1c0-18.8,15.3-34.2,34.2-34.2h281.7c2.9,0,5.7,0.4,8.4,1l40.9-37.4c-14-9.9-31-15.6-49.4-15.6H86.2C38.7,28.9,0,67.6,0,115.1v281.7c0,47.6,38.7,86.2,86.2,86.2h281.7c47.5,0,86.2-38.7,86.2-86.2v-97.6l0.1-67.7L454.2,231.7z"/>';
     const _pathLeader = '<path d="M484.1,176.9H350.3c-12,0-22.7-7.8-26.4-19.2L282.4,30.4c-8.3-25.6-44.6-25.6-52.9,0l-41.4,127.3c-3.7,11.5-14.4,19.2-26.4,19.2H27.9c-26.9,0-38.1,34.5-16.3,50.3l108.3,78.7c9.7,7.1,13.8,19.6,10.1,31.1L88.6,464.3c-8.3,25.6,21,46.9,42.8,31.1l108.3-78.7c9.7-7.1,22.9-7.1,32.7,0l108.3,78.7c21.8,15.8,51.1-5.5,42.8-31.1L382.1,337c-3.7-11.5,0.4-24,10.1-31.1l108.3-78.7C522.3,211.4,511.1,176.9,484.1,176.9z"/>';
-    // Cube icons (inherit color from .wf-node-icon via CSS)
+    // キューブアイコン（CSS の .wf-node-icon から色を継承）
     const _svgExplore = _mkSvg(_pathExplore, 'wf-cube-icon-img');
     const _svgPlan = _mkSvg(_pathPlan, 'wf-cube-icon-img');
     const _svgImplement = _mkSvg(_pathImplement, 'wf-cube-icon-img');
     const _svgVerification = _mkSvg(_pathVerification, 'wf-cube-icon-img');
     const _svgLeader = _mkSvg(_pathLeader, 'wf-cube-icon-img');
-    // Tag icons (inherit color from .wf-node-profile-tag via CSS)
+    // タグアイコン（CSS の .wf-node-profile-tag から色を継承）
     const _tagExplore = _mkSvg(_pathExplore, 'wf-tag-icon');
     const _tagPlan = _mkSvg(_pathPlan, 'wf-tag-icon');
     const _tagImplement = _mkSvg(_pathImplement, 'wf-tag-icon');
@@ -1122,13 +1250,13 @@ function renderFlowView(wfDetail, allStepStatuses) {
         default: _svgLeader
     };
 
-    // Collect all steps (for output lookup)
+    // 全ステップを収集（出力の参照用）
     const allSteps = [];
     groups.forEach(grp => {
         (grp.skills || []).forEach(sk => allSteps.push(sk));
     });
 
-    // Build skill output lookup from stepExecutions
+    // stepExecutions からスキル出力の参照マップを構築
     const skillOutputByWsId = {};
     if (stepExecutions && stepExecutions.size > 0) {
         for (const [, data] of stepExecutions.entries()) {
@@ -1160,9 +1288,44 @@ function renderFlowView(wfDetail, allStepStatuses) {
     const leaderStatus = statuses['leader'] || 'pending';
     const leaderOutput = _flowLeaderOutput || '';
 
-    // Helper: render a single node HTML
-    function renderNodeHtml(sk, stepIdx) {
+    // ワークフロー -> グループ -> スキル -> ステップの継承チェーンから
+    // ステップの実効ランタイムバッジを解決する。バックエンドが
+    // UserWorkflowDetail で返すフィールドに依存する
+    // （backend/app/api/user.py get_user_workflow_detail 参照）。
+    // runtimeResolver ヘルパーがない場合は HTML チップ文字列または '' を返す
+    // （runtime-resolver.js を含まないページでもロード可能な防御的フォールバック）。
+    function _nodeResolverCtx(sk, grp) {
+        const skillFlat = (workflowDetail && workflowDetail.skills)
+            ? workflowDetail.skills.find(x => x.workflow_skill_id === sk.workflow_skill_id)
+            : null;
+        return {
+            workflow: wf || null,
+            group: grp || null,
+            skill: skillFlat ? { config_json: skillFlat.skill_config_json } : null,
+            step: skillFlat ? { config_json: skillFlat.config_json } : (sk || null),
+        };
+    }
+    function _nodeRuntimeChipHtml(sk, grp) {
+        if (!window.runtimeResolver) return '';
+        return window.runtimeResolver.renderResolvedRuntimeChip(_nodeResolverCtx(sk, grp));
+    }
+    // ステップ名の下に表示する「モデル」文字列を決定する。CLI モードでは
+    // 設定済みの cli_model を表示（実行されるバイナリモデルが一目でわかるように）、
+    // API モードでは従来の formatModelDisplay 出力にフォールバックする。
+    function _nodeModelLabel(sk, grp) {
+        const apiFallback = typeof formatModelDisplay === 'function'
+            ? formatModelDisplay(sk?.model_type || '', null, sk)
+            : (sk?.model_type || '');
+        if (!window.runtimeResolver) return apiFallback;
+        const r = window.runtimeResolver.resolveEffectiveRuntime(_nodeResolverCtx(sk, grp));
+        if (r.kind === 'cli') return esc(window.runtimeResolver.effectiveModelLabel(_nodeResolverCtx(sk, grp), ''));
+        return apiFallback;
+    }
+
+    // ヘルパー: 単一ノードの HTML をレンダリング
+    function renderNodeHtml(sk, stepIdx, grp) {
         const sName = sk.skill_name || `Step ${stepIdx + 1}`;
+        const runtimeChipHtml = _nodeRuntimeChipHtml(sk, grp);
         let sStatus = (statuses['ws_' + sk.workflow_skill_id] || statuses[sk.skill_id]) || 'pending';
         const profile = sk.agent_profile || 'default';
         const pColor = profileColors[profile] || '#9e9e9e';
@@ -1226,7 +1389,8 @@ function renderFlowView(wfDetail, allStepStatuses) {
                 </div>
                 <div class="wf-node-label">
                     <div class="wf-node-name">${esc(sName)}</div>
-                    <div class="wf-node-model">${typeof formatModelDisplay === 'function' ? formatModelDisplay(sk?.model_type || '', null, sk) : (sk?.model_type || '')}</div>
+                    ${runtimeChipHtml ? `<div style="margin:3px 0;">${runtimeChipHtml}</div>` : ''}
+                    <div class="wf-node-model">${_nodeModelLabel(sk, grp)}</div>
                     ${providerBadgeHtml ? `<div class="wf-node-provider-line">${providerBadgeHtml}</div>` : ''}
                 </div>
                 ${skillOutputHtml(sk.workflow_skill_id, sk)}
@@ -1254,12 +1418,12 @@ function renderFlowView(wfDetail, allStepStatuses) {
         const isParallel = grp.execution_type === 'parallel' && skills.length > 1;
 
         if (isParallel) {
-            // Parallel group: stack nodes vertically in one column
+            // 並列グループ: ノードを1カラムに縦に積む
             let groupWorstStatus = 'pending';
             let nodesHtml = '';
             const groupSkillIds = [];
             skills.forEach((sk) => {
-                const result = renderNodeHtml(sk, stepCounter);
+                const result = renderNodeHtml(sk, stepCounter, grp);
                 nodesHtml += result.html;
                 if (result.sStatus === 'error') groupWorstStatus = 'error';
                 else if (result.sStatus === 'processing' && groupWorstStatus !== 'error') groupWorstStatus = 'processing';
@@ -1281,9 +1445,9 @@ function renderFlowView(wfDetail, allStepStatuses) {
             const connCls = groupWorstStatus === 'success' ? 'active' : groupWorstStatus === 'processing' ? 'running' : '';
             html += svgArrow(connCls);
         } else {
-            // Serial group: render each node with its own connector
+            // 直列グループ: 各ノードをそれぞれのコネクタ付きでレンダリング
             skills.forEach((sk) => {
-                const result = renderNodeHtml(sk, stepCounter);
+                const result = renderNodeHtml(sk, stepCounter, grp);
                 html += result.html;
                 const connCls = result.sStatus === 'success' ? 'active' : result.sStatus === 'processing' ? 'running' : '';
                 html += svgArrow(connCls);
@@ -1292,15 +1456,27 @@ function renderFlowView(wfDetail, allStepStatuses) {
         }
     });
 
-    // Leader node — use first step's model as fallback
+    // リーダーノード — 最初のステップのモデルをフォールバックとして使用
     // リーダーキューブ内: processing=ローダー、それ以外=星アイコン
     const leaderIcon = leaderStatus === 'processing'
         ? '<div class="wf-node-loader"><span></span><span></span><span></span></div>'
         : _svgLeader;
     const leaderModelRaw = wf.parent_model_type || allSteps[0]?.model_type || '';
-    const leaderModelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderModelRaw, null, { enable_deep_think: wf.parent_enable_deep_think }) : leaderModelRaw;
+    let leaderModelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderModelRaw, null, { enable_deep_think: wf.parent_enable_deep_think }) : leaderModelRaw;
+    // CLI 親: 代わりに cli_model（Claude/Codex バイナリモデル ID）を表示する。
+    if (window.runtimeResolver) {
+        const leaderResolved = window.runtimeResolver.resolveEffectiveRuntime({ workflow: wf || null });
+        if (leaderResolved.kind === 'cli') {
+            leaderModelDisplay = esc(window.runtimeResolver.effectiveModelLabel({ workflow: wf || null }, ''));
+        }
+    }
 
     const leaderStateClass = leaderStatus === 'processing' ? 'is-processing' : leaderStatus === 'success' ? 'is-success' : leaderStatus === 'error' ? 'is-error' : '';
+    // 親（リーダー）ランタイムチップ — workflow.config_json からのみ解決
+    // （その下のグループ/スキル/ステップは含まない）。
+    const leaderRuntimeChipHtml = window.runtimeResolver
+        ? window.runtimeResolver.renderResolvedRuntimeChip({ workflow: wf || null })
+        : '';
     html += `
         <div class="wf-node ${leaderStateClass}">
             <div class="wf-node-step"><span class="wf-node-status-indicator status-${leaderStatus}">${leaderStatus === 'success' ? '✓' : leaderStatus === 'error' ? '✗' : ''}</span>FINAL</div>
@@ -1316,6 +1492,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
             </div>
             <div class="wf-node-label">
                 <div class="wf-node-name">結果統合</div>
+                ${leaderRuntimeChipHtml ? `<div style="margin:3px 0;">${leaderRuntimeChipHtml}</div>` : ''}
                 <div class="wf-node-model">${leaderModelDisplay}</div>
             </div>
         </div>
@@ -1323,7 +1500,7 @@ function renderFlowView(wfDetail, allStepStatuses) {
 
     html += '</div>';
 
-    // Preserve open <details> state before re-render
+    // 再レンダリング前に <details> の開閉状態を保持
     const openDetails = new Set();
     flowEl.querySelectorAll('details[open][data-ws-id]').forEach(d => {
         openDetails.add(d.getAttribute('data-ws-id'));
@@ -1334,14 +1511,14 @@ function renderFlowView(wfDetail, allStepStatuses) {
     // Coordinator eval メトリクスを描画 (完了後のみ表示)
     try { _renderEvalMetrics(); } catch (_) {}
 
-    // Restore open state
+    // 開閉状態を復元
     if (openDetails.size > 0) {
         flowEl.querySelectorAll('details[data-ws-id]').forEach(d => {
             if (openDetails.has(d.getAttribute('data-ws-id'))) d.open = true;
         });
     }
 
-    // Update leader output in the bottom output panel
+    // 下部の出力パネルでリーダー出力を更新
     const outputEl = document.getElementById('wf-leader-output');
     if (outputEl) {
         if (leaderOutput) {
@@ -1421,6 +1598,79 @@ let _blackboardKeys = [];  // Blackboardのキー一覧
 
 // ステップのストリーミングを開始
 function startStepStreaming(executionId, stepOrder, stepName, skillName) {
+    // ビルドマーカー v2: devtools でこれが見えれば、新しい workflow-execute.js が
+    // ロードされている。external_cli 実行でこれが見えない場合、ブラウザが
+    // 古いキャッシュを使っており、このフックはデッドコードになっている。
+    console.log('[startStepStreaming v2] called', { executionId, stepOrder });
+    // External CLI ディスパッチ — SSE セットアップ前にショートサーキットする。
+    // キャッシュされたリスト（ポーラーで更新）から実行行を参照して
+    // execution_kind を読み取る。external_cli かつ Tauri ウィンドウ内の
+    // 場合、consume_external_cli_bundle 経由で Rust ランナーにハンドオフする。
+    // ランナーは自身で /complete に POST するため、ポーリングループが
+    // 次の tick で結果を拾い上げる。CLI 実行にはストリーミングソースが
+    // ないため、SSE/Worker を作成せずに早期リターンする。
+    //
+    // Tauri ウィンドウ外（例: ブラウザのみの開発環境）の場合、
+    // 実行はワーカーコンテナが /api/worker/claim で拾うまで
+    // pending_local のまま。結果の形状は同じ、ただし遅い。
+    try {
+        const cachedExec = (typeof allExecutions !== 'undefined' && Array.isArray(allExecutions))
+            ? allExecutions.find((e) => e && e.id === executionId)
+            : null;
+        const execKind = cachedExec?.execution_kind;
+        if (execKind === 'external_cli') {
+            const tauriCoreInvoke = window.__TAURI__?.core?.invoke;
+            console.log('[startStepStreaming] external_cli branch', {
+                executionId, stepOrder,
+                hasTauriInvoke: Boolean(tauriCoreInvoke),
+                cachedExecKind: execKind,
+            });
+            if (tauriCoreInvoke) {
+                (async () => {
+                    try {
+                        const runtime = window.NexMAGIRuntime;
+                        const apiBase = runtime?.getApiBase ? runtime.getApiBase() : window.location.origin;
+                        const authToken = runtime?.getAuthToken ? await runtime.getAuthToken() : null;
+                        if (!authToken) {
+                            console.error('[external_cli] no auth token — aborting Tauri invoke for', executionId);
+                            return;
+                        }
+                        console.log('[external_cli] invoking consume_external_cli_bundle for', executionId);
+                        const result = await tauriCoreInvoke('consume_external_cli_bundle', {
+                            req: {
+                                api_base: apiBase,
+                                auth_token: authToken,
+                                execution_id: executionId,
+                            },
+                        });
+                        console.log('[external_cli] Tauri runner result:', result);
+                    } catch (err) {
+                        console.error('[external_cli] Tauri runner failed:', err);
+                    }
+                })();
+            } else {
+                console.warn('[external_cli] no Tauri runtime — leaving execution to worker container', executionId);
+            }
+            // SSE をスキップしたが、UI 上でステップを processing としてマークする
+            // — ランナーが完了を POST した際にポーリングループが上書きする。
+            const matchedSkill = workflowDetail?.skills?.find(s => s.skill_order == stepOrder);
+            stepExecutions.set(stepOrder, {
+                executionId,
+                workflowSkillId: matchedSkill?.workflow_skill_id || null,
+                status: 'processing',
+                output: '(external_cli runner started)',
+                stepName,
+                skillName,
+                errorMessage: null,
+            });
+            renderStepExecutions();
+            if (matchedSkill) updateFlowStatus(stepOrder, matchedSkill.skill_id, 'processing');
+            return;
+        }
+    } catch (err) {
+        console.error('[startStepStreaming] external_cli pre-check failed (continuing to SSE):', err);
+    }
+
     // デスクトップローカル実行ではSSEストリーミング不要
     if (window.NexMAGIRuntime?.shouldUseDesktopLocalExecution?.()) {
         return;
@@ -1775,7 +2025,8 @@ async function handleWorkflowComplete(workflowExecutionId, leaderExecution) {
                     errorMessage: exec.status === 'success' ? null : exec.error_message,
                     model: exec.model_used,
                     time: exec.execution_time,
-                    tokens: exec.tokens_used
+                    tokens: exec.tokens_used,
+                    extraMetadata: exec.extra_metadata || null,
                 };
             });
         
@@ -1916,6 +2167,9 @@ function displayWorkflowResult(finalOutput, allStepResults, leaderExecution) {
         outputEl.style.color = 'var(--content-text)';
     }
 
+    // 生成ファイル一覧を出力パネルの下にレンダー
+    _renderWorkflowGeneratedFilesPanel(allStepResults, leaderExecution);
+
     // フロービューを更新（再レンダーハッシュをクリアして強制反映）
     _lastFlowRenderHash = null;
     _lastFlowDataKey = null;
@@ -1931,6 +2185,81 @@ function displayWorkflowResult(finalOutput, allStepResults, leaderExecution) {
             leaderSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
     }, 200);
+}
+
+// 出力パネルの下に「生成ファイル」セクションをレンダーする。
+// 各 step の extraMetadata.changed_files_preview と leader の同等情報を
+// 集約し、execDetailModal._openFullFile に飛ばす全文ボタン付きで表示。
+function _renderWorkflowGeneratedFilesPanel(allStepResults, leaderExecution) {
+    // 既存のパネルをクリア（再実行時の重複を防ぐ）
+    const oldPanel = document.getElementById('wf-generated-files-panel');
+    if (oldPanel) oldPanel.remove();
+
+    // 集約
+    const aggregated = [];
+    for (const s of (allStepResults || [])) {
+        if (s && s.extraMetadata && Array.isArray(s.extraMetadata.changed_files_preview) && s.extraMetadata.changed_files_preview.length) {
+            aggregated.push({
+                stepName: s.stepName || `Step ${s.stepOrder}`,
+                previews: s.extraMetadata.changed_files_preview,
+                workspaceId: s.extraMetadata.workspace_id || '',
+            });
+        }
+    }
+    if (leaderExecution && leaderExecution.extra_metadata
+        && Array.isArray(leaderExecution.extra_metadata.changed_files_preview)
+        && leaderExecution.extra_metadata.changed_files_preview.length) {
+        aggregated.push({
+            stepName: '結果統合',
+            previews: leaderExecution.extra_metadata.changed_files_preview,
+            workspaceId: leaderExecution.extra_metadata.workspace_id || '',
+        });
+    }
+    if (aggregated.length === 0) return;
+
+    // 出力パネル (card-cutout) の親にパネルを追加
+    const leaderOutputEl = document.getElementById('wf-leader-output');
+    if (!leaderOutputEl) return;
+    const wrapper = leaderOutputEl.closest('.card-cutout-wrapper') || leaderOutputEl.parentElement;
+    if (!wrapper || !wrapper.parentElement) return;
+
+    function fmtSize(bytes) {
+        if (bytes == null) return '-';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    }
+    const escFn = (window.execDetailModal && window.execDetailModal.escapeHtml) || ((s) => s);
+
+    const panel = document.createElement('div');
+    panel.id = 'wf-generated-files-panel';
+    panel.style.cssText = 'margin-top:14px; border:1px solid rgba(0,0,0,0.06); border-radius:8px; overflow:hidden; background:#fff;';
+    let inner = `<div style="padding:10px 14px; background:rgba(14,165,233,0.08); border-bottom:1px solid rgba(0,0,0,0.06); font-size:12px; font-weight:700; color:var(--content-text);">生成ファイル</div>`;
+    inner += '<div style="padding:8px 14px;">';
+    for (const block of aggregated) {
+        inner += `<div style="font-size:11px; color:#6b7280; font-weight:600; margin:6px 0 4px;">${escFn(block.stepName)}</div>`;
+        for (const f of block.previews) {
+            const sizeStr = fmtSize(f.size);
+            const truncatedNote = f.truncated ? ' <span style="color:#f59e0b;">(先頭4KBのみ)</span>' : '';
+            inner += `<details style="margin-bottom:4px;">`;
+            inner += `<summary style="cursor:pointer; padding:6px 8px; background:rgba(0,0,0,0.03); border-radius:4px; font-size:11px; font-family:monospace; display:flex; justify-content:space-between; align-items:center; gap:8px;">`;
+            inner += `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;">${escFn(f.path)}</span>`;
+            inner += `<span style="font-size:10px; color:#6b7280; flex-shrink:0;">${sizeStr}${truncatedNote}</span>`;
+            if (block.workspaceId && !f.is_binary) {
+                inner += `<button type="button" onclick="event.preventDefault(); event.stopPropagation(); execDetailModal._openFullFile('${escFn(block.workspaceId)}', '${escFn(f.path)}')" style="font-size:10px; padding:2px 8px; background:var(--accent, #7c3aed); color:#fff; border:none; border-radius:4px; cursor:pointer; flex-shrink:0;">全文</button>`;
+            }
+            inner += `</summary>`;
+            if (f.is_binary) {
+                inner += `<div style="padding:8px; color:#6b7280; font-size:10px; font-style:italic;">(バイナリファイル — プレビュー不可)</div>`;
+            } else {
+                inner += `<pre style="margin:4px 0 0 0; padding:10px; background:rgba(0,0,0,0.04); border-radius:4px; font-size:10px; line-height:1.5; overflow-x:auto; max-height:280px;"><code>${escFn(f.preview)}</code></pre>`;
+            }
+            inner += `</details>`;
+        }
+    }
+    inner += '</div>';
+    panel.innerHTML = inner;
+    wrapper.parentElement.insertBefore(panel, wrapper.nextSibling);
 }
 
 // ワークフロー入力データを復元（単一Executionから）
@@ -2173,6 +2502,8 @@ async function checkAndStartNextStep(wfExecId, completedStepOrder) {
                 nextExecutionId: nextExecution.id,
                 nextStepOrder,
                 status: nextExecution.status,
+                dispatch_mode: nextExecution.dispatch_mode,
+                execution_kind: nextExecution.execution_kind,
             });
 
             const nextStepInfo = workflowDetail?.skills?.find(s => s.skill_order == nextStepOrder);
@@ -2184,8 +2515,88 @@ async function checkAndStartNextStep(wfExecId, completedStepOrder) {
                 PersistentStatusBar.handleWorkflowNextStep(nextExecution.id, nextStepOrder, nextStepName, workflowName);
             }
 
-            console.log('Starting next step streaming:', { nextExecutionId: nextExecution.id, nextStepOrder, nextStepName });
-            startStepStreaming(nextExecution.id, nextStepOrder, nextStepName, nextPromptName);
+            // External CLI ディスパッチ — バックエンドのルーティング層がこの実行を
+            // `external_cli` としてタグ付けした場合、バンドルには
+            // `external_cli_payload` が含まれ、ローカルワーカー（または Tauri
+            // ランタイム）が SSE/HTTP パスの代わりに CLI サブプロセス経由で
+            // 消費する必要がある。デスクトップアプリは Rust ランナーを
+            // `consume_external_cli_bundle` Tauri コマンドとして公開 —
+            // ここで呼び出し、ホストの `claude` バイナリ（既存の Keychain
+            // 認証付き）を使用する。意図的に fire-and-forget: ランナーは自身で
+            // /api/worker/executions/{id}/complete に POST し、既存の
+            // ポーリングループが他の HTTP ステップと同様に結果を拾い上げる。
+            //
+            // ブラウザフォールスルー: Tauri ランタイムがない場合、local_worker
+            // コンテナが /api/worker/claim 経由で同じ実行を処理する。
+            // external_cli 実行では startStepStreaming を呼んではならない。
+            // 接続する SSE ストリームがなく、CLI ランナーは完了時に
+            // 一括で出力を送出するため。
+            const isExternalCli = nextExecution.execution_kind === 'external_cli';
+            const runtime = window.NexMAGIRuntime;
+
+            // 診断ダンプ — 無条件に公開し、ディスパッチがなぜそのようになったか
+            // ユーザーが devtools で確認できるようにする。これがないと、
+            // 静かに startStepStreaming にルーティングした `isExternalCli`
+            // チェックがフックの欠落と区別できなくなる。
+            const tauriInvokeAvailable = Boolean(window.__TAURI__?.core?.invoke);
+            const desktopRuntimeFlag = Boolean(
+                runtime
+                && typeof runtime.canRecordDesktopEvents === 'function'
+                && runtime.canRecordDesktopEvents()
+            );
+            const invokeDesktopFn = runtime && typeof runtime.invokeDesktop === 'function';
+            console.log('[wf-dispatch]', {
+                executionId: nextExecution.id,
+                isExternalCli,
+                execution_kind: nextExecution.execution_kind,
+                dispatch_mode: nextExecution.dispatch_mode,
+                tauriInvokeAvailable,
+                desktopRuntimeFlag,
+                invokeDesktopFn,
+                hasNexMAGIRuntime: Boolean(runtime),
+            });
+
+            // 緩和されたゲート: Tauri ウィンドウ内であれば
+            // （window.__TAURI__.core.invoke が存在すれば）、
+            // consume_external_cli_bundle を呼び出せる。
+            // canRecordDesktopEvents() は要求しない — このヘルパーは
+            // すべての起動パスで設定されるとは限らないランタイム設定フラグに
+            // 依存しており、欠落時に CLI 実行を無操作のスタック行に
+            // 暗黙的に格下げすべきではない。
+            if (isExternalCli && tauriInvokeAvailable) {
+                const tauriCoreInvoke = window.__TAURI__.core.invoke;
+                console.log('[external_cli] dispatching to Tauri runner', { executionId: nextExecution.id });
+                (async () => {
+                    try {
+                        const apiBase = runtime?.getApiBase ? runtime.getApiBase() : window.location.origin;
+                        const authToken = runtime?.getAuthToken ? await runtime.getAuthToken() : null;
+                        if (!authToken) {
+                            console.error('[external_cli] no auth token available — aborting Tauri invoke');
+                            return;
+                        }
+                        const result = await tauriCoreInvoke('consume_external_cli_bundle', {
+                            req: {
+                                api_base: apiBase,
+                                auth_token: authToken,
+                                execution_id: nextExecution.id,
+                            },
+                        });
+                        console.log('[external_cli] Tauri runner accepted execution', nextExecution.id, result);
+                    } catch (err) {
+                        console.error('[external_cli] Tauri runner invoke failed:', err);
+                    }
+                })();
+                // Skip SSE attach: external_cli has no streaming source.
+            } else if (isExternalCli) {
+                console.warn(
+                    '[external_cli] no Tauri invoke available — execution will sit in pending_local until a worker container picks it up',
+                    { executionId: nextExecution.id, tauriInvokeAvailable }
+                );
+                // 何もしない: Docker ワーカー（実行中の場合）が /api/worker/claim 経由で処理する。
+            } else {
+                console.log('Starting next step streaming:', { nextExecutionId: nextExecution.id, nextStepOrder, nextStepName });
+                startStepStreaming(nextExecution.id, nextStepOrder, nextStepName, nextPromptName);
+            }
         } else if (wfStatus && wfStatus.status === 'processing') {
             // WFはまだ処理中（ジャッジ/SV/Reflectionがバックエンドで進行中）→ リトライ
             _checkNextStepRetryCount++;
@@ -2284,7 +2695,7 @@ function renderHistory() {
     if (!tbody) return;
 
     if (allExecutions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--content-text-muted);">このワークフローの実行履歴がありません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--content-text-muted);">このワークフローの実行履歴がありません</td></tr>';
         return;
     }
 
@@ -2306,6 +2717,11 @@ function renderHistory() {
         const leaderExecHist = normalExecsHist.find(e => !e.workflow_skill_id);
         const parentModelHist = leaderExecHist?.model_used || normalExecsHist[0]?.model_used || '-';
         const modelDisplayHist = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModelHist, null, {}) : parentModelHist;
+        // リーダーの extra_metadata からランタイムバッジ（リーダーがない場合は最初の子）。
+        const histRuntimeSrc = leaderExecHist || normalExecsHist[0];
+        const histRuntimeBadge = (window.runtimeBadge && histRuntimeSrc && histRuntimeSrc.extra_metadata)
+            ? (window.runtimeBadge.renderRuntimeBadge(histRuntimeSrc.extra_metadata) || '')
+            : '';
 
         // 各スキルの小さなバー（history.html と同じ形式）
         let skillBars = stepExecs.map((e, i) => {
@@ -2326,6 +2742,7 @@ function renderHistory() {
                 </div>
                 <div style="display:flex;flex-wrap:wrap;gap:12px;perspective:300px;align-items:center;">${skillBars}</div>
             </td>
+            <td>${histRuntimeBadge || '<span style="color:var(--content-text-muted); font-size:11px;">-</span>'}</td>
             <td>${modelDisplayHist}</td>
             <td>${totalTime ? totalTime + 'ms' : '-'}</td>
             <td>${formatCompact(totalTokens)}</td>
@@ -2341,7 +2758,7 @@ function renderHistory() {
         </tr>
         `;
     }).join('') + (hasMore ? `
-        <tr><td colspan="7" style="text-align: center; padding: 15px;">
+        <tr><td colspan="8" style="text-align: center; padding: 15px;">
             <button class="btn btn-secondary" onclick="loadMoreHistory()">もっと見る</button>
         </td></tr>
     ` : '');
@@ -2420,6 +2837,7 @@ async function showWorkflowHistoryDetail(weId) {
             skillId: exec.skill_id,
             agentProfile: exec.agent_profile || null,
             inputData: exec.input_data || null,
+            extraMetadata: exec.extra_metadata || null,
         }));
         const finalOutput = leaderExec?.output_data || '';
         await execDetailModal.showWorkflowDetailPopup({
@@ -2479,7 +2897,7 @@ async function executeWorkflowWithOrchestration({ workflowId, globalInputData, p
         throw new Error('ログイン情報が見つかりません');
     }
 
-    // Start orchestrated workflow (returns immediately with status)
+    // オーケストレーションされたワークフローを開始（ステータスと共に即座にリターン）
     const orchStatus = await window.NexMAGIRuntime.startOrchestratedWorkflow({
         authToken: token,
         workflowId: parseInt(workflowId),
@@ -2491,7 +2909,7 @@ async function executeWorkflowWithOrchestration({ workflowId, globalInputData, p
 
     console.info('[Orchestration] started:', orchStatus);
 
-    // Poll until orchestration completes (background tick handles actual execution)
+    // オーケストレーションが完了するまでポーリング（バックグラウンド tick が実際の実行を処理）
     for (let i = 0; i < 1200; i++) {
         await new Promise(r => setTimeout(r, 500));
         const status = await window.NexMAGIRuntime.getOrchestrationStatus(orchStatus.workflowExecutionId);
@@ -2500,7 +2918,7 @@ async function executeWorkflowWithOrchestration({ workflowId, globalInputData, p
         }
     }
 
-    // Fetch final results from backend to build the same shape as legacy path
+    // バックエンドから最終結果を取得し、レガシーパスと同じ形状で構築
     const execResp = await apiRequest('/api/user/executions?limit=100');
     const allExecs = (execResp.items || execResp);
     const wfExecs = allExecs.filter(e => e.workflow_execution_id === orchStatus.workflowExecutionId);
@@ -2508,7 +2926,7 @@ async function executeWorkflowWithOrchestration({ workflowId, globalInputData, p
     const leaderExec = wfExecs.find(e => !e.workflow_skill_id && !e.execution_role);
     const wfStatus = await apiRequest(`/api/user/workflow-executions/${orchStatus.workflowExecutionId}/status`).catch(() => null);
 
-    // Store result globally for the form handler (same as legacy path)
+    // フォームハンドラー用にグローバルに結果を格納（レガシーパスと同様）
     const result = {
         workflowExecutionId: orchStatus.workflowExecutionId,
         executionIds,
@@ -3209,16 +3627,28 @@ const _COORD_ROLE_INFO = {
 
 function _coordRoleBadge(_role) { return ''; }
 
-function _coordProviderBadge(mode) {
-    if (!mode) return '';
-    const cls = mode.startsWith('local') ? 'wf-badge-local'
-        : mode === 'hybrid_auto' ? 'wf-badge-hybrid'
-        : 'wf-badge-remote';
-    const label = mode.replace('_', ' ');
-    return `<span class="wf-step-badge ${cls}">${label}</span>`;
-}
+// 無効化済み: 旧「remote only / local only / hybrid auto」プロバイダー
+// バッジは runtime-resolver / runtime-badge からレンダリングされる統合
+// API/CLI ランタイムチップに置き換え済み。空文字列を返して既存の
+// 呼び出しサイトを何もしない状態に保つ。
+function _coordProviderBadge(_mode) { return ''; }
 
-function _coordArtifactChip(_wsId) { return ''; }
+// workflow_skill ノードの実行後ランタイムバッジをレンダリングする。
+// CoordinatorArtifact.extra_metadata（バックエンドの
+// build_external_cli_provenance / build_http_provider_provenance で設定）
+// を読み取り、window.runtimeBadge に委譲する。アーティファクトがまだない
+// （ステップ未完了）場合は '' を返し、runtimeResolver からの実行前
+// バッジが表示されたままになる。
+function _coordArtifactChip(wsId) {
+    if (!window.runtimeBadge) return '';
+    const arts = _coordinatorArtifactByWsId[wsId];
+    if (!arts || !arts.length) return '';
+    // 最新のアーティファクトを取得（_buildCoordinatorMaps で最後の push が勝つ）。
+    const meta = arts[arts.length - 1].extra_metadata;
+    if (!meta) return '';
+    const html = window.runtimeBadge.renderRuntimeBadge(meta);
+    return html ? `<div style="margin-top:4px;">${html}</div>` : '';
+}
 
 function _renderEvalMetrics() {
     const target = document.getElementById('wf-eval-metrics');

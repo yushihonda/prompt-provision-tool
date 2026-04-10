@@ -200,16 +200,21 @@ class WorkerDaemon:
                 result.execution_time_ms = int(elapsed * 1000)
 
                 # 3. 結果送信
+                complete_payload = {
+                    "output": result.output,
+                    "tokens_used": result.tokens_used,
+                    "model_used": result.model_used,
+                    "execution_time_ms": result.execution_time_ms,
+                }
+                if getattr(result, "external_cli_meta", None) is not None:
+                    complete_payload["external_cli_meta"] = result.external_cli_meta
+                if getattr(result, "provider_meta", None) is not None:
+                    complete_payload["provider_meta"] = result.provider_meta
                 async with httpx.AsyncClient(base_url=config.server_url, timeout=60) as client:
                     resp = await client.post(
                         f"/api/worker/executions/{execution_id}/complete",
                         headers={**auth, "Content-Type": "application/json"},
-                        json={
-                            "output": result.output,
-                            "tokens_used": result.tokens_used,
-                            "model_used": result.model_used,
-                            "execution_time_ms": result.execution_time_ms,
-                        },
+                        json=complete_payload,
                     )
 
                 self.completed_count += 1
@@ -223,13 +228,28 @@ class WorkerDaemon:
                 self.error_count += 1
                 print(f"  {ts} {RED}[#{execution_id}]{RESET} エラー: {e}")
 
+                # 失敗した external_cli 実行（auth_required, timeout,
+                # missing_binary, 非ゼロ終了等）は .external_cli_meta 付きの
+                # RuntimeError を raise する。worker ログに埋もれず
+                # CoordinatorArtifact で監査できるよう backend に転送する。
+                err_payload = {
+                    "error_message": str(e),
+                    "execution_time_ms": 0,
+                }
+                cli_meta = getattr(e, "external_cli_meta", None)
+                if isinstance(cli_meta, dict):
+                    err_payload["external_cli_meta"] = cli_meta
+                provider_meta = getattr(e, "provider_meta", None)
+                if isinstance(provider_meta, dict):
+                    err_payload["provider_meta"] = provider_meta
+
                 # エラー報告
                 try:
                     async with httpx.AsyncClient(base_url=config.server_url, timeout=10) as client:
                         await client.post(
                             f"/api/worker/executions/{execution_id}/error",
                             headers={**auth, "Content-Type": "application/json"},
-                            json={"error_message": str(e), "execution_time_ms": 0},
+                            json=err_payload,
                         )
                 except Exception:
                     pass

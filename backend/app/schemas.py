@@ -73,6 +73,10 @@ class SkillBase(BaseModel):
     allows_file_output: bool = False  # ファイル出力を許可するか
     enable_deep_think: bool = True  # Deep Think機能を有効にするか
     default_agent_profile: Optional[AgentProfile] = None
+    # スキルレベルのデフォルト実行設定 (ランタイム選択)。
+    # ワークフローステップの config_json と同じ StepExecutionConfig 形式。
+    # 未設定時は model_type のプロバイダで実行 (レガシー動作と同一)。
+    config_json: Optional[Dict[str, Any]] = None
 
 
 class SkillCreate(SkillBase):
@@ -90,6 +94,7 @@ class SkillUpdate(BaseModel):
     enable_deep_think: Optional[bool] = None  # Deep Think機能を有効にするか（Gemini 2.5/3系のみ）
     # 外部ツール利用可否フラグ（エージェント側のオーケストレーション用メタデータ）
     default_agent_profile: Optional[AgentProfile] = None
+    config_json: Optional[Dict[str, Any]] = None
 
 
 class SkillResponse(SkillBase):
@@ -185,6 +190,9 @@ class ExecutionResponse(BaseModel):
     executed_at: datetime
     # Deep Think有効フラグ（履歴詳細表示用）
     enable_deep_think: Optional[bool] = None
+    # Provenance / runtime metadata sourced from CoordinatorArtifact.extra_metadata
+    # so the frontend can render a runtime badge (cli://claude / cli://codex / API).
+    extra_metadata: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True
@@ -326,6 +334,9 @@ class WorkflowGroupSkillItem(BaseModel):
     on_error: str = "stop"  # "stop" | "skip" | "retry"
     max_retries: int = 0
     retry_delay_seconds: int = 5
+    # depends_on: カンマ区切りの workflow_skill ID (レガシー自由形式テキスト列)。
+    # 管理画面 CRUD で往復するため、ビルダー UI が暗黙的に値を落とさないよう保持。
+    depends_on: Optional[str] = None
     # 明示的データマッピング
     input_mapping: Optional[Dict[str, str]] = None  # {"target_field": "steps.<key>.output"}
     output_key: Optional[str] = None
@@ -339,6 +350,10 @@ class WorkflowGroupSkillItem(BaseModel):
     agent_profile: Optional[AgentProfile] = None
     # Deep Think
     enable_deep_think: Optional[bool] = None
+    # ステップ単位の execution_config (StepExecutionConfig)。
+    # WorkflowSkill.config_json に永続化。親スキルの設定をブロック単位で上書き。
+    # レガシーステップでは省略される。
+    config_json: Optional[Dict[str, Any]] = None
 
 
 class WorkflowGroupItem(BaseModel):
@@ -357,6 +372,10 @@ class WorkflowGroupItem(BaseModel):
     # ジャッジ (並列合議)
     judge_prompt: Optional[str] = None
     judge_model: Optional[str] = None
+    # グループレベルの execution_config デフォルト (StepExecutionConfig)。
+    # WorkflowGroup.config_json に永続化。継承チェーンでワークフローとスキルの間。
+    # レガシーグループでは省略される。
+    config_json: Optional[Dict[str, Any]] = None
     skills: List[WorkflowGroupSkillItem] = []
 
 
@@ -371,6 +390,10 @@ class WorkflowCreate(BaseModel):
     parent_model_type: str = "gpt-4o"
     parent_enable_deep_think: bool = True
     supervisor_mode: str = "disabled"  # "disabled" | "after_each_group" | "after_marked_groups"
+    # ワークフローレベルの execution_config デフォルト (StepExecutionConfig)。
+    # Workflow.config_json に永続化。継承チェーンの最上位。
+    # レガシーワークフローでは省略される。
+    config_json: Optional[Dict[str, Any]] = None
     # グループ構造
     groups: List[WorkflowGroupItem] = []
 
@@ -385,6 +408,7 @@ class WorkflowUpdate(BaseModel):
     parent_model_type: Optional[str] = None
     parent_enable_deep_think: Optional[bool] = None
     supervisor_mode: Optional[str] = None
+    config_json: Optional[Dict[str, Any]] = None
     groups: Optional[List[WorkflowGroupItem]] = None
 
 
@@ -400,6 +424,7 @@ class WorkflowResponse(BaseModel):
     parent_model_type: Optional[str] = None
     parent_enable_deep_think: bool = True
     supervisor_mode: str = "disabled"
+    config_json: Optional[Dict[str, Any]] = None
     # メタ
     created_by: int
     created_at: datetime
@@ -417,6 +442,9 @@ class WorkflowListItem(BaseModel):
     description: Optional[str] = None
     is_active: bool
     parent_model_type: Optional[str] = None
+    # ワークフローレベルの execution_config (継承チェーン最上位)。
+    # レガシーワークフローが正常に返るよう Optional。
+    config_json: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     groups: List[WorkflowGroupItem] = []
@@ -465,6 +493,8 @@ class WorkflowCreateWithParentSkill(BaseModel):
     is_active: bool = True
     parent_skill: ParentSkillData
     supervisor_mode: str = "disabled"  # "disabled" | "after_each_group" | "after_marked_groups"
+    # ワークフローレベルの execution_config デフォルト (継承チェーン最上位)。
+    config_json: Optional[Dict[str, Any]] = None
     skills: List[WorkflowSkillUpdateItem] = []
     groups: Optional[List[WorkflowGroupItem]] = None
 
@@ -589,6 +619,12 @@ class UserWorkflowDetailSkill(BaseModel):
     agent_profile: Optional[AgentProfile] = None
     model_type: Optional[str] = None
     enable_deep_think: Optional[bool] = None
+    # Step-level execution_config override (WorkflowSkill.config_json)
+    # and the underlying skill's default config_json. The frontend
+    # resolves these in the inheritance chain (workflow -> group ->
+    # skill -> step) to display the effective runtime badge.
+    config_json: Optional[Dict[str, Any]] = None
+    skill_config_json: Optional[Dict[str, Any]] = None
 
 
 class UserWorkflowDetail(BaseModel):

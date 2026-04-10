@@ -18,7 +18,10 @@
             <!-- ワークフロー名 + 説明（切り抜きカード + 戻るボタン） -->
             <div class="card-cutout-wrapper" style="margin-bottom: 16px;">
                 <div class="card-cutout wf-title-bar" style="padding: 20px 24px;">
-                    <h2 id="workflow-name">-</h2>
+                    <h2 id="workflow-name" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                        <span id="workflow-name-text">-</span>
+                        <span id="workflow-runtime-chip"></span>
+                    </h2>
                     <p id="workflow-description">-</p>
                 </div>
                 <div class="card-cutout-circle" onclick="window.NexMAGIRuntime.navigate('dashboard.html')" title="ワークフロー / スキル管理に戻る">
@@ -107,6 +110,7 @@
                                 <tr>
                                     <th>実行日時</th>
                                     <th>ステップ</th>
+                                    <th>ランタイム</th>
                                     <th>モデル</th>
                                     <th>実行時間</th>
                                     <th>トークン数</th>
@@ -116,7 +120,7 @@
                             </thead>
                             <tbody id="history-tbody">
                                 <tr>
-                                    <td colspan="7" style="text-align: center;">読み込み中...</td>
+                                    <td colspan="8" style="text-align: center;">読み込み中...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -135,6 +139,7 @@
     </script>
     <script src="../js/runtime-adapter.js"></script>
     <script src="../js/runtime-badge.js"></script>
+    <script src="../js/runtime-resolver.js"></script>
     <script src="../js/external-cli-approval.js"></script>
     <script src="../js/swal-defaults.js"></script>
     <script src="../js/mini-cube.js"></script>

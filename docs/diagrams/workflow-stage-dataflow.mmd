@@ -14,20 +14,32 @@ flowchart LR
   end
 
   subgraph ORCH[Orchestration / Services]
-    TASKS[execution_tasks.py<br/>continue_workflow_execution<br/>auto overrides + group_complete events]
-    COMPLETE[completion_service.py<br/>append_synthesis_event<br/>memory update + envelope抽出]
+    TASKS[execution_tasks.py<br/>continue_workflow_execution<br/>auto overrides + session events]
+    COMPLETE[completion_service.py<br/>append_synthesis_event<br/>memory update + session step/runtime/artifact events]
     AUTO[auto_orchestration.py<br/>output_key / retry / quality_gate / judge<br/>自動推論]
     MEMORY[memory_service.py<br/>永続メモリ get/update]
     PROFILE[agent_profiles.py<br/>5 profiles + 証跡フォーマット]
     WORKER[local_worker<br/>LLM実行]
+    SESSION[session_service.py<br/>create / status / bind_runtime<br/>bind_workspace / resume_cursor]
+    EVENTS[session_events.py<br/>emit_session_event<br/>30 normalized event types]
+    APPROVAL[approval_service.py<br/>create / resolve / idempotent<br/>session transition]
+  end
+
+  subgraph TAURI[Tauri Desktop Rust]
+    CLI_RUNNER[external_cli_runner.rs<br/>spawn + capability gate<br/>+ approval gate]
+    CLI_APPROVAL[external_cli_approval.rs<br/>ApprovalGate oneshot<br/>+ submit_workflow_approval_response]
+    WORKSPACES[workspaces.rs<br/>ensure_dir / promote / cleanup<br/>+ workspace_list_active]
   end
 
   subgraph DB[MySQL]
-    WF_EXEC[(workflow_executions<br/>synthesis_log<br/>coordinator metadata)]
+    WF_EXEC[(workflow_executions<br/>synthesis_log + session columns<br/>session_id / session_status<br/>runtime_bindings / workspace_bindings<br/>approval_summary / artifact_refs)]
     EXEC[(executions<br/>agent_profile<br/>_nexmagi_continuation)]
     WF_SKILL[(workflow_skills)]
     SKILL[(skills)]
     WF_MEM[(workflow_memories<br/>永続メモリ + starter_seed)]
+    COORD_EVT[(coordinator_events<br/>+ session_id / step_id<br/>+ event_seq / event_namespace)]
+    APPROVAL_TBL[(approval_requests<br/>approval_id / status<br/>decided_by / decided_at)]
+    ADAPTER_TBL[(coordinator_adapters<br/>+ risk_level / requires_workspace<br/>+ default_approval_policy)]
   end
 
   ADMIN_UI -->|WF/スキル管理 + 一括有効化| ADMIN_API
@@ -55,16 +67,32 @@ flowchart LR
   COMPLETE -->|memory update| WF_MEM
   COMPLETE -->|handoff_summary + envelope| WF_EXEC
   COMPLETE -->|final_verdict| WF_EXEC
+  COMPLETE -->|session events| SESSION
+  COMPLETE -->|step.completed + runtime.selected + artifact.created| EVENTS
+
+  SESSION -->|session columns| WF_EXEC
+  EVENTS -->|normalized events| COORD_EVT
+  APPROVAL -->|WRITE| APPROVAL_TBL
+  APPROVAL -->|session transition| SESSION
+  TASKS -->|step.started + session.step_entered| EVENTS
+
+  CLI_RUNNER -->|approval_requested event| EXE_UI
+  CLI_APPROVAL -->|POST respond| USER_API
+  CLI_APPROVAL -->|resolve oneshot| CLI_RUNNER
+  WORKSPACES -->|POST path/promote/cleanup| WORKER_API
 
   USER_API -->|coordinator_view + synthesis_events| EXE_UI
   USER_API -->|coordinator_view + synthesis_events| MODAL_UI
+  USER_API -->|session + events + approvals| EXE_UI
 
   classDef db fill:#1f2937,stroke:#94a3b8,color:#fff;
   classDef api fill:#0f766e,stroke:#99f6e4,color:#fff;
   classDef ui fill:#1d4ed8,stroke:#93c5fd,color:#fff;
   classDef svc fill:#6d28d9,stroke:#c4b5fd,color:#fff;
+  classDef tauri fill:#9a3412,stroke:#fdba74,color:#fff;
 
-  class WF_EXEC,EXEC,WF_SKILL,SKILL,WF_MEM db;
+  class WF_EXEC,EXEC,WF_SKILL,SKILL,WF_MEM,COORD_EVT,APPROVAL_TBL,ADAPTER_TBL db;
   class EXEC_API,USER_API,WORKER_API,ADMIN_API api;
   class EXE_UI,MODAL_UI,DASH_UI,ADMIN_UI ui;
-  class TASKS,COMPLETE,AUTO,MEMORY,PROFILE,WORKER svc;
+  class TASKS,COMPLETE,AUTO,MEMORY,PROFILE,WORKER,SESSION,EVENTS,APPROVAL svc;
+  class CLI_RUNNER,CLI_APPROVAL,WORKSPACES tauri;

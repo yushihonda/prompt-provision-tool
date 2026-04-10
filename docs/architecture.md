@@ -30,10 +30,14 @@
 │       ├─ ジャッジ / SV          │
 │       ├─ 動的タスク分解         │
 │       ├─ Coordinator 観測層     │
+│       ├─ WorkflowRunSession     │
+│       │   (durable session)     │
+│       ├─ ApprovalRequests       │
+│       │   (ask_before_shell)    │
 │       ├─ resolve_execution_kind │
 │       │   (http / external_cli) │
 │       └─ Adapter Registry +     │
-│         health refresh API      │
+│         health / risk / defaults│
 └─────────────────────────────────┘
 ```
 
@@ -59,8 +63,13 @@
    - HTTP provider は `provider_meta` を、external CLI は `external_cli_meta` を含める
 8. `finalize_execution` が `output_data` を保存し、`CoordinatorArtifact` を生成
    (runtime-specific provenance を `extra_metadata` に埋め込む)
+   - 同時に session event (`step.completed` / `runtime.selected` / `artifact.created`) を emit
+   - runtime_bindings / artifact_refs を session に bind
 9. `continue_workflow_execution` が次ステップを起動（直列なら次のスキル、並列なら次のグループ）
+   - session の current_step_id / resume_cursor を更新
+   - `workflow.session.step_entered` / `step.started` event を emit
 10. 全ステップ完了後、リーダースキルが結果を統合
+    - session_status → `completed` / `failed`、`workflow.session.completed` event を emit
 
 ## レイヤーと責務
 
@@ -73,6 +82,8 @@
 | MySQL | 永続化 (workflow / execution / coordinator / adapter / artifact) |
 | Redis | SSE ストリーミング |
 | Coordinator 観測層 | 観測・メタデータ・評価メトリクス |
+| Session 層 | durable session (status / bindings / events / resume) |
+| Approval 層 | ask_before_shell の pause/approve/reject gate |
 
 ## 観測層 (Coordinator) の位置付け
 
@@ -120,3 +131,91 @@ Sidecar は `execution_kind=external_cli` の bundle を見たら `delegated_to_
 API キーはユーザーごとに暗号化保存されます。サーバー側 `.env` のフォールバックは廃止済み。
 
 詳細は [`api-keys.md`](./api-keys.md) を参照。
+
+## WorkflowRunSession (セッション層)
+
+> 図: [`diagrams/session-state-machine.mmd`](./diagrams/session-state-machine.mmd) — session ステータス遷移  
+> 図: [`diagrams/session-approval-flow.mmd`](./diagrams/session-approval-flow.mmd) — session + approval シーケンス図
+
+ワークフロー実行ごとに durable な session record を `WorkflowExecution` 上に作成する。
+`CoordinatorPlan` (観測スナップショット) と並行して、実行状態を正規化された形で保持する。
+
+### 設計
+
+- `WorkflowExecution` に session 列を追加 (新テーブルではなく 1:1 の列拡張)
+- `CoordinatorEvent` に `session_id` / `step_id` / `event_seq` / `event_namespace` を追加
+- `schema_version="2.0"` で新しい正規化イベントを区別
+
+### Session ステータス遷移
+
+```
+initializing → running → completed
+                  ↓          ↑
+            waiting_approval → running (on approve)
+                  ↓
+               failed (on reject / timeout)
+```
+
+### 正規化イベント体系
+
+| namespace | event types |
+|-----------|------------|
+| `workflow` | `session.started` / `session.step_entered` / `session.paused` / `session.resumed` / `session.waiting_approval` / `session.completed` / `session.failed` |
+| `step` | `planned` / `started` / `completed` / `failed` / `retried` / `skipped` |
+| `runtime` | `selected` / `fallback` / `capability_check` |
+| `workspace` | `created` / `activated` / `promoted` / `cleaned` |
+| `approval` | `requested` / `granted` / `rejected` / `timed_out` |
+| `artifact` | `created` / `promoted` |
+
+### API
+
+| method | path | 内容 |
+|--------|------|------|
+| GET | `/api/user/workflow-executions/{id}/session` | session state (status / bindings / refs) |
+| GET | `/api/user/workflow-executions/{id}/events?namespace=` | 正規化イベント一覧 |
+| GET | `/api/user/workflow-executions/{id}/approvals` | 承認リクエスト一覧 |
+| POST | `/api/user/workflow-executions/{id}/approvals/{approval_id}/respond` | 承認応答 (granted / rejected) |
+
+### 関連ファイル
+
+| ファイル | 役割 |
+|---------|------|
+| `backend/app/services/session_service.py` | session 作成・status 遷移・binding 操作 |
+| `backend/app/services/session_events.py` | 正規化イベント定数 + emit_session_event |
+| `backend/app/services/approval_service.py` | 承認リクエスト CRUD + idempotent resolve |
+
+## ask_before_shell 承認フロー
+
+### フロー
+
+```
+Runner (Rust)                Frontend (JS)              Backend (Python)
+     │                            │                          │
+     ├─ approval_requested ──────→│                          │
+     │   (Tauri event)           │← SweetAlert modal        │
+     │                           │                           │
+     │                           │─ approve/reject ─────────→│
+     │                           │  submit_workflow_         │
+     │                           │  approval_response        │
+     │←── oneshot resolved ──────│  (Tauri command)          │
+     │                           │                    create_and_resolve()
+     │                           │                    session events emit
+     ▼                           │                           │
+  spawn CLI (if approved)        │                           │
+  or fail (if rejected)          │                           │
+```
+
+### Adapter hardening
+
+`CoordinatorAdapter` に以下の列を追加:
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| `risk_level` | string | low / medium / high / critical |
+| `requires_workspace` | bool | true の場合、workspace_policy=none を自動で temp_dir に昇格 |
+| `default_approval_policy` | string | step に明示設定がないときのデフォルト |
+| `auth_mechanism` | string | none / api_key / oauth / local_session |
+| `supported_capabilities` | JSON | capability 配列 |
+
+Rust 側 `ExternalCliAdapterConfig` にも `risk_level` / `requires_workspace` / `default_approval_policy` を追加。
+Claude Code = medium risk / workspace required / ask_before_shell、Codex = medium / workspace / allow_write、Generic = high / no workspace / ask_before_shell。
