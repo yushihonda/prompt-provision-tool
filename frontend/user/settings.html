@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NexMAGI - API設定</title>
+    <link rel="stylesheet" href="../css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="user-theme">
+    <div class="container">
+        <div class="content">
+            <div class="nav" id="desktop-nav"></div>
+
+            <h2 style="margin-bottom: 24px;">API キー設定</h2>
+
+            <div id="api-config-container" style="max-width: 720px;">
+                <!-- Status cards -->
+                <div id="api-status" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px;"></div>
+
+                <!-- Key inputs -->
+                <div style="background: var(--card-bg, #fff); border-radius: 16px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);">
+                    <div style="display: grid; gap: 20px;">
+                        <div>
+                            <label style="display: block; font-size: 12px; font-weight: 600; color: var(--content-text-muted); margin-bottom: 6px;">OpenAI API Key</label>
+                            <input id="input-openai" type="password" placeholder="sk-..." style="width: 100%; padding: 10px 14px; border: 1px solid rgba(0,0,0,0.1); border-radius: 10px; font-size: 14px; background: var(--content-bg); color: var(--content-text); box-sizing: border-box;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; font-weight: 600; color: var(--content-text-muted); margin-bottom: 6px;">Gemini API Key</label>
+                            <input id="input-gemini" type="password" placeholder="AIza..." style="width: 100%; padding: 10px 14px; border: 1px solid rgba(0,0,0,0.1); border-radius: 10px; font-size: 14px; background: var(--content-bg); color: var(--content-text); box-sizing: border-box;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; font-weight: 600; color: var(--content-text-muted); margin-bottom: 6px;">Anthropic API Key</label>
+                            <input id="input-anthropic" type="password" placeholder="sk-ant-..." style="width: 100%; padding: 10px 14px; border: 1px solid rgba(0,0,0,0.1); border-radius: 10px; font-size: 14px; background: var(--content-bg); color: var(--content-text); box-sizing: border-box;">
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 20px; display: flex; align-items: center; gap: 12px;">
+                        <button onclick="saveApiConfig()" style="padding: 10px 32px; background: var(--accent, #7c3aed); color: #fff; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer;">保存</button>
+                        <span id="save-status" style="font-size: 12px; color: var(--content-text-muted);"></span>
+                    </div>
+                </div>
+
+                <!-- Rate limit info (read-only) -->
+                <div id="rate-limit-info" style="margin-top: 16px; padding: 16px 20px; background: var(--card-bg, #fff); border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); font-size: 12px; color: var(--content-text-muted);"></div>
+
+            </div>
+
+        </div>
+    </div>
+
+    <script src="../js/runtime-adapter.js"></script>
+    <script src="../js/swal-defaults.js"></script>
+    <script src="js/user-common.js"></script>
+    <script src="js/settings.js"></script>
+</body>
+</html>

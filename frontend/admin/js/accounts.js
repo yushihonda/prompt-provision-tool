@@ -3,6 +3,18 @@
 let accounts = [];
 let allSkills = [];
 let allWorkflows = [];
+
+// 共通スタイル定数（skills.jsのWF_SWALと同じ）
+const ACC_S = {
+    lbl: 'style="display:block; font-weight:600; margin-bottom:5px; color:var(--content-text); font-size:13px;"',
+    fld: 'style="text-align:left; margin-bottom:14px; width:100%; box-sizing:border-box;"',
+    inp: 'class="swal2-input" style="width:100%; margin-top:0; box-sizing:border-box; max-width:100%;"',
+    sel: 'class="swal2-select" style="width:100%; margin-top:0; box-sizing:border-box; max-width:100%;"',
+    hint: 'style="color:var(--content-text-muted); display:block; margin-top:4px; font-size:12px;"',
+    card: 'style="text-align:left; margin-bottom:15px; width:100%; box-sizing:border-box; padding:16px; background:var(--card-bg); border:1px solid rgba(0,0,0,0.06); border-radius:14px;"',
+    secTitle: 'style="display:block; font-weight:700; margin-bottom:8px; color:var(--content-text); font-size:14px;"',
+};
+
 let currentPage = 1;
 const itemsPerPage = 10;
 let totalItems = 0;
@@ -50,7 +62,7 @@ function renderAccounts() {
     const tbody = document.getElementById('accounts-tbody');
 
     if (accounts.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" style="text-align: center; color: rgba(255, 255, 255, 0.6);">アカウントがまだ登録されていません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align: center; color: var(--content-text-muted);">アカウントがまだ登録されていません</td></tr>';
         return;
     }
 
@@ -60,7 +72,7 @@ function renderAccounts() {
             <td>${escapeHtmlAdmin(account.username)}</td>
             <td>${escapeHtmlAdmin(account.email)}</td>
             <td>
-                <span style="color: ${account.account_type === 'PARENT' ? '#9c27b0' : 'rgba(255, 255, 255, 0.9)'}; font-weight: ${account.account_type === 'PARENT' ? 'bold' : 'normal'};">
+                <span style="color: ${account.account_type === 'PARENT' ? 'var(--accent)' : 'var(--content-text)'}; font-weight: ${account.account_type === 'PARENT' ? 'bold' : 'normal'};">
                     ${account.account_type === 'PARENT' ? '管理者' : 'ユーザー'}
                 </span>
             </td>
@@ -69,78 +81,78 @@ function renderAccounts() {
                 ${account.account_type === 'CHILD' ? `
                     <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: rgba(255, 255, 255, 0.7);">WF:</span>
-                            <span style="color: rgba(255, 255, 255, 0.9);">${account.workflow_count || 0}</span>
+                            <span style="color: var(--content-text-muted);">WF:</span>
+                            <span style="color: var(--content-text);">${account.workflow_count || 0}</span>
                         </div>
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: rgba(255, 255, 255, 0.7);">スキル:</span>
-                            <span style="color: rgba(255, 255, 255, 0.9);">${account.skill_count}</span>
+                            <span style="color: var(--content-text-muted);">スキル:</span>
+                            <span style="color: var(--content-text);">${account.skill_count}</span>
                         </div>
                     </div>
-                ` : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
+                ` : `<span style="color: var(--content-text-muted);">-</span>`}
             </td>
             <td>
                 ${account.account_type === 'CHILD' ? `
                     <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: rgba(255, 255, 255, 0.7);">今月:</span>
-                            <span style="color: rgba(255, 255, 255, 0.9);">${account.executions_this_month || 0}</span>
+                            <span style="color: var(--content-text-muted);">今月:</span>
+                            <span style="color: var(--content-text);">${account.executions_this_month || 0}</span>
                         </div>
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: rgba(255, 255, 255, 0.7);">全期間:</span>
-                            <span style="color: rgba(255, 255, 255, 0.9);">${account.execution_count || 0}</span>
+                            <span style="color: var(--content-text-muted);">全期間:</span>
+                            <span style="color: var(--content-text);">${account.execution_count || 0}</span>
                         </div>
                     </div>
-                ` : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
+                ` : `<span style="color: var(--content-text-muted);">-</span>`}
             </td>
             <td>
                 ${account.account_type === 'CHILD' ? `
                     <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: rgba(255, 255, 255, 0.7);">今月:</span>
-                            <span style="color: rgba(255, 255, 255, 0.9);">${(account.tokens_this_month || 0).toLocaleString()}</span>
+                            <span style="color: var(--content-text-muted);">今月:</span>
+                            <span style="color: var(--content-text);">${formatCompact(account.tokens_this_month)}</span>
                         </div>
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: rgba(255, 255, 255, 0.7);">全期間:</span>
-                            <span style="color: rgba(255, 255, 255, 0.9);">${(account.total_tokens || 0).toLocaleString()}</span>
+                            <span style="color: var(--content-text-muted);">全期間:</span>
+                            <span style="color: var(--content-text);">${formatCompact(account.total_tokens)}</span>
                         </div>
                     </div>
-                ` : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
+                ` : `<span style="color: var(--content-text-muted);">-</span>`}
             </td>
             <td>
                 ${account.account_type === 'CHILD' ? `
                     <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: rgba(255, 255, 255, 0.7);">今月:</span>
-                            <span style="color: rgba(255, 255, 255, 0.9);">$${(account.cost_this_month || 0).toFixed(2)}</span>
+                            <span style="color: var(--content-text-muted);">今月:</span>
+                            <span style="color: var(--content-text);">$${(account.cost_this_month || 0).toFixed(2)}</span>
                         </div>
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: rgba(255, 255, 255, 0.7);">全期間:</span>
-                            <span style="color: rgba(255, 255, 255, 0.9);">$${(account.total_cost || 0).toFixed(2)}</span>
+                            <span style="color: var(--content-text-muted);">全期間:</span>
+                            <span style="color: var(--content-text);">$${(account.total_cost || 0).toFixed(2)}</span>
                         </div>
                     </div>
-                ` : `<span style="color: rgba(255, 255, 255, 0.5);">-</span>`}
+                ` : `<span style="color: var(--content-text-muted);">-</span>`}
             </td>
             <td>
                 ${account.account_type === 'CHILD' ? `
                     <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.85em;">
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: ${account.api_config && account.api_config.openai_api_key ? '#28a745' : 'rgba(255, 255, 255, 0.5)'};">
+                            <span style="color: ${account.api_config && account.api_config.openai_api_key ? '#28a745' : 'var(--content-text-muted)'};">
                                 OpenAI: ${account.api_config && account.api_config.openai_api_key ? '✓' : '✗'}
                             </span>
                         </div>
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: ${account.api_config && account.api_config.gemini_api_key ? '#28a745' : 'rgba(255, 255, 255, 0.5)'};">
+                            <span style="color: ${account.api_config && account.api_config.gemini_api_key ? '#28a745' : 'var(--content-text-muted)'};">
                                 Gemini: ${account.api_config && account.api_config.gemini_api_key ? '✓' : '✗'}
                             </span>
                         </div>
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: ${account.api_config && account.api_config.anthropic_api_key ? '#28a745' : 'rgba(255, 255, 255, 0.5)'};">
+                            <span style="color: ${account.api_config && account.api_config.anthropic_api_key ? '#28a745' : 'var(--content-text-muted)'};">
                                 Claude: ${account.api_config && account.api_config.anthropic_api_key ? '✓' : '✗'}
                             </span>
                         </div>
                         <div style="display: flex; align-items: center; gap: 4px;">
-                            <span style="color: rgba(255, 255, 255, 0.7);">
+                            <span style="color: var(--content-text-muted);">
                                 制限: ${account.api_config ? (account.api_config.rate_limit_per_hour || 100) : 100}/時, ${account.api_config ? (account.api_config.rate_limit_per_day || 1000) : 1000}/日
                             </span>
                         </div>
@@ -151,13 +163,13 @@ function renderAccounts() {
                         </div>
                     </div>
                 ` : `
-                    <span style="color: rgba(255, 255, 255, 0.5);">-</span>
+                    <span style="color: var(--content-text-muted);">-</span>
                 `}
             </td>
             <td>
                 <div class="actions">
                     <button ${account.account_type === 'PARENT' ? 'disabled' : `onclick="showAssignModal(${account.id})"`} title="${account.account_type === 'PARENT' ? '管理者はスキル割り当てできません' : 'スキル割り当て'}" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; ${account.account_type === 'PARENT' ? 'cursor: not-allowed; opacity: 0.5;' : 'cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;'}">
-                        <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #9c27b0; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m21 4c0-.478-.379-1-1-1h-16c-.62 0-1 .519-1 1v16c0 .621.52 1 1 1h16c.478 0 1-.379 1-1zm-16.5.5h15v15h-15zm6.75 9.25v3.25c0 .53-.47 1-1 1h-3.25c-.53 0-1-.47-1-1v-3.25c0-.53.47-1 1-1h3.25c.53 0 1 .47 1 1zm0-6.75v3.25c0 .53-.47 1-1 1h-3.25c-.53 0-1-.47-1-1v-3.25c0-.53.47-1 1-1h3.25c.53 0 1 .47 1 1zm6.75 0v3.25c0 .53-.47 1-1 1h-3.25c-.53 0-1-.47-1-1v-3.25c0-.53.47-1 1-1h3.25c.53 0 1 .47 1 1z" fill-rule="nonzero"/></svg>
+                        <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #ff9800; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m21 4c0-.478-.379-1-1-1h-16c-.62 0-1 .519-1 1v16c0 .621.52 1 1 1h16c.478 0 1-.379 1-1zm-16.5.5h15v15h-15zm6.75 9.25v3.25c0 .53-.47 1-1 1h-3.25c-.53 0-1-.47-1-1v-3.25c0-.53.47-1 1-1h3.25c.53 0 1 .47 1 1zm0-6.75v3.25c0 .53-.47 1-1 1h-3.25c-.53 0-1-.47-1-1v-3.25c0-.53.47-1 1-1h3.25c.53 0 1 .47 1 1zm6.75 0v3.25c0 .53-.47 1-1 1h-3.25c-.53 0-1-.47-1-1v-3.25c0-.53.47-1 1-1h3.25c.53 0 1 .47 1 1z" fill-rule="nonzero"/></svg>
                     </button>
                     <button onclick="editAccount(${account.id})" title="編集" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
                         <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #28a745; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m11.239 15.533c-1.045 3.004-1.238 3.451-1.238 3.84 0 .441.385.627.627.627.272 0 1.108-.301 3.829-1.249zm.888-.888 3.22 3.22 6.408-6.401c.163-.163.245-.376.245-.591 0-.213-.082-.427-.245-.591-.58-.579-1.458-1.457-2.039-2.036-.163-.163-.377-.245-.591-.245-.213 0-.428.082-.592.245zm-3.127-.895c0-.402-.356-.75-.75-.75-2.561 0-2.939 0-5.5 0-.394 0-.75.348-.75.75s.356.75.75.75h5.5c.394 0 .75-.348.75-.75zm5-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75z" fill-rule="nonzero"/></svg>
@@ -175,58 +187,68 @@ async function showCreateModal() {
     const { value: formValues } = await Swal.fire({
         title: '新しいアカウント',
         html: `
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">ユーザー名 <span style="color: #ff6b6b;">*</span></label>
-                <input id="swal-account-username" class="swal2-input" type="text" placeholder="例: user01" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-            </div>
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">メールアドレス <span style="color: #ff6b6b;">*</span></label>
-                <input id="swal-account-email" class="swal2-input" type="email" placeholder="例: user@example.com" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-            </div>
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">パスワード <span style="color: #ff6b6b;">*</span></label>
-                <input id="swal-account-password" class="swal2-input" type="password" placeholder="パスワードを入力してください" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-            </div>
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">アカウントタイプ <span style="color: #ff6b6b;">*</span></label>
-                <select id="swal-account-type" class="swal2-select" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;" onchange="toggleApiConfigSection()">
-                    <option value="CHILD" selected>子アカウント（ユーザー）</option>
-                    <option value="PARENT">親アカウント（管理者）</option>
-                </select>
-            </div>
-            <div id="swal-api-config-section" style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box; padding: 15px; background: rgba(255, 255, 255, 0.05); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
-                <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 15px; font-size: 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 8px;">API設定（オプション）</h4>
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">OpenAI API Key</label>
-                    <input id="swal-account-openai-key" class="swal2-input" type="password" placeholder="sk-..." style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">子アカウント用のOpenAI API Key（オプション）</small>
+            <div style="text-align:left; width:100%; box-sizing:border-box;">
+                <!-- アカウント情報カード -->
+                <div ${ACC_S.card}>
+                    <span ${ACC_S.secTitle}>アカウント情報</span>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                        <div>
+                            <label ${ACC_S.lbl}>ユーザー名 <span style="color:var(--accent);">*</span></label>
+                            <input id="swal-account-username" ${ACC_S.inp} type="text" placeholder="例: user01" required>
+                        </div>
+                        <div>
+                            <label ${ACC_S.lbl}>メールアドレス <span style="color:var(--accent);">*</span></label>
+                            <input id="swal-account-email" ${ACC_S.inp} type="email" placeholder="例: user@example.com" required>
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                        <div>
+                            <label ${ACC_S.lbl}>パスワード <span style="color:var(--accent);">*</span></label>
+                            <input id="swal-account-password" ${ACC_S.inp} type="password" placeholder="パスワード" required>
+                        </div>
+                        <div>
+                            <label ${ACC_S.lbl}>アカウントタイプ <span style="color:var(--accent);">*</span></label>
+                            <select id="swal-account-type" ${ACC_S.sel} required onchange="toggleApiConfigSection()">
+                                <option value="CHILD" selected>子アカウント（ユーザー）</option>
+                                <option value="PARENT">親アカウント（管理者）</option>
+                            </select>
+                        </div>
+                    </div>
                 </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">Gemini API Key</label>
-                    <input id="swal-account-gemini-key" class="swal2-input" type="password" placeholder="AIza..." style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">子アカウント用のGemini API Key（オプション）</small>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">Anthropic API Key</label>
-                    <input id="swal-account-anthropic-key" class="swal2-input" type="password" placeholder="sk-ant-..." style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">子アカウント用のAnthropic API Key（オプション）</small>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">レート制限（1時間あたり）</label>
-                    <input id="swal-account-rate-limit-hour" class="swal2-input" type="number" min="1" value="100" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">1時間あたりの実行制限回数（デフォルト: 100）</small>
-                </div>
-                <div style="margin-bottom: 10px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">レート制限（1日あたり）</label>
-                    <input id="swal-account-rate-limit-day" class="swal2-input" type="number" min="1" value="1000" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">1日あたりの実行制限回数（デフォルト: 1000）</small>
-                </div>
-                <div>
-                    <label style="display: flex; align-items: center; cursor: pointer;">
-                        <input type="checkbox" id="swal-account-api-enabled" checked style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
-                        <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">API設定を有効にする</span>
-                    </label>
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このAPI設定が有効になります</small>
+
+                <!-- API設定カード -->
+                <div id="swal-api-config-section" ${ACC_S.card}>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                        <span ${ACC_S.secTitle} style="margin-bottom:0;">API設定（オプション）</span>
+                        <label style="display:flex; align-items:center; cursor:pointer; gap:5px;">
+                            <input type="checkbox" id="swal-account-api-enabled" checked style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
+                            <span style="font-size:12px; color:var(--accent); font-weight:600;">有効</span>
+                        </label>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:12px;">
+                        <div>
+                            <label ${ACC_S.lbl}>OpenAI API Key</label>
+                            <input id="swal-account-openai-key" ${ACC_S.inp} type="password" placeholder="sk-...">
+                        </div>
+                        <div>
+                            <label ${ACC_S.lbl}>Gemini API Key</label>
+                            <input id="swal-account-gemini-key" ${ACC_S.inp} type="password" placeholder="AIza...">
+                        </div>
+                        <div>
+                            <label ${ACC_S.lbl}>Anthropic API Key</label>
+                            <input id="swal-account-anthropic-key" ${ACC_S.inp} type="password" placeholder="sk-ant-...">
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                        <div>
+                            <label ${ACC_S.lbl}>レート制限（1時間）</label>
+                            <input id="swal-account-rate-limit-hour" ${ACC_S.inp} type="number" min="1" value="100">
+                        </div>
+                        <div>
+                            <label ${ACC_S.lbl}>レート制限（1日）</label>
+                            <input id="swal-account-rate-limit-day" ${ACC_S.inp} type="number" min="1" value="1000">
+                        </div>
+                    </div>
                 </div>
             </div>
         `,
@@ -311,67 +333,76 @@ async function editAccount(id) {
     const account = accounts.find(a => a.id === id);
     if (!account) return;
 
+    const _apiStatus = (key) => account.api_config && account.api_config[key] ? '設定済み' : '未設定';
+    const _apiPh = (key) => account.api_config && account.api_config[key] ? '変更する場合は新しいキーを入力' : '未設定（キーを入力）';
+
     const { value: formValues } = await Swal.fire({
         title: 'アカウントを編集',
         html: `
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">ユーザー名</label>
-                <input id="swal-account-username" class="swal2-input" type="text" value="${account.username}" disabled style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%; background: rgba(255, 255, 255, 0.1);">
-                <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">ユーザー名は変更できません</small>
+            <div style="text-align:left; width:100%; box-sizing:border-box;">
+                <!-- アカウント情報カード -->
+                <div ${ACC_S.card}>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                        <span ${ACC_S.secTitle} style="margin-bottom:0;">アカウント情報</span>
+                        <label style="display:flex; align-items:center; cursor:pointer; gap:5px;">
+                            <input type="checkbox" id="swal-account-is-active" ${account.is_active ? 'checked' : ''} style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
+                            <span style="font-size:12px; color:var(--accent); font-weight:600;">有効</span>
+                        </label>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                        <div>
+                            <label ${ACC_S.lbl}>ユーザー名</label>
+                            <input id="swal-account-username" ${ACC_S.inp} type="text" value="${account.username}" disabled style="background:var(--card-bg) !important; opacity:0.7;">
+                            <small ${ACC_S.hint}>変更不可</small>
+                        </div>
+                        <div>
+                            <label ${ACC_S.lbl}>メールアドレス <span style="color:var(--accent);">*</span></label>
+                            <input id="swal-account-email" ${ACC_S.inp} type="email" value="${account.email}" required>
+                        </div>
+                    </div>
+                    <div ${ACC_S.fld} style="margin-top:12px;">
+                        <label ${ACC_S.lbl}>パスワード（変更する場合のみ）</label>
+                        <input id="swal-account-password" ${ACC_S.inp} type="password" placeholder="変更しない場合は空欄">
+                    </div>
+                </div>
+
+                ${account.account_type === 'CHILD' ? `
+                <!-- API設定カード -->
+                <div ${ACC_S.card}>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                        <span ${ACC_S.secTitle} style="margin-bottom:0;">API設定</span>
+                        <label style="display:flex; align-items:center; cursor:pointer; gap:5px;">
+                            <input type="checkbox" id="swal-account-edit-api-enabled" ${account.api_config ? (account.api_config.is_enabled !== false ? 'checked' : '') : 'checked'} style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
+                            <span style="font-size:12px; color:var(--accent); font-weight:600;">有効</span>
+                        </label>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:12px;">
+                        <div>
+                            <label ${ACC_S.lbl}>OpenAI <span style="font-size:10px; color:var(--content-text-muted);">(${_apiStatus('openai_api_key')})</span></label>
+                            <input id="swal-account-edit-openai-key" ${ACC_S.inp} type="password" placeholder="${_apiPh('openai_api_key')}">
+                        </div>
+                        <div>
+                            <label ${ACC_S.lbl}>Gemini <span style="font-size:10px; color:var(--content-text-muted);">(${_apiStatus('gemini_api_key')})</span></label>
+                            <input id="swal-account-edit-gemini-key" ${ACC_S.inp} type="password" placeholder="${_apiPh('gemini_api_key')}">
+                        </div>
+                        <div>
+                            <label ${ACC_S.lbl}>Anthropic <span style="font-size:10px; color:var(--content-text-muted);">(${_apiStatus('anthropic_api_key')})</span></label>
+                            <input id="swal-account-edit-anthropic-key" ${ACC_S.inp} type="password" placeholder="${_apiPh('anthropic_api_key')}">
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                        <div>
+                            <label ${ACC_S.lbl}>レート制限（1時間）</label>
+                            <input id="swal-account-edit-rate-limit-hour" ${ACC_S.inp} type="number" min="1" value="${account.api_config ? (account.api_config.rate_limit_per_hour || 100) : 100}">
+                        </div>
+                        <div>
+                            <label ${ACC_S.lbl}>レート制限（1日）</label>
+                            <input id="swal-account-edit-rate-limit-day" ${ACC_S.inp} type="number" min="1" value="${account.api_config ? (account.api_config.rate_limit_per_day || 1000) : 1000}">
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
             </div>
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">メールアドレス <span style="color: #ff6b6b;">*</span></label>
-                <input id="swal-account-email" class="swal2-input" type="email" placeholder="例: user@example.com" value="${account.email}" required style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-            </div>
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">パスワード（変更する場合のみ入力）</label>
-                <input id="swal-account-password" class="swal2-input" type="password" placeholder="変更しない場合は空欄のまま" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">パスワードを変更しない場合は空欄のままにしてください</small>
-            </div>
-            <div style="text-align: left; margin-bottom: 15px; width: 100%; box-sizing: border-box;">
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="swal-account-is-active" ${account.is_active ? 'checked' : ''} style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
-                    <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">有効にする</span>
-                </label>
-                <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このアカウントが有効になります</small>
-            </div>
-            ${account.account_type === 'CHILD' ? `
-            <div style="text-align: left; margin-bottom: 10px; width: 100%; box-sizing: border-box; padding: 15px; background: rgba(255, 255, 255, 0.05); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
-                <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 15px; font-size: 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 8px;">API設定</h4>
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">OpenAI API Key</label>
-                    <input id="swal-account-edit-openai-key" class="swal2-input" type="password" placeholder="${account.api_config && account.api_config.openai_api_key ? '設定済み（変更する場合は新しいキーを入力）' : '未設定（設定する場合はキーを入力）'}" value="" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">${account.api_config && account.api_config.openai_api_key ? '現在設定済みです。変更する場合は新しいキーを入力してください。' : '未設定（設定する場合はキーを入力）'}</small>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">Gemini API Key</label>
-                    <input id="swal-account-edit-gemini-key" class="swal2-input" type="password" placeholder="${account.api_config && account.api_config.gemini_api_key ? '設定済み（変更する場合は新しいキーを入力）' : '未設定（設定する場合はキーを入力）'}" value="" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">${account.api_config && account.api_config.gemini_api_key ? '現在設定済みです。変更する場合は新しいキーを入力してください。' : '未設定（設定する場合はキーを入力）'}</small>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">Anthropic API Key</label>
-                    <input id="swal-account-edit-anthropic-key" class="swal2-input" type="password" placeholder="${account.api_config && account.api_config.anthropic_api_key ? '設定済み（変更する場合は新しいキーを入力）' : '未設定（設定する場合はキーを入力）'}" value="" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">${account.api_config && account.api_config.anthropic_api_key ? '現在設定済みです。変更する場合は新しいキーを入力してください。' : '未設定（設定する場合はキーを入力）'}</small>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">レート制限（1時間あたり）</label>
-                    <input id="swal-account-edit-rate-limit-hour" class="swal2-input" type="number" min="1" value="${account.api_config ? (account.api_config.rate_limit_per_hour || 100) : 100}" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">1時間あたりの実行制限回数</small>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; font-weight: bold; margin-bottom: 5px; color: rgba(255, 255, 255, 0.9);">レート制限（1日あたり）</label>
-                    <input id="swal-account-edit-rate-limit-day" class="swal2-input" type="number" min="1" value="${account.api_config ? (account.api_config.rate_limit_per_day || 1000) : 1000}" style="width: 100%; margin-top: 0; box-sizing: border-box; max-width: 100%;">
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px;">1日あたりの実行制限回数</small>
-                </div>
-                <div>
-                    <label style="display: flex; align-items: center; cursor: pointer;">
-                        <input type="checkbox" id="swal-account-edit-api-enabled" ${account.api_config ? (account.api_config.is_enabled !== false ? 'checked' : '') : 'checked'} style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
-                        <span style="font-weight: bold; color: rgba(255, 255, 255, 0.9);">API設定を有効にする</span>
-                    </label>
-                    <small style="color: rgba(255, 255, 255, 0.6); display: block; margin-top: 5px; margin-left: 26px;">チェックすると、このAPI設定が有効になります</small>
-                </div>
-            </div>
-            ` : ''}
         `,
         focusConfirm: false,
         showCancelButton: true,
@@ -554,13 +585,17 @@ async function deleteAccount(id) {
 
     const result = await Swal.fire({
         title: '削除の確認',
-        html: `本当に「<strong>${account.username}</strong>」を削除しますか？<br>この操作は取り消せません。`,
+        html: `
+            <div style="text-align:center;">
+                <div ${ACC_S.card} style="border-left:3px solid #dc3545; text-align:left;">
+                    <p style="color:var(--content-text); font-size:14px; margin:0;">本当に「<strong>${account.username}</strong>」を削除しますか？</p>
+                    <p style="color:var(--content-text-muted); font-size:12px; margin:8px 0 0;">この操作は取り消せません。</p>
+                </div>
+            </div>
+        `,
         icon: 'warning',
-        showCancelButton: true,
-        confirmButtonColor: ADMIN_SWAL.danger,
-        cancelButtonColor: ADMIN_SWAL.secondary,
-        confirmButtonText: '削除',
-        cancelButtonText: ADMIN_SWAL.btnClose
+        confirmButtonColor: '#dc3545',
+        confirmButtonText: '削除'
     });
 
     if (result.isConfirmed) {
@@ -619,10 +654,10 @@ async function showAssignModal(accountId) {
             const assigned = assignedIds.includes(skillId);
             const asg = assignedSkills.find(s => s.id === skillId);
             if (assigned) {
-                return `<span style="color:#28a745; font-size:10px; padding:1px 6px; background:rgba(40,167,69,0.15); border-radius:8px;">有効</span>
-                    <button onclick="Swal.close(); unassignSkill(${asg?.assignment_id}, ${accountId})" style="font-size:10px; padding:1px 6px; background:none; border:1px solid rgba(220,53,69,0.3); border-radius:8px; color:#dc3545; cursor:pointer; margin-left:4px;">無効</button>`;
+                return `<span style="color:#28a745; font-size:10px; padding:2px 8px; background:rgba(40,167,69,0.1); border-radius:20px; font-weight:600;">有効</span>
+                    <button onclick="Swal.close(); unassignSkill(${asg?.assignment_id}, ${accountId})" style="font-size:10px; padding:2px 8px; background:#fff; border:1px solid rgba(220,53,69,0.3); border-radius:20px; color:#dc3545; cursor:pointer; margin-left:4px; font-weight:600; transition:all 0.2s;" onmouseover="this.style.background='#dc3545';this.style.color='#fff';" onmouseout="this.style.background='#fff';this.style.color='#dc3545';">無効にする</button>`;
             }
-            return `<button onclick="Swal.close(); assignSkill(${accountId}, ${skillId})" style="font-size:10px; padding:1px 8px; background:rgba(40,167,69,0.15); border:1px solid rgba(40,167,69,0.3); border-radius:8px; color:#28a745; cursor:pointer;">有効にする</button>`;
+            return `<button onclick="Swal.close(); assignSkill(${accountId}, ${skillId})" style="font-size:10px; padding:2px 8px; background:#fff; border:1px solid rgba(220,53,69,0.3); border-radius:20px; color:#dc3545; cursor:pointer; font-weight:600; transition:all 0.2s;" onmouseover="this.style.background='#dc3545';this.style.color='#fff';" onmouseout="this.style.background='#fff';this.style.color='#dc3545';">有効にする</button>`;
         }
 
         // ワークフロー親子HTML
@@ -634,23 +669,23 @@ async function showAssignModal(accountId) {
             });
             const assignedCount = wf.wfSkillIds.filter(sid => assignedIds.includes(sid)).length;
             const totalCount = wf.wfSkillIds.length;
-            const statusLabel = wf.allAssigned ? '<span style="color:#28a745; font-size:10px;">全て有効</span>' : `<span style="color:rgba(255,255,255,0.4); font-size:10px;">${assignedCount}/${totalCount}</span>`;
+            const statusLabel = wf.allAssigned ? '<span style="color:#28a745; font-size:10px;">全て有効</span>' : `<span style="color:var(--content-text-muted); font-size:10px;">${assignedCount}/${totalCount}</span>`;
 
             wfSectionHTML += `
-                <div style="margin-bottom:10px; border:1px solid rgba(124,58,237,0.25); border-radius:8px; overflow:hidden;">
-                    <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; background:rgba(124,58,237,0.1);">
-                        <strong style="color:#c4b5fd; flex:1;">${wf.name}</strong>
+                <div style="margin-bottom:10px; border:1px solid rgba(0,0,0,0.06); border-radius:10px; overflow:hidden;">
+                    <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; background:rgba(0,0,0,0.02);">
+                        <strong style="color:var(--content-text); font-size:13px; flex:1;">${wf.name}</strong>
                         ${statusLabel}
                         ${wf.allAssigned
-                            ? `<button onclick="Swal.close(); unassignWorkflow(${wf.id}, ${accountId})" style="font-size:10px; padding:2px 8px; background:none; border:1px solid rgba(220,53,69,0.3); border-radius:8px; color:#dc3545; cursor:pointer;">一括無効</button>`
-                            : `<button onclick="Swal.close(); assignWorkflow(${accountId}, ${wf.id})" style="font-size:10px; padding:2px 8px; background:rgba(124,58,237,0.2); border:1px solid rgba(124,58,237,0.3); border-radius:8px; color:#c4b5fd; cursor:pointer;">一括有効</button>`
+                            ? `<button onclick="Swal.close(); unassignWorkflow(${wf.id}, ${accountId})" style="font-size:10px; padding:2px 10px; background:#fff; border:1px solid rgba(220,53,69,0.3); border-radius:20px; color:#dc3545; cursor:pointer; font-weight:600; transition:all 0.2s;" onmouseover="this.style.background='#dc3545';this.style.color='#fff';" onmouseout="this.style.background='#fff';this.style.color='#dc3545';">一括無効</button>`
+                            : `<button onclick="Swal.close(); assignWorkflow(${accountId}, ${wf.id})" style="font-size:10px; padding:2px 10px; background:#fff; border:1px solid rgba(220,53,69,0.3); border-radius:20px; color:#dc3545; cursor:pointer; font-weight:600; transition:all 0.2s;" onmouseover="this.style.background='#dc3545';this.style.color='#fff';" onmouseout="this.style.background='#fff';this.style.color='#dc3545';">一括有効</button>`
                         }
                     </div>
                     <div style="padding:8px 14px;">
                         ${skillsInWf.map(sk => `
-                            <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.04);">
-                                <span style="color:rgba(255,255,255,0.3); font-size:10px; width:14px; text-align:center;">└</span>
-                                <span style="font-size:12px; color:rgba(255,255,255,0.8); flex:1;">${sk.name}</span>
+                            <div style="display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid rgba(0,0,0,0.04);">
+                                <span style="color:var(--content-text-muted); font-size:10px; width:14px; text-align:center;">└</span>
+                                <span style="font-size:12px; color:var(--content-text); flex:1;">${sk.name}</span>
                                 ${skillBadge(sk.id)}
                             </div>
                         `).join('')}
@@ -659,7 +694,7 @@ async function showAssignModal(accountId) {
             `;
         }
         if (!wfSectionHTML) {
-            wfSectionHTML = '<p style="text-align:center; color:rgba(255,255,255,0.5); padding:10px; font-size:12px;">ワークフローがありません</p>';
+            wfSectionHTML = '<p style="text-align:center; color:var(--content-text-muted); padding:10px; font-size:12px;">ワークフローがありません</p>';
         }
 
         // ワークフローに属さないスキル
@@ -670,15 +705,15 @@ async function showAssignModal(accountId) {
         let standaloneSectionHTML = '';
         if (standaloneAssigned.length > 0 || standaloneAvailable.length > 0) {
             standaloneSectionHTML = [...standaloneAvailable.map(s => `
-                <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; margin-bottom:4px; background:rgba(255,255,255,0.03); border-radius:6px;">
-                    <span style="font-size:12px; color:rgba(255,255,255,0.8); flex:1;">${s.name}</span>
-                    <button onclick="Swal.close(); assignSkill(${accountId}, ${s.id})" style="font-size:10px; padding:1px 8px; background:rgba(40,167,69,0.15); border:1px solid rgba(40,167,69,0.3); border-radius:8px; color:#28a745; cursor:pointer;">有効にする</button>
+                <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; margin-bottom:4px; border-radius:8px;">
+                    <span style="font-size:12px; color:var(--content-text); flex:1;">${s.name}</span>
+                    <button onclick="Swal.close(); assignSkill(${accountId}, ${s.id})" style="font-size:10px; padding:2px 8px; background:#fff; border:1px solid rgba(220,53,69,0.3); border-radius:20px; color:#dc3545; cursor:pointer; font-weight:600; transition:all 0.2s;" onmouseover="this.style.background='#dc3545';this.style.color='#fff';" onmouseout="this.style.background='#fff';this.style.color='#dc3545';">有効にする</button>
                 </div>
             `), ...standaloneAssigned.map(s => `
-                <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; margin-bottom:4px; background:rgba(255,255,255,0.03); border-radius:6px;">
-                    <span style="font-size:12px; color:rgba(255,255,255,0.8); flex:1;">${s.name}</span>
-                    <span style="color:#28a745; font-size:10px; padding:1px 6px; background:rgba(40,167,69,0.15); border-radius:8px;">有効</span>
-                    <button onclick="Swal.close(); unassignSkill(${s.assignment_id}, ${accountId})" style="font-size:10px; padding:1px 6px; background:none; border:1px solid rgba(220,53,69,0.3); border-radius:8px; color:#dc3545; cursor:pointer;">無効</button>
+                <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; margin-bottom:4px; border-radius:8px;">
+                    <span style="font-size:12px; color:var(--content-text); flex:1;">${s.name}</span>
+                    <span style="color:#28a745; font-size:10px; padding:2px 8px; background:rgba(40,167,69,0.1); border-radius:20px; font-weight:600;">有効</span>
+                    <button onclick="Swal.close(); unassignSkill(${s.assignment_id}, ${accountId})" style="font-size:10px; padding:2px 8px; background:#fff; border:1px solid rgba(220,53,69,0.3); border-radius:20px; color:#dc3545; cursor:pointer; font-weight:600; transition:all 0.2s;" onmouseover="this.style.background='#dc3545';this.style.color='#fff';" onmouseout="this.style.background='#fff';this.style.color='#dc3545';">無効にする</button>
                 </div>
             `)].join('');
         }
@@ -686,27 +721,34 @@ async function showAssignModal(accountId) {
         await Swal.fire({
             title: 'ワークフロー / スキル管理',
             html: `
-                <div style="text-align: left; margin-bottom: 16px;">
-                    <strong style="color: rgba(255, 255, 255, 0.9);">${account.username} (${account.email})</strong>
-                </div>
-                <div style="margin-bottom: 16px;">
-                    <h4 style="color: #c4b5fd; margin-bottom: 10px; font-size: 14px;">ワークフロー（関連スキル付き）</h4>
-                    <div style="max-height: 400px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); border-radius: 8px;">
-                        ${wfSectionHTML}
+                <div style="text-align:left;">
+                    <!-- ユーザー情報 -->
+                    <div ${ACC_S.card}>
+                        <span ${ACC_S.secTitle}>${account.username}</span>
+                        <span style="color:var(--content-text-muted); font-size:12px;">${account.email}</span>
                     </div>
-                </div>
-                ${standaloneSectionHTML ? `
-                <div>
-                    <h4 style="color: rgba(255, 255, 255, 0.9); margin-bottom: 10px; font-size: 14px;">その他のスキル</h4>
-                    <div style="max-height: 200px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.2); border-radius: 8px;">
-                        ${standaloneSectionHTML}
+
+                    <!-- ワークフロー -->
+                    <div ${ACC_S.card}>
+                        <span ${ACC_S.secTitle}>ワークフロー（関連スキル付き）</span>
+                        <div style="max-height:400px; overflow-y:auto; padding:10px; background:#fff; border:1px solid rgba(0,0,0,0.06); border-radius:10px;">
+                            ${wfSectionHTML}
+                        </div>
                     </div>
+
+                    ${standaloneSectionHTML ? `
+                    <!-- その他のスキル -->
+                    <div ${ACC_S.card}>
+                        <span ${ACC_S.secTitle}>その他のスキル</span>
+                        <div style="max-height:200px; overflow-y:auto; padding:10px; background:#fff; border:1px solid rgba(0,0,0,0.06); border-radius:10px;">
+                            ${standaloneSectionHTML}
+                        </div>
+                    </div>
+                    ` : ''}
                 </div>
-                ` : ''}
             `,
             width: '900px',
-            confirmButtonText: ADMIN_SWAL.btnClose,
-            confirmButtonColor: ADMIN_SWAL.primary,
+            showConfirmButton: false,
             customClass: {
                 popup: 'swal-wide swal-scrollable-popup',
                 htmlContainer: 'swal-scrollable-container'

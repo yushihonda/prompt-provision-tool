@@ -16,8 +16,8 @@ async function loadDashboardStats() {
         document.getElementById('total-executions').textContent = (stats.total_executions || 0).toLocaleString();
         document.getElementById('executions-month').textContent = (stats.executions_this_month || 0).toLocaleString();
 
-        document.getElementById('total-tokens').textContent = (stats.total_tokens || 0).toLocaleString();
-        document.getElementById('total-tokens-month').textContent = (stats.total_tokens_this_month || 0).toLocaleString();
+        document.getElementById('total-tokens').textContent = formatCompact(stats.total_tokens || 0);
+        document.getElementById('total-tokens-month').textContent = formatCompact(stats.total_tokens_this_month || 0);
 
         const cost = stats.total_cost_this_month || 0;
         document.getElementById('total-cost-month').textContent = `$${cost.toFixed(2)}`;
@@ -69,43 +69,77 @@ function renderUserWorkflows() {
         return;
     }
 
+    const profileColors = { default: '#9c27b0', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
+    const profileLabels = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
+
     container.innerHTML = userWorkflows
-        .map((item) => {
+        .map((item, idx) => {
             const wf = item.workflow;
             const skillCount = (item.skills || []).length;
-            const modelDisplay = typeof formatModelDisplay === 'function'
-                ? formatModelDisplay(wf.parent_model_type || '', null, {})
-                : (wf.parent_model_type || '-');
-            // profile フロー表示
-            const profiles = item.step_profiles || [];
-            const profileColors = { default: '#ce93d8', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
-            const profileLabels = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
-            const flowHtml = profiles.length > 0
-                ? profiles.map((p, i) => {
-                    const c = profileColors[p] || '#9e9e9e';
-                    const l = profileLabels[p] || p;
-                    return `${i > 0 ? '<span style="color:rgba(255,255,255,0.2); margin:0 2px;">→</span>' : ''}<span style="font-size:10px; padding:1px 6px; background:${c}22; border-radius:8px; color:${c};">${l}</span>`;
-                }).join('')
+            // workflow.config_json から実効ランタイム（API / CLI: <adapter>）を解決する。
+            // CLI モードでは parent_model_type の代わりに cli_model
+            // （またはランタイム名フォールバック）を表示する。
+            const wfCtx = { workflow: { config_json: wf.config_json } };
+            const wfResolved = window.runtimeResolver
+                ? window.runtimeResolver.resolveEffectiveRuntime(wfCtx)
+                : { kind: 'api' };
+            const modelDisplay = (wfResolved.kind === 'cli' && window.runtimeResolver)
+                ? window.runtimeResolver.effectiveModelLabel(wfCtx, '')
+                : (typeof formatModelDisplay === 'function'
+                    ? formatModelDisplay(wf.parent_model_type || '', null, {})
+                    : (wf.parent_model_type || '-'));
+            const wfRuntimeChip = window.runtimeResolver
+                ? window.runtimeResolver.renderResolvedRuntimeChip(wfCtx)
                 : '';
+            const profiles = item.step_profiles || [];
+            const stepGroups = item.step_groups || [];
+            let flowHtml = '';
+            if (profiles.length > 0) {
+                const arrow = '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>';
+                let pi = 0;
+                const groupHtmls = [];
+                if (stepGroups.length > 0) {
+                    for (const sg of stepGroups) {
+                        const groupProfiles = profiles.slice(pi, pi + sg.count);
+                        pi += sg.count;
+                        if (sg.execution_type === 'parallel' && groupProfiles.length > 1) {
+                            const cubes = groupProfiles.map(p => renderMiniCube(p, { size: 22, showLabel: false })).join('');
+                            groupHtmls.push(`<span style="display:inline-flex;flex-direction:column;gap:2px;align-items:center;vertical-align:middle;">${cubes}</span>`);
+                        } else {
+                            for (const p of groupProfiles) {
+                                groupHtmls.push(renderMiniCube(p, { size: 28, showLabel: false }));
+                            }
+                        }
+                    }
+                } else {
+                    for (const p of profiles) {
+                        groupHtmls.push(renderMiniCube(p, { size: 28, showLabel: false }));
+                    }
+                }
+                flowHtml = groupHtmls.join(arrow);
+                // リーダーキューブを追加
+                flowHtml += arrow + renderMiniCube('default', { size: 28, showLabel: false });
+            }
             return `
-                <div class="card" data-workflow-id="${wf.id}">
-                    <div class="card-content">
-                        <h3>${wf.name}</h3>
-                        <p>${wf.description || '説明なし'}</p>
-                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
-                            <span style="font-size:12px; color:rgba(255,255,255,0.6);"><strong>${skillCount}</strong> steps</span>
-                            <span style="color:rgba(255,255,255,0.15);">|</span>
-                            <span>${modelDisplay}</span>
-                        </div>
-                        ${flowHtml ? `<div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px;">${flowHtml}</div>` : ''}
-                    </div>
-                    <div class="card-corner">
+                <article class="card-wrapper" data-workflow-id="${wf.id}">
+                    <div class="card-circle">
                         <button class="btn btn-primary card-execute-btn"
-                                onclick="location.href='workflow-execute.html?id=${wf.id}'">
+                                onclick="window.NexMAGIRuntime.navigate('workflow-execute.html?id=${wf.id}')">
                             実行
                         </button>
                     </div>
-                </div>
+                    <div class="card">
+                        <h3 class="card-title">${wf.name}</h3>
+                        <p class="card-desc">${wf.description || '説明なし'}</p>
+                        <div class="card-meta">
+                            <span><strong>${skillCount}</strong> steps</span>
+                            <span class="meta-divider">|</span>
+                            ${wfRuntimeChip || ''}
+                            <span>${modelDisplay}</span>
+                        </div>
+                        ${flowHtml ? `<div class="card-figure">${flowHtml}</div>` : ''}
+                    </div>
+                </article>
             `;
         })
         .join('');
@@ -122,23 +156,35 @@ function renderSkills() {
     // 実行中のスキルIDを取得
     const executingSkillId = PersistentStatusBar?.skillId ? parseInt(PersistentStatusBar.skillId) : null;
 
-    container.innerHTML = skills.map(skill => {
+    container.innerHTML = skills.map((skill, idx) => {
         const isExecuting = executingSkillId && skill.id === executingSkillId;
-        const modelDisplay = formatModelDisplay(skill.model_type, null, skill);
+        const skCtx = { skill: { config_json: skill.config_json } };
+        const skResolved = window.runtimeResolver
+            ? window.runtimeResolver.resolveEffectiveRuntime(skCtx)
+            : { kind: 'api' };
+        const modelDisplay = (skResolved.kind === 'cli' && window.runtimeResolver)
+            ? window.runtimeResolver.effectiveModelLabel(skCtx, '')
+            : formatModelDisplay(skill.model_type, null, skill);
+        const skRuntimeChip = window.runtimeResolver
+            ? window.runtimeResolver.renderResolvedRuntimeChip(skCtx)
+            : '';
         return `
-        <div class="card ${isExecuting ? 'card-executing' : ''}" data-skill-id="${skill.id}">
-            <div class="card-content">
-                <h3>${skill.name}${isExecuting ? '<span class="executing-badge">実行中</span>' : ''}</h3>
-                <p>${skill.description || '説明なし'}</p>
-                <p><strong>モデル:</strong> ${modelDisplay}</p>
-            </div>
-            <div class="card-corner">
+        <article class="card-wrapper ${isExecuting ? 'card-executing' : ''}" data-skill-id="${skill.id}">
+            <div class="card-circle">
                 <button class="btn btn-primary card-execute-btn"
-                        onclick="location.href='execute.html?id=${skill.id}'">
+                        onclick="window.NexMAGIRuntime.navigate('execute.html?id=${skill.id}')">
                     ${isExecuting ? '実行中' : '実行'}
                 </button>
             </div>
-        </div>
+            <div class="card">
+                <h3 class="card-title">${skill.name}${isExecuting ? '<span class="executing-badge">実行中</span>' : ''}</h3>
+                <p class="card-desc">${skill.description || '説明なし'}</p>
+                <div class="card-meta">
+                    ${skRuntimeChip || ''}
+                    <span>${modelDisplay}</span>
+                </div>
+            </div>
+        </article>
     `;
     }).join('');
 }
@@ -158,9 +204,14 @@ function updateExecutingSkills() {
 // PersistentStatusBarの状態変更を監視
 if (typeof PersistentStatusBar !== 'undefined') {
     // 定期的に実行中スキルの状態をチェック（1秒ごと）
-    setInterval(() => {
+    const _dashboardPollId = setInterval(() => {
         updateExecutingSkills();
     }, 1000);
+
+    // ページ離脱時にインターバルをクリーンアップ
+    window.addEventListener('pagehide', () => {
+        clearInterval(_dashboardPollId);
+    });
 
     // カスタムイベントで即座に更新
     window.addEventListener('executionStarted', () => {

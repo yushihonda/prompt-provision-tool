@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>実行ログ - Prompt Provision Tool</title>
+    <title>実行ログ - NexMAGI</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body class="admin-theme">
     <div class="container">
             <div class="content">
-            <h1 class="page-title">実行ログ</h1>
+            <div class="page-title-container"><h1 class="page-title">実行ログ</h1></div>
             <div class="nav" id="desktop-nav"></div>
 
 
@@ -22,6 +22,7 @@
                             <th>日時</th>
                             <th>アカウントID</th>
                             <th>ワークフロー / スキル</th>
+                            <th>ランタイム</th>
                             <th>モデル</th>
                             <th>実行時間</th>
                             <th>トークン数</th>
@@ -31,7 +32,7 @@
                     </thead>
                     <tbody id="executions-tbody">
                         <tr>
-                            <td colspan="9" style="text-align: center;">読み込み中...</td>
+                            <td colspan="10" style="text-align: center;">読み込み中...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -41,7 +42,18 @@
     </div>
 
 
+    <script>
+        window.__NEXMAGI_RUNTIME = window.__NEXMAGI_RUNTIME || {
+            desktop: true,
+            apiBase: 'http://127.0.0.1:8000',
+            workerScriptPath: 'js/execution-worker.js'
+        };
+    </script>
+    <script src="../js/runtime-adapter.js"></script>
+    <script src="../js/runtime-badge.js"></script>
+    <script src="../js/swal-defaults.js"></script>
     <script src="../js/model-display.js"></script>
+    <script src="../js/mini-cube.js"></script>
     <script src="../js/exec-detail-modal.js"></script>
     <script src="js/admin-common.js"></script>
     <script src="js/executions.js"></script>

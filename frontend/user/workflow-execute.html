@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ワークフロー実行 - Prompt Provision Tool</title>
+    <title>ワークフロー実行 - NexMAGI</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
@@ -13,90 +13,136 @@
             <div class="page-title-container">
                 <h1 class="page-title">ワークフロー実行</h1>
             </div>
-            <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
-                <div id="desktop-nav" style="display: flex; gap: 10px;"></div>
-                <button class="btn btn-secondary" onclick="location.href='dashboard.html'" style="display: inline-flex; align-items: center; gap: 5px; padding: 10px 20px;">
-                    ← ワークフロー / スキル管理に戻る
-                </button>
+            <div class="nav" id="desktop-nav"></div>
+
+            <!-- ワークフロー名 + 説明（切り抜きカード + 戻るボタン） -->
+            <div class="card-cutout-wrapper" style="margin-bottom: 16px;">
+                <div class="card-cutout wf-title-bar" style="padding: 20px 24px;">
+                    <h2 id="workflow-name" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                        <span id="workflow-name-text">-</span>
+                        <span id="workflow-runtime-chip"></span>
+                    </h2>
+                    <p id="workflow-description">-</p>
+                </div>
+                <div class="card-cutout-circle" onclick="window.NexMAGIRuntime.navigate('dashboard.html')" title="ワークフロー / スキル管理に戻る">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+                </div>
             </div>
 
-            <div class="card">
-                <h2 id="workflow-name">-</h2>
-                <p id="workflow-description">-</p>
-            </div>
-
-            <div class="execute-layout">
-                <div class="execute-input-panel">
-                    <h3>入力</h3>
-                    <form id="workflow-execute-form">
-                        <div id="workflow-input-fields-container">
-                            <!-- ワークフロー/Skill用の入力フィールドを動的生成 -->
-                        </div>
-
-                        <div class="form-group" style="margin-top: 12px;">
-                            <label for="workflow-output-format">出力形式</label>
-                            <select id="workflow-output-format">
-                                <option value="txt">テキスト (TXT)</option>
-                                <option value="csv">CSV</option>
-                                <option value="pdf">PDF</option>
-                                <option value="docx">Word (DOCX)</option>
-                                <option value="md">Markdown (MD)</option>
-                            </select>
-                            <small style="color: rgba(255, 255, 255, 0.6);">各ステップの出力形式（現状はメタ情報としてのみ利用）</small>
-                        </div>
-
-                        <div style="margin-top: 8px; padding: 8px 12px; background: rgba(40, 167, 69, 0.08); border: 1px solid rgba(40, 167, 69, 0.2); border-radius: 6px; font-size: 11px; color: rgba(255,255,255,0.6);">
-                            ローカルワーカーで実行されます。ターミナルで <code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:3px; cursor:pointer;" onclick="navigator.clipboard.writeText('python -m local_worker daemon')" title="コピー">python -m local_worker daemon</code> を起動してください。
-                        </div>
-
-                        <button type="submit" class="btn btn-primary" id="workflow-execute-btn" style="display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 16px;">
-                            <span id="workflow-execute-btn-text">ワークフロー実行</span>
-                            <span id="workflow-execute-btn-spinner" style="display: none;">
-                                <div class="spinner" style="display: inline-block; width: 16px; height: 16px; border-width: 2px; vertical-align: middle;"></div>
-                            </span>
-                        </button>
-                    </form>
+            <!-- フローパイプライン + 入出力 -->
+            <div class="wf-flow-section">
+                <div id="workflow-flow-view" style="display:none;"></div>
+                <div id="workflow-result-container">
+                    <div class="wf-flow-placeholder" id="workflow-output-content">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                        <span>ワークフローを実行すると、ここにフローが表示されます</span>
+                    </div>
                 </div>
 
-                <div class="execute-output-panel">
-                    <h3>実行フロー</h3>
-                    <div style="flex:1; overflow-y:auto; min-height:0;">
-                        <!-- 実行フロー表示 -->
-                        <div id="workflow-flow-view" style="display:none;"></div>
+                <!-- 入力 + 出力（キューブの下・切り抜きカード） -->
+                <div class="wf-io-panels">
+                    <!-- 入力（切り抜き + 実行ボタン円） -->
+                    <div class="card-cutout-wrapper">
+                        <div class="card-cutout wf-io-panel wf-io-input">
+                            <div class="wf-io-panel-header">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                                入力
+                            </div>
+                            <form id="workflow-execute-form">
+                                <div id="workflow-input-fields-container"></div>
 
-                        <!-- ステップ結果 -->
-                        <div id="workflow-result-container">
-                            <div class="output-box" id="workflow-output-content">ワークフローを実行すると、各ステップの実行結果がここに表示されます</div>
+                                <div class="form-group" style="margin-top: 12px;">
+                                    <label for="workflow-output-format">出力形式</label>
+                                    <select id="workflow-output-format">
+                                        <option value="txt">テキスト (TXT)</option>
+                                        <option value="csv">CSV</option>
+                                        <option value="pdf">PDF</option>
+                                        <option value="docx">Word (DOCX)</option>
+                                        <option value="md">Markdown (MD)</option>
+                                    </select>
+                                </div>
+
+                                <button type="submit" id="workflow-execute-btn" style="display:none;">
+                                    <span id="workflow-execute-btn-text">実行</span>
+                                    <span id="workflow-execute-btn-spinner" style="display: none;">
+                                        <div class="wf-dots-loader"><span></span><span></span><span></span></div>
+                                    </span>
+                                </button>
+                            </form>
                         </div>
+                        <div class="card-cutout-circle" onclick="document.getElementById('workflow-execute-btn').click()" title="ワークフロー実行" id="workflow-execute-circle" style="font-size:12px; font-weight:700; color:#fff;">
+                            <span id="wf-exec-icon" style="color:#fff !important;">実行</span>
+                            <div id="wf-exec-spinner" style="display:none;"><div class="wf-dots-loader"><span></span><span></span><span></span></div></div>
+                        </div>
+                    </div>
+
+                    <!-- 出力（切り抜き + コピーボタン円） -->
+                    <div class="card-cutout-wrapper">
+                        <div class="card-cutout wf-io-panel wf-io-output">
+                            <div class="wf-io-panel-header">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                                出力
+                            </div>
+                            <div id="wf-leader-output" class="wf-io-output-content wf-flow-placeholder">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                                <span>実行すると結果がここに表示されます</span>
+                            </div>
+                        </div>
+                        <div class="card-cutout-circle" onclick="copyLeaderOutput()" title="出力をコピー">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        </div>
+                        <!-- Coordinator 評価メトリクス (完了後のみ表示) -->
+                        <div id="wf-eval-metrics" class="wf-eval-metrics" style="display:none;"></div>
                     </div>
                 </div>
             </div>
 
-            <!-- 実行履歴セクション -->
-            <div class="card" style="margin-top: 20px;">
-                <h3 style="margin-bottom: 20px;">実行履歴</h3>
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>実行日時</th>
-                            <th>ステップ</th>
-                            <th>モデル</th>
-                            <th>実行時間</th>
-                            <th>トークン数</th>
-                            <th>ステータス</th>
-                            <th>アクション</th>
-                        </tr>
-                    </thead>
-                    <tbody id="history-tbody">
-                        <tr>
-                            <td colspan="7" style="text-align: center;">読み込み中...</td>
-                        </tr>
-                    </tbody>
-                </table>
+            <!-- 下部: 実行履歴（コンパクト） -->
+            <div class="wf-history-section">
+                <details class="wf-history-details">
+                    <summary class="wf-history-summary">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        実行履歴
+                    </summary>
+                    <div class="wf-history-scroll">
+                        <table class="table wf-history-table">
+                            <thead>
+                                <tr>
+                                    <th>実行日時</th>
+                                    <th>ステップ</th>
+                                    <th>ランタイム</th>
+                                    <th>モデル</th>
+                                    <th>実行時間</th>
+                                    <th>トークン数</th>
+                                    <th>ステータス</th>
+                                    <th>アクション</th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-tbody">
+                                <tr>
+                                    <td colspan="8" style="text-align: center;">読み込み中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
             </div>
         </div>
     </div>
 
+    <script>
+        window.__NEXMAGI_RUNTIME = window.__NEXMAGI_RUNTIME || {
+            desktop: true,
+            apiBase: 'http://127.0.0.1:8000',
+            workerScriptPath: 'js/execution-worker.js'
+        };
+    </script>
+    <script src="../js/runtime-adapter.js"></script>
+    <script src="../js/runtime-badge.js"></script>
+    <script src="../js/runtime-resolver.js"></script>
+    <script src="../js/external-cli-approval.js"></script>
+    <script src="../js/swal-defaults.js"></script>
+    <script src="../js/mini-cube.js"></script>
     <script src="../js/model-display.js"></script>
     <script src="../js/exec-detail-modal.js"></script>
     <script src="js/user-common.js"></script>

@@ -14,6 +14,10 @@ from app.models import (
     Account, Skill, AccountSkill, Execution, APIConfig,
     Workflow, WorkflowGroup, WorkflowSkill, WorkflowExecution,
     DailyExecutionCount, WorkerAPIKey,
+    CoordinatorPlan, CoordinatorArtifact, CoordinatorEvent,
+    CoordinatorWorker, CoordinatorFollowUpTask, CoordinatorWorkspace,
+    CoordinatorAdapter, CoordinatorEvalRun,
+    ApprovalRequest,
 )
 
 # this is the Alembic Config object, which provides

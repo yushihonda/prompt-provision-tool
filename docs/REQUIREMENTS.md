@@ -1,6 +1,7 @@
-# Redis + ストリーミング + ローカルワーカー 要件定義書
+# NexMAGI — Redis + ストリーミング + ローカルワーカー 要件定義書
 
 > 注: 当初は Celery ベースでしたが、ローカルワーカー実行方式に移行済みです。
+> ⚠️ v3.0.0 以降は Tauri デスクトップアプリ専用。ブラウザ直接アクセスは廃止。
 
 ## 1. 概要
 
@@ -31,7 +32,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Client (Browser)                       │
+│                   Desktop Client (Tauri WebView)                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
 │  │ Main Thread   │  │ Web Worker   │  │ UI Updates   │     │
 │  │ (UI Control)  │◄─┤ (SSE Client) │─►│ (Real-time)  │     │
@@ -764,17 +765,17 @@ SSE_HEARTBEAT_INTERVAL=30
 
 #### 10.1.1 Celery Worker
 ```ini
-# deployment/prompt-tool-celery.service
+# deployment/nexmagi-celery.service
 [Unit]
-Description=Prompt Provision Tool Celery Worker
+Description=NexMAGI Celery Worker
 After=network.target redis.service
 
 [Service]
 Type=simple
-User=prompt-tool
-WorkingDirectory=/opt/prompt-provision-tool/backend
-Environment="PATH=/opt/prompt-provision-tool/venv/bin"
-ExecStart=/opt/prompt-provision-tool/venv/bin/celery -A app.celery_app worker --loglevel=info
+User=nexmagi
+WorkingDirectory=/opt/nexmagi/backend
+Environment="PATH=/opt/nexmagi/venv/bin"
+ExecStart=/opt/nexmagi/venv/bin/celery -A app.celery_app worker --loglevel=info
 Restart=always
 RestartSec=10
 
@@ -797,7 +798,7 @@ WantedBy=multi-user.target
 
 #### 10.3.1 Celery Worker監視
 - systemdのステータス監視
-- ログ監視（`journalctl -u prompt-tool-celery`）
+- ログ監視（`journalctl -u nexmagi-celery`）
 
 #### 10.3.2 Redis監視
 - `redis-cli ping`で接続確認

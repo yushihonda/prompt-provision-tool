@@ -1,0 +1,27 @@
+{
+  "name": "nexmagi-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "cli-provider:build": "node scripts/run_python_script.mjs scripts/build_cli_provider_binary.py",
+    "sidecar:build": "node scripts/run_python_script.mjs scripts/build_sidecar_binary.py",
+    "tauri:dev": "CI=true tauri dev",
+    "tauri:build": "node scripts/build_tauri_bundle.mjs",
+    "tauri:build:release": "node scripts/build_tauri_release_bundle.mjs",
+    "verify:packaged:health": "node scripts/run_packaged_verification.mjs health",
+    "verify:packaged:storage": "node scripts/run_packaged_verification.mjs storage",
+    "verify:packaged:storage:strict": "node scripts/run_packaged_verification.mjs storage --require-storage-round-trip",
+    "verify:packaged:skill": "node scripts/run_packaged_verification.mjs skill",
+    "verify:packaged:skill:optional": "node scripts/run_packaged_verification.mjs skill --optional",
+    "verify:packaged:workflow": "node scripts/run_packaged_verification.mjs workflow",
+    "verify:packaged:workflow:optional": "node scripts/run_packaged_verification.mjs workflow --optional",
+    "release:preflight": "node scripts/check_release_prereqs.mjs",
+    "release:check-artifacts": "node scripts/check_release_artifacts.mjs",
+    "release:prepare-artifacts": "node scripts/prepare_release_artifacts.mjs",
+    "release:manifest": "node scripts/build_updater_manifest.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1"
+  }
+}

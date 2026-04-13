@@ -114,5 +114,10 @@ daemon_stderr.log
 # ローカルワーカー設定（APIキー含む）
 .env.worker
 
+# Desktop build artifacts
+.build/
+desktop/.cargo-target/
+desktop/src-tauri/target/
+
 # 資料フォルダ（GitHub Actionsデプロイ時に除外）
 資料/

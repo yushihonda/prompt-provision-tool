@@ -3,28 +3,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>実行履歴 - Prompt Provision Tool</title>
+    <title>NexMAGI - 実行履歴</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body class="user-theme">
     <div class="container">
         <div class="content">
-            <h1 class="page-title">実行履歴</h1>
-            <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
-                <div id="desktop-nav" style="display: flex; gap: 10px;"></div>
-                <button class="btn btn-secondary" onclick="location.href='dashboard.html'" style="display: inline-flex; align-items: center; gap: 5px; padding: 10px 20px;">
-                    ← ワークフロー / スキル管理に戻る
-                </button>
+            <div class="nav" id="desktop-nav"></div>
+
+            <div class="page-title-container">
+                <h1 class="page-title">実行履歴</h1>
             </div>
 
-
-            <div class="card">
+            <div class="card" style="margin-top: 8px;">
                 <table class="table">
                     <thead>
                         <tr>
                             <th>実行日時</th>
                             <th>ワークフロー / スキル</th>
+                            <th>ランタイム</th>
                             <th>モデル</th>
                             <th>出力形式</th>
                             <th>実行時間</th>
@@ -35,16 +33,28 @@
                     </thead>
                     <tbody id="history-tbody">
                         <tr>
-                            <td colspan="8" style="text-align: center;">読み込み中...</td>
+                            <td colspan="9" style="text-align: center;">読み込み中...</td>
                         </tr>
                     </tbody>
                 </table>
             </div>
+
             <div id="pagination-container" class="pagination" style="display: none;"></div>
         </div>
     </div>
 
 
+    <script>
+        window.__NEXMAGI_RUNTIME = window.__NEXMAGI_RUNTIME || {
+            desktop: true,
+            apiBase: 'http://127.0.0.1:8000',
+            workerScriptPath: 'js/execution-worker.js'
+        };
+    </script>
+    <script src="../js/runtime-adapter.js"></script>
+    <script src="../js/runtime-badge.js"></script>
+    <script src="../js/swal-defaults.js"></script>
+    <script src="../js/mini-cube.js"></script>
     <script src="../js/model-display.js"></script>
     <script src="../js/exec-detail-modal.js"></script>
     <script src="js/user-common.js"></script>

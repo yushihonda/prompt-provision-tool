@@ -4,7 +4,7 @@ let skillId = null;
 let skillDetail = null;
 let executions = [];
 let allExecutions = []; // 全ての実行履歴
-let displayedHistoryCount = 3; // 表示する履歴の件数
+let displayedHistoryCount = 5; // 表示する履歴の件数
 
 async function loadPromptDetail() {
     skillId = getQueryParam('id');
@@ -19,7 +19,19 @@ async function loadPromptDetail() {
         // スキル情報を表示
         document.getElementById('skill-name').textContent = skillDetail.name;
         document.getElementById('skill-description').textContent = skillDetail.description || '説明なし';
-        document.getElementById('skill-model').innerHTML = formatModelDisplay(skillDetail.model_type, null, skillDetail);
+        // CLI モード: model_type の代わりに cli_model（またはランタイム名）を表示。
+        // ランタイムチップをプレフィックスし、API/CLI が一目でわかるようにする。
+        const skCtx = { skill: { config_json: skillDetail.config_json } };
+        const skResolved = window.runtimeResolver
+            ? window.runtimeResolver.resolveEffectiveRuntime(skCtx)
+            : { kind: 'api' };
+        const modelText = (skResolved.kind === 'cli' && window.runtimeResolver)
+            ? window.runtimeResolver.effectiveModelLabel(skCtx, '')
+            : formatModelDisplay(skillDetail.model_type, null, skillDetail);
+        const headerChip = window.runtimeResolver
+            ? window.runtimeResolver.renderResolvedRuntimeChip(skCtx)
+            : '';
+        document.getElementById('skill-model').innerHTML = `${headerChip ? headerChip + ' ' : ''}${modelText}`;
 
         // ファイル出力オプションの表示/非表示
         const fileOutputContainer = document.getElementById('file-output-container');
@@ -116,6 +128,59 @@ async function restoreActiveExecution() {
     }
 }
 
+// 出力パネル下に「生成ファイル」を描画。CLI ステップのみ意味があり、
+// extra_metadata.changed_files_preview が空ならパネル自体を出さない。
+function _renderSkillGeneratedFilesPanel(execution) {
+    const oldPanel = document.getElementById('skill-generated-files-panel');
+    if (oldPanel) oldPanel.remove();
+
+    const meta = execution && execution.extra_metadata;
+    if (!meta) return;
+    const previews = Array.isArray(meta.changed_files_preview) ? meta.changed_files_preview : [];
+    if (previews.length === 0) return;
+    const wsId = meta.workspace_id || '';
+
+    const outputPanel = document.querySelector('.wf-io-output');
+    if (!outputPanel) return;
+    const wrapper = outputPanel.closest('.card-cutout-wrapper') || outputPanel.parentElement;
+    if (!wrapper || !wrapper.parentElement) return;
+
+    function fmtSize(bytes) {
+        if (bytes == null) return '-';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    }
+    const escFn = (window.execDetailModal && window.execDetailModal.escapeHtml) || ((s) => s);
+
+    const panel = document.createElement('div');
+    panel.id = 'skill-generated-files-panel';
+    panel.style.cssText = 'margin-top:14px; border:1px solid rgba(0,0,0,0.06); border-radius:8px; overflow:hidden; background:#fff;';
+    let inner = `<div style="padding:10px 14px; background:rgba(14,165,233,0.08); border-bottom:1px solid rgba(0,0,0,0.06); font-size:12px; font-weight:700; color:var(--content-text);">生成ファイル <span style="color:#6b7280; font-weight:500;">(${previews.length})</span></div>`;
+    inner += '<div style="padding:8px 14px;">';
+    for (const f of previews) {
+        const sizeStr = fmtSize(f.size);
+        const truncatedNote = f.truncated ? ' <span style="color:#f59e0b;">(先頭4KBのみ)</span>' : '';
+        inner += `<details style="margin-bottom:6px;">`;
+        inner += `<summary style="cursor:pointer; padding:6px 8px; background:rgba(0,0,0,0.03); border-radius:4px; font-size:12px; font-family:monospace; display:flex; justify-content:space-between; align-items:center; gap:8px;">`;
+        inner += `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;">${escFn(f.path)}</span>`;
+        inner += `<span style="font-size:10px; color:#6b7280; flex-shrink:0;">${sizeStr}${truncatedNote}</span>`;
+        if (wsId && !f.is_binary) {
+            inner += `<button type="button" onclick="event.preventDefault(); event.stopPropagation(); execDetailModal._openFullFile('${escFn(wsId)}', '${escFn(f.path)}')" style="font-size:10px; padding:2px 8px; background:var(--accent, #7c3aed); color:#fff; border:none; border-radius:4px; cursor:pointer; flex-shrink:0;">全文</button>`;
+        }
+        inner += `</summary>`;
+        if (f.is_binary) {
+            inner += `<div style="padding:8px; color:#6b7280; font-size:11px; font-style:italic;">(バイナリファイル — プレビュー不可)</div>`;
+        } else {
+            inner += `<pre style="margin:4px 0 0 0; padding:10px; background:rgba(0,0,0,0.04); border-radius:4px; font-size:11px; line-height:1.5; overflow-x:auto; max-height:300px;"><code>${escFn(f.preview)}</code></pre>`;
+        }
+        inner += `</details>`;
+    }
+    inner += '</div>';
+    panel.innerHTML = inner;
+    wrapper.parentElement.insertBefore(panel, wrapper.nextSibling);
+}
+
 function displayExecutionResult(execution, executionIdForDownload = null, outputFormatForDownload = null) {
     // 結果パネルを表示
     showOutputPanel();
@@ -123,18 +188,14 @@ function displayExecutionResult(execution, executionIdForDownload = null, output
     // 結果を表示
     updateOutputContent(execution.output_data || '');
 
-    // スクロールを確実に機能させるため、スタイルを再適用
-    const outputContent = document.getElementById('output-content');
-    if (outputContent) {
-        outputContent.style.overflowY = 'auto';
-        outputContent.style.overflowX = 'hidden';
-        outputContent.style.maxHeight = '100%';
-    }
-
-    // モデル表示を更新
+    // モデル表示を更新（runtime バッジ + モデル名）
     const statModel = document.getElementById('stat-model');
     if (statModel) {
-        statModel.innerHTML = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const baseHtml = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const statBadge = (window.runtimeBadge && execution.extra_metadata)
+            ? window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata)
+            : '';
+        statModel.innerHTML = `${statBadge ? statBadge + ' ' : ''}${baseHtml}`;
     }
 
     const statTime = document.getElementById('stat-time');
@@ -144,17 +205,18 @@ function displayExecutionResult(execution, executionIdForDownload = null, output
 
     const statTokens = document.getElementById('stat-tokens');
     if (statTokens) {
-        statTokens.textContent = execution.tokens_used || '-';
+        statTokens.textContent = formatCompact(execution.tokens_used);
     }
 
-    // コピーボタンを有効化
-    const copyBtn = document.getElementById('copy-output-btn');
-    if (copyBtn) {
-        copyBtn.style.opacity = '1';
-    }
+    // 統計セクションを表示
+    const statsEl = document.getElementById('skill-exec-stats');
+    if (statsEl) statsEl.style.display = '';
+
+    // 生成ファイル一覧を出力パネルの下にレンダー (CLI スキルのみ)
+    _renderSkillGeneratedFilesPanel(execution);
 
     // 結果パネルにスクロール
-    const outputPanel = document.querySelector('.execute-output-panel');
+    const outputPanel = document.querySelector('.wf-io-output');
     if (outputPanel) {
         outputPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
@@ -200,9 +262,10 @@ function displayExecutionResult(execution, executionIdForDownload = null, output
         downloadLink.onclick = async (e) => {
             e.preventDefault();
             try {
-                const response = await fetch(`/api/execute/download/${executionIdForDownload}?output_format=${finalOutputFormat}`, {
+                const token = await window.NexMAGIRuntime.getAuthToken();
+                const response = await window.NexMAGIRuntime.fetchWithRuntime(`/api/execute/download/${executionIdForDownload}?output_format=${finalOutputFormat}`, {
                     headers: {
-                        'Authorization': `Bearer ${sessionStorage.getItem('token')}`
+                        'Authorization': `Bearer ${token}`
                     }
                 });
                 if (!response.ok) throw new Error('Download failed');
@@ -255,10 +318,194 @@ let executionWorker = null;
 let currentExecutionId = null;
 let accumulatedOutput = '';
 let currentOutputFormat = 'txt';  // 現在の実行の出力形式を保持
+let desktopExecutionRun = null;
 
 // escapeHtml, formatJSON, getQueryParam は user-common.js で定義済み
 
 // formatModelDisplay は ../js/model-display.js で共通定義
+
+async function createDesktopExecutionRun(executionId, skillName) {
+    if (!window.NexMAGIRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+
+    const correlationId = `skill-execution-${executionId}`;
+    const nodeId = `skill-${skillId}-execution-${executionId}`;
+    const run = await window.NexMAGIRuntime.createWorkflowRun(`Skill Execution: ${skillName}`);
+    const recorder = window.NexMAGIRuntime.createDesktopEventRecorder({
+        runId: run.id,
+        correlationId,
+    });
+    const commonPayload = {
+        execution_id: executionId,
+        skill_id: parseInt(skillId, 10),
+        skill_name: skillName,
+    };
+    const uiIntent = await recorder.append('ui.single_skill_execute_clicked', {
+        attemptNo: 0,
+        originLayer: 'ui',
+        idempotencyKey: `run:${run.id}:ui:skill_execute_clicked`,
+        payloadJson: commonPayload,
+    });
+    const workflowCreated = await recorder.append('workflow_run_created', {
+        attemptNo: 0,
+        causationId: uiIntent.eventId,
+        triggerEventId: uiIntent.eventId,
+        originLayer: 'engine',
+        idempotencyKey: `run:${run.id}:workflow_run_created`,
+        payloadJson: commonPayload,
+    });
+    const nodeStarted = await recorder.append('node_execution_started', {
+        nodeId,
+        attemptNo: 1,
+        causationId: workflowCreated.eventId,
+        triggerEventId: workflowCreated.eventId,
+        originLayer: 'engine',
+        idempotencyKey: `run:${run.id}:node:${nodeId}:started`,
+        payloadJson: commonPayload,
+    });
+
+    desktopExecutionRun = {
+        runId: run.id,
+        correlationId,
+        nodeId,
+        executionId,
+        skillName,
+        recorder,
+        rootEventId: recorder.getState().rootEventId,
+        uiIntentEventId: uiIntent.eventId,
+        workflowCreatedEventId: workflowCreated.eventId,
+        nodeStartedEventId: nodeStarted.eventId,
+        providerStartedEventId: null,
+        providerFinishedEventId: null,
+        isFinalized: false,
+    };
+}
+
+async function ensureDesktopExecutionProviderStarted(details = {}) {
+    if (!desktopExecutionRun || !window.NexMAGIRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+    if (!window.NexMAGIRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
+        return;
+    }
+
+    if (desktopExecutionRun.providerStartedEventId) {
+        return;
+    }
+
+    const providerStarted = await desktopExecutionRun.recorder.append('provider_request_started', {
+        nodeId: desktopExecutionRun.nodeId,
+        attemptNo: 1,
+        causationId: desktopExecutionRun.nodeStartedEventId,
+        triggerEventId: desktopExecutionRun.nodeStartedEventId,
+        originLayer: 'provider',
+        idempotencyKey: `run:${desktopExecutionRun.runId}:node:${desktopExecutionRun.nodeId}:provider:start:1`,
+        payloadJson: {
+            execution_id: desktopExecutionRun.executionId,
+            skill_name: desktopExecutionRun.skillName,
+            observation_source: window.NexMAGIRuntime.getObservationSource('provider', 'http-api'),
+            boundary_kind: details.boundaryKind || 'sse_stream',
+            api_base: window.NexMAGIRuntime.getApiBase(),
+        }
+    });
+    desktopExecutionRun.providerStartedEventId = providerStarted.eventId;
+}
+
+async function finishDesktopExecutionRun(status, errorMessage = null, details = {}) {
+    if (!desktopExecutionRun || !window.NexMAGIRuntime.canRecordDesktopEvents()) {
+        return;
+    }
+
+    if (desktopExecutionRun.isFinalized) {
+        return;
+    }
+
+    desktopExecutionRun.isFinalized = true;
+
+    try {
+        let nodeFinishedCausationId = desktopExecutionRun.nodeStartedEventId;
+
+        if (window.NexMAGIRuntime.shouldRecordProxyLifecycleEvents('http-api')) {
+            await ensureDesktopExecutionProviderStarted({
+                boundaryKind: details.boundaryKind || 'completion_fallback',
+            });
+
+            const providerFinished = await desktopExecutionRun.recorder.append('provider_request_finished', {
+                nodeId: desktopExecutionRun.nodeId,
+                attemptNo: 1,
+                causationId: desktopExecutionRun.providerStartedEventId || desktopExecutionRun.nodeStartedEventId,
+                triggerEventId: desktopExecutionRun.providerStartedEventId || desktopExecutionRun.nodeStartedEventId,
+                originLayer: 'provider',
+                idempotencyKey: `run:${desktopExecutionRun.runId}:node:${desktopExecutionRun.nodeId}:provider:finish:1`,
+                payloadJson: {
+                    execution_id: desktopExecutionRun.executionId,
+                    status,
+                    error_message: errorMessage,
+                    error_code: details.errorCode || null,
+                    observation_source: window.NexMAGIRuntime.getObservationSource('provider', 'http-api'),
+                    boundary_kind: details.boundaryKind || 'sse_stream',
+                    worker_stage: details.workerStage || null,
+                }
+            });
+            desktopExecutionRun.providerFinishedEventId = providerFinished.eventId;
+
+            const retryDecision = window.NexMAGIRuntime.classifyRetryDecision({
+                status,
+                errorCode: details.errorCode || null,
+            });
+            const retryEvent = await desktopExecutionRun.recorder.append('retry_decision_made', {
+                nodeId: desktopExecutionRun.nodeId,
+                attemptNo: 1,
+                causationId: providerFinished.eventId,
+                triggerEventId: providerFinished.eventId,
+                originLayer: 'retry',
+                idempotencyKey: `run:${desktopExecutionRun.runId}:node:${desktopExecutionRun.nodeId}:retry:1`,
+                payloadJson: {
+                    execution_id: desktopExecutionRun.executionId,
+                    status,
+                    error_message: errorMessage,
+                    error_code: details.errorCode || null,
+                    observation_source: window.NexMAGIRuntime.getObservationSource('retry', 'http-api'),
+                    ...retryDecision,
+                }
+            });
+            nodeFinishedCausationId = retryEvent.eventId;
+        }
+
+        const nodeFinished = await desktopExecutionRun.recorder.append('node_execution_finished', {
+            nodeId: desktopExecutionRun.nodeId,
+            attemptNo: 1,
+            causationId: nodeFinishedCausationId,
+            triggerEventId: nodeFinishedCausationId,
+            originLayer: 'engine',
+            idempotencyKey: `run:${desktopExecutionRun.runId}:node:${desktopExecutionRun.nodeId}:finished`,
+            payloadJson: {
+                execution_id: desktopExecutionRun.executionId,
+                status,
+                error_message: errorMessage,
+            }
+        });
+        await desktopExecutionRun.recorder.append('workflow_run_finished', {
+            nodeId: null,
+            attemptNo: 1,
+            causationId: nodeFinished.eventId,
+            triggerEventId: nodeFinished.eventId,
+            originLayer: 'engine',
+            idempotencyKey: `run:${desktopExecutionRun.runId}:workflow_run_finished`,
+            payloadJson: {
+                execution_id: desktopExecutionRun.executionId,
+                status,
+                error_message: errorMessage,
+            }
+        });
+        await window.NexMAGIRuntime.updateWorkflowRunStatus(desktopExecutionRun.runId, status);
+    } catch (error) {
+        console.error('Failed to finish desktop execution run:', error);
+    } finally {
+        desktopExecutionRun = null;
+    }
+}
 
 // 出力コンテンツを更新する関数
 function updateOutputContent(text) {
@@ -268,22 +515,17 @@ function updateOutputContent(text) {
     }
 
     const escapedOutput = escapeHtml(text);
-    outputContent.innerHTML = `<div style="white-space: pre-wrap; word-wrap: break-word; color: rgba(255, 255, 255, 0.9); padding: 20px; background-color: rgba(0, 0, 0, 0.2); border-radius: 4px; min-height: 100px;">${escapedOutput}</div>`;
+    outputContent.innerHTML = `<div style="white-space: pre-wrap; word-wrap: break-word; color: var(--content-text); font-size: 13px; line-height: 1.7;">${escapedOutput}</div>`;
 
     // スクロール位置を調整
     if (outputContent.scrollHeight > outputContent.clientHeight) {
         outputContent.scrollTop = outputContent.scrollHeight;
     }
-
-    const outputBox = outputContent.closest('.output-box');
-    if (outputBox && outputBox.scrollHeight > outputBox.clientHeight) {
-        outputBox.scrollTop = outputBox.scrollHeight;
-    }
 }
 
 // 出力パネルを表示する関数
 function showOutputPanel() {
-    const outputPanel = document.querySelector('.execute-output-panel');
+    const outputPanel = document.querySelector('.wf-io-output');
     if (outputPanel) {
         outputPanel.style.display = 'flex';
         outputPanel.style.visibility = 'visible';
@@ -294,7 +536,7 @@ function showOutputPanel() {
 function showProcessingMessage() {
     const outputContent = document.getElementById('output-content');
     if (outputContent) {
-        outputContent.innerHTML = `<div style="text-align: center; padding: 20px; color: rgba(255, 255, 255, 0.7);"><p>AIが応答を生成しています...</p></div>`;
+        outputContent.innerHTML = `<div style="text-align: center; padding: 20px; color: var(--content-text-muted);"><p>AIが応答を生成しています...</p></div>`;
     }
 }
 
@@ -346,18 +588,40 @@ function createWorkerMessageHandler(executionId) {
                 PersistentStatusBar.markAsCompleted('error');
             }
             const errorMsg = typeof data === 'string' ? data : (data?.message || data?.text || '実行エラーが発生しました');
-            handleStreamingError(executionId, errorMsg);
+            handleStreamingError(executionId, errorMsg, 'error', {
+                errorCode: data?.code || null,
+                workerStage: data?.stage || null,
+                boundaryKind: 'sse_stream',
+            });
+        } else if (type === 'runtime_error') {
+            const errorMsg = data?.message || 'runtime error';
+            console.error('Worker runtime error:', data);
+            handleStreamingError(executionId, errorMsg, 'error', {
+                errorCode: data?.code || null,
+                workerStage: data?.stage || null,
+                boundaryKind: 'sse_stream',
+            });
+        } else if (type === 'diagnostic') {
+            console.debug('Worker diagnostic:', data);
         } else if (type === 'cancel') {
             if (PersistentStatusBar.executionId === executionId) {
                 PersistentStatusBar.markAsCompleted('cancelled');
             }
-            handleStreamingError(executionId, '実行がキャンセルされました', 'cancelled');
+            handleStreamingError(executionId, '実行がキャンセルされました', 'cancelled', {
+                errorCode: 'cancelled_by_user',
+                workerStage: data?.stage || null,
+                boundaryKind: 'sse_stream',
+            });
         }
     };
 }
 
 // ストリーミング接続を開始する関数
 function startStreaming(executionId, outputFormat = 'txt') {
+    // デスクトップローカル実行ではSSEストリーミング不要
+    if (window.NexMAGIRuntime?.shouldUseDesktopLocalExecution?.()) {
+        return;
+    }
     // 以前のストリーミング接続を確実に終了
     if (executionWorker) {
         stopStreaming();
@@ -369,22 +633,41 @@ function startStreaming(executionId, outputFormat = 'txt') {
     currentOutputFormat = outputFormat;  // 出力形式を保持
 
     // Web Workerを作成
-    executionWorker = new Worker('/user/js/execution-worker.js');
+    executionWorker = window.NexMAGIRuntime.createWorker();
+    void ensureDesktopExecutionProviderStarted({
+        boundaryKind: 'sse_stream',
+    }).catch((error) => {
+        console.error('Failed to append desktop provider start event:', error);
+    });
 
     // メッセージ受信ハンドラを設定
     executionWorker.onmessage = createWorkerMessageHandler(executionId);
 
     executionWorker.onerror = (error) => {
-        handleStreamingError(executionId, 'ストリーミング接続エラーが発生しました');
+        handleStreamingError(executionId, 'ストリーミング接続エラーが発生しました', 'error', {
+            errorCode: 'worker_error',
+            workerStage: 'worker.onerror',
+            boundaryKind: 'sse_stream',
+        });
     };
 
     // Workerを開始
-    const token = sessionStorage.getItem('token');
-    executionWorker.postMessage({
-        type: 'start',
-        executionId: executionId,
-        token: token
-    });
+    void window.NexMAGIRuntime.getAuthToken()
+        .then((token) => {
+            executionWorker?.postMessage({
+                type: 'start',
+                executionId: executionId,
+                token,
+                apiBase: window.NexMAGIRuntime.getApiBase()
+            });
+        })
+        .catch((error) => {
+            handleStreamingError(executionId, `認証情報の取得に失敗しました: ${error.message}`, 'error', {
+                errorCode: 'auth_session_missing',
+                workerStage: 'startStreaming.auth',
+                boundaryKind: 'sse_stream',
+            });
+        });
 }
 
 // 推論モデルかどうかを判定する関数
@@ -409,6 +692,10 @@ async function waitForReasoningModelCompletion(executionId, outputFormat) {
             const execution = await apiRequest(`/api/user/executions/${executionId}`);
 
             if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+                await finishDesktopExecutionRun(execution.status, execution.error_message || null, {
+                    boundaryKind: 'polling_completion',
+                    workerStage: 'polling',
+                });
                 // 完了したので結果を表示
                 restoreInputData(execution);
                 setExecutionButtonState(false);
@@ -458,6 +745,11 @@ async function waitForReasoningModelCompletion(executionId, outputFormat) {
     }
 
     // タイムアウト
+    await finishDesktopExecutionRun('error', 'reasoning model polling timeout', {
+        errorCode: 'polling_timeout',
+        boundaryKind: 'polling_completion',
+        workerStage: 'polling',
+    });
     setExecutionButtonState(false);
     await Swal.fire({
         title: 'タイムアウト',
@@ -544,6 +836,10 @@ async function handleStreamingComplete(executionId) {
 
     try {
         const execution = await apiRequest(`/api/user/executions/${executionId}`);
+        await finishDesktopExecutionRun(execution.status || 'success', execution.error_message || null, {
+            boundaryKind: 'sse_stream',
+            workerStage: 'complete',
+        });
 
         restoreInputData(execution);
         setExecutionButtonState(false);
@@ -575,7 +871,7 @@ async function handleStreamingComplete(executionId) {
     }
 }
 
-async function handleStreamingError(executionId, errorMessage, status = 'error') {
+async function handleStreamingError(executionId, errorMessage, status = 'error', details = {}) {
     stopStreaming();
     setExecutionButtonState(false);
 
@@ -584,12 +880,14 @@ async function handleStreamingError(executionId, errorMessage, status = 'error')
         const execution = await apiRequest(`/api/user/executions/${executionId}`);
         const finalStatus = execution.status || status;
         const finalErrorMessage = execution.error_message || errorMessage || 'エラーが発生しました';
+        await finishDesktopExecutionRun(finalStatus, finalErrorMessage, details);
 
         displayExecutionError({
             status: finalStatus,
             error_message: finalErrorMessage
         });
     } catch (err) {
+        await finishDesktopExecutionRun(status, errorMessage || 'エラーが発生しました', details);
         displayExecutionError({
             status: status,
             error_message: errorMessage || 'エラーが発生しました'
@@ -605,7 +903,7 @@ async function loadHistory() {
         const responseExecutions = response.items || response;
         // 現在のスキルIDでフィルタリング
         allExecutions = responseExecutions.filter(exec => exec.skill_id === parseInt(skillId));
-        displayedHistoryCount = 3; // リセット
+        displayedHistoryCount = 5; // リセット
         renderHistory();
     } catch (error) {
         showAlert('実行履歴の読み込みに失敗しました', 'error');
@@ -613,71 +911,52 @@ async function loadHistory() {
 }
 
 function renderHistory() {
-    const container = document.getElementById('history-container');
+    const tbody = document.getElementById('history-tbody');
+    if (!tbody) return;
 
     if (allExecutions.length === 0) {
-        container.innerHTML = '<p style="text-align: center; color: rgba(255, 255, 255, 0.6); padding: 20px;">このスキルの実行履歴がありません</p>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--content-text-muted);">このスキルの実行履歴がありません</td></tr>';
         return;
     }
 
-    // 表示する履歴を取得（最新から順に）
-    const displayedExecutions = allExecutions.slice(0, displayedHistoryCount);
+    const displayed = allExecutions.slice(0, displayedHistoryCount);
     const hasMore = allExecutions.length > displayedHistoryCount;
 
-    container.innerHTML = `
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>実行日時</th>
-                    <th>モデル</th>
-                    <th>出力形式</th>
-                    <th>実行時間</th>
-                    <th>トークン数</th>
-                    <th>ステータス</th>
-                    <th>アクション</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${displayedExecutions.map(execution => {
-                    const modelDisplay = formatModelDisplay(execution.model_used, execution, skillDetail);
+    tbody.innerHTML = displayed.map(execution => {
+        const modelDisplay = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const runtimeBadge = (window.runtimeBadge && execution.extra_metadata)
+            ? window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata)
+            : '';
+        const statusColor = execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'var(--content-text-muted)';
 
-                    return `
-                    <tr>
-                        <td>${formatDate(execution.executed_at)}</td>
-                        <td>${modelDisplay}</td>
-                        <td>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</td>
-                        <td>${execution.execution_time}ms</td>
-                        <td>${execution.tokens_used || '-'}</td>
-                        <td>
-                            <span style="color: ${execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'rgba(255, 255, 255, 0.6)'}">
-                                ${execution.status}
-                            </span>
-                        </td>
-                        <td>
-                            <div class="actions">
-                                <button onclick="editExecution(${execution.id})" title="編集" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
-                                    <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #28a745; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m11.239 15.533c-1.045 3.004-1.238 3.451-1.238 3.84 0 .441.385.627.627.627.272 0 1.108-.301 3.829-1.249zm.888-.888 3.22 3.22 6.408-6.401c.163-.163.245-.376.245-.591 0-.213-.082-.427-.245-.591-.58-.579-1.458-1.457-2.039-2.036-.163-.163-.377-.245-.591-.245-.213 0-.428.082-.592.245zm-3.127-.895c0-.402-.356-.75-.75-.75-2.561 0-2.939 0-5.5 0-.394 0-.75.348-.75.75s.356.75.75.75h5.5c.394 0 .75-.348.75-.75zm5-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75z" fill-rule="nonzero"/></svg>
-                                </button>
-                                <button onclick="showHistoryDetail(${execution.id})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;">
-                                    <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 24px; height: 24px; fill: #17a2b8; transition: fill 0.2s ease, transform 0.2s ease;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
-                                </button>
-                            </div>
-                        </td>
-                    </tr>
-                    `;
-                }).join('')}
-            </tbody>
-        </table>
-        ${hasMore ? `
-            <div style="text-align: center; margin-top: 15px;">
-                <button class="btn btn-secondary" onclick="loadMoreHistory()">もっと見る</button>
-            </div>
-        ` : ''}
-    `;
+        return `
+        <tr>
+            <td>${formatDate(execution.executed_at)}</td>
+            <td>${runtimeBadge ? runtimeBadge + ' ' : ''}${modelDisplay}</td>
+            <td>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</td>
+            <td>${execution.execution_time}ms</td>
+            <td>${formatCompact(execution.tokens_used)}</td>
+            <td><span style="color: ${statusColor}">${execution.status}</span></td>
+            <td style="white-space: nowrap;">
+                <button onclick="editExecution(${execution.id})" title="入力データを復元" class="icon-btn" style="display: inline-flex; align-items: center; justify-content: center; padding: 6px; background: none; border: none; cursor: pointer;">
+                    <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 20px; height: 20px; fill: #28a745;"><path d="m11.239 15.533c-1.045 3.004-1.238 3.451-1.238 3.84 0 .441.385.627.627.627.272 0 1.108-.301 3.829-1.249zm.888-.888 3.22 3.22 6.408-6.401c.163-.163.245-.376.245-.591 0-.213-.082-.427-.245-.591-.58-.579-1.458-1.457-2.039-2.036-.163-.163-.377-.245-.591-.245-.213 0-.428.082-.592.245zm-3.127-.895c0-.402-.356-.75-.75-.75-2.561 0-2.939 0-5.5 0-.394 0-.75.348-.75.75s.356.75.75.75h5.5c.394 0 .75-.348.75-.75zm5-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75zm0-3c0-.402-.356-.75-.75-.75-2.561 0-7.939 0-10.5 0-.394 0-.75.348-.75.75s.356.75.75.75h10.5c.394 0 .75-.348.75-.75z" fill-rule="nonzero"/></svg>
+                </button>
+                <button onclick="showHistoryDetail(${execution.id})" title="詳細" class="icon-btn" style="display: inline-flex; align-items: center; justify-content: center; padding: 6px; background: none; border: none; cursor: pointer;">
+                    <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 20px; height: 20px; fill: #17a2b8;"><path d="m15 17.75c0-.414-.336-.75-.75-.75h-11.5c-.414 0-.75.336-.75.75s.336.75.75.75h11.5c.414 0 .75-.336.75-.75zm7-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75zm0-4c0-.414-.336-.75-.75-.75h-18.5c-.414 0-.75.336-.75.75s.336.75.75.75h18.5c.414 0 .75-.336.75-.75z" fill-rule="nonzero"/></svg>
+                </button>
+            </td>
+        </tr>
+        `;
+    }).join('') + (hasMore ? `
+    <tr>
+        <td colspan="7" style="text-align: center; padding: 12px;">
+            <button class="btn btn-secondary" onclick="loadMoreHistory()" style="font-size:11px; padding:6px 16px;">もっと見る</button>
+        </td>
+    </tr>` : '');
 }
 
 function loadMoreHistory() {
-    displayedHistoryCount += 3;
+    displayedHistoryCount += 5;
     renderHistory();
 }
 
@@ -704,7 +983,11 @@ async function showHistoryDetail(id) {
             }
         }
 
-        const modelHtml = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const baseModelHtml = formatModelDisplay(execution.model_used, execution, skillDetail);
+        const histRuntimeBadge = (window.runtimeBadge && execution.extra_metadata)
+            ? window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata)
+            : '';
+        const modelHtml = `${histRuntimeBadge ? histRuntimeBadge + ' ' : ''}${baseModelHtml}`;
         const { escapeHtml, buildHtml } = execDetailModal;
 
         let afterSummaryHtml = '';
@@ -853,22 +1136,18 @@ async function restoreExecutionData(executionId) {
 
 function setExecutionButtonState(isExecuting) {
     const executeBtn = document.getElementById('execute-btn');
-    const executeBtnText = document.getElementById('execute-btn-text');
-    const executeBtnSpinner = document.getElementById('execute-btn-spinner');
     const form = document.getElementById('execute-form');
+    const circleIcon = document.getElementById('skill-exec-icon');
+    const circleSpinner = document.getElementById('skill-exec-spinner');
 
     if (executeBtn) {
         executeBtn.disabled = isExecuting;
     }
 
     if (isExecuting) {
-        // 実行中状態
-        if (executeBtnText) {
-            executeBtnText.textContent = '実行中...';
-        }
-        if (executeBtnSpinner) {
-            executeBtnSpinner.style.display = 'inline';
-        }
+        // 実行中状態 — circle button をスピナーに
+        if (circleIcon) circleIcon.style.display = 'none';
+        if (circleSpinner) circleSpinner.style.display = '';
         // 全ての入力フィールドを無効化
         if (form) {
             const inputFields = form.querySelectorAll('input, textarea, select, button');
@@ -880,12 +1159,8 @@ function setExecutionButtonState(isExecuting) {
         }
     } else {
         // 通常状態
-        if (executeBtnText) {
-            executeBtnText.textContent = '実行';
-        }
-        if (executeBtnSpinner) {
-            executeBtnSpinner.style.display = 'none';
-        }
+        if (circleIcon) circleIcon.style.display = '';
+        if (circleSpinner) circleSpinner.style.display = 'none';
         // 全ての入力フィールドを再有効化
         if (form) {
             const inputFields = form.querySelectorAll('input, textarea, select, button');
@@ -906,7 +1181,7 @@ async function editExecution(id) {
         restoreInputData(execution);
 
         // 入力パネルにスクロール
-        document.querySelector('.execute-input-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        document.querySelector('.wf-io-input').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
         showAlert('入力データを読み込みました。必要に応じて編集してから実行ボタンを押してください。', 'success');
     } catch (error) {
@@ -975,8 +1250,8 @@ function generateInputFields(inputSchema) {
             const langAttr = language ? `data-language="${language}"` : '';
             return `
                 <div class="form-group">
-                    <label for="${fieldName}">${label}${language ? ` <span style="color: rgba(255, 255, 255, 0.5); font-size: 0.9em;">(${language})</span>` : ''}</label>
-                    ${description ? `<small style="color: rgba(255, 255, 255, 0.6);">${description}</small>` : ''}
+                    <label for="${fieldName}">${label}${language ? ` <span style="color: var(--content-text-muted); font-size: 0.9em;">(${language})</span>` : ''}</label>
+                    ${description ? `<small style="color: var(--content-text-secondary);">${description}</small>` : ''}
                     <div style="position: relative;">
                         <textarea
                             id="${fieldName}"
@@ -994,11 +1269,11 @@ function generateInputFields(inputSchema) {
                                 white-space: pre;
                                 overflow-wrap: normal;
                                 overflow-x: auto;
-                                background-color: rgba(0, 0, 0, 0.3);
-                                border: 1px solid rgba(255, 255, 255, 0.2);
+                                background-color: #f8f9fa;
+                                border: 1px solid rgba(0, 0, 0, 0.1);
                                 border-radius: 4px;
                                 padding: 12px;
-                                color: rgba(255, 255, 255, 0.9);
+                                color: var(--content-text);
                                 resize: vertical;
                             "
                         ></textarea>
@@ -1011,7 +1286,7 @@ function generateInputFields(inputSchema) {
             return `
                 <div class="form-group">
                     <label for="${fieldName}">${label}</label>
-                    ${description ? `<small style="color: rgba(255, 255, 255, 0.6);">${description}</small>` : ''}
+                    ${description ? `<small style="color: var(--content-text-secondary);">${description}</small>` : ''}
                     <textarea id="${fieldName}" name="${fieldName}" rows="10" ${required} ${placeholderAttr}></textarea>
                 </div>
             `;
@@ -1019,7 +1294,7 @@ function generateInputFields(inputSchema) {
             return `
                 <div class="form-group">
                     <label for="${fieldName}">${label}</label>
-                    ${description ? `<small style="color: rgba(255, 255, 255, 0.6);">${description}</small>` : ''}
+                    ${description ? `<small style="color: var(--content-text-secondary);">${description}</small>` : ''}
                     <textarea id="${fieldName}" name="${fieldName}" rows="5" ${required} ${placeholderAttr}></textarea>
                 </div>
             `;
@@ -1027,7 +1302,7 @@ function generateInputFields(inputSchema) {
             return `
                 <div class="form-group">
                     <label for="${fieldName}">${label}</label>
-                    ${description ? `<small style="color: rgba(255, 255, 255, 0.6);">${description}</small>` : ''}
+                    ${description ? `<small style="color: var(--content-text-secondary);">${description}</small>` : ''}
                     <input type="number" id="${fieldName}" name="${fieldName}" ${required} ${placeholderAttr}>
                 </div>
             `;
@@ -1035,7 +1310,7 @@ function generateInputFields(inputSchema) {
             return `
                 <div class="form-group">
                     <label for="${fieldName}">${label}</label>
-                    ${description ? `<small style="color: rgba(255, 255, 255, 0.6);">${description}</small>` : ''}
+                    ${description ? `<small style="color: var(--content-text-secondary);">${description}</small>` : ''}
                     <input type="text" id="${fieldName}" name="${fieldName}" ${required} ${placeholderAttr}>
                 </div>
             `;
@@ -1095,12 +1370,59 @@ function generateInputFields(inputSchema) {
     }, 50);
 }
 
+async function executeWithDesktopLocalEngine({ skillId, inputData, outputFormat }) {
+    const token = await window.NexMAGIRuntime.getAuthToken();
+    if (!token) {
+        throw new Error('ログイン情報が見つかりません');
+    }
+
+    const result = await window.NexMAGIRuntime.runLocalSkillExecution({
+        authToken: token,
+        skillId: parseInt(skillId),
+        skillName: document.getElementById('skill-name')?.textContent || `Skill ${skillId}`,
+        inputData,
+        outputFormat,
+        enableDeepThink: skillDetail?.enable_deep_think ?? undefined,
+    });
+    window.__NEXMAGI_LAST_LOCAL_SKILL_RESULT = result;
+    console.info('[DesktopLocalSkillResult]', {
+        configuredEngineMode: result.configuredEngineMode,
+        effectiveEngineMode: result.effectiveEngineMode,
+        providerMode: result.providerMode,
+        providerTransport: result.providerTransport,
+        providerAdapter: result.providerAdapter,
+        providerRuntime: result.providerRuntime,
+        providerImpl: result.providerImpl,
+        authKeySource: result.authKeySource,
+        observationSource: result.observationSource,
+        tokenAccountingSource: result.tokenAccountingSource,
+        providerErrorCode: result.providerErrorCode,
+        retryReason: result.retryReason,
+    });
+
+    currentExecutionId = result.executionId;
+    const execution = await apiRequest(`/api/user/executions/${result.executionId}`);
+    restoreInputData(execution);
+    setExecutionButtonState(false);
+
+    if (execution.status === 'success') {
+        const finalOutputFormat = execution?.output_format || outputFormat || 'txt';
+        displayExecutionResult(execution, result.executionId, finalOutputFormat !== 'txt' ? finalOutputFormat : null);
+    } else {
+        displayExecutionError(execution);
+    }
+
+    await loadHistory();
+    showOutputPanel();
+    // 呼び出し元で実際のステータスを参照できるよう付加
+    result._executionStatus = execution.status;
+    return result;
+}
+
 document.getElementById('execute-form').addEventListener('submit', async (e) => {
     e.preventDefault();
 
     const executeBtn = document.getElementById('execute-btn');
-    const executeBtnText = document.getElementById('execute-btn-text');
-    const executeBtnSpinner = document.getElementById('execute-btn-spinner');
     const form = e.target;
 
     // 入力データを収集（フィールドを無効化する前に収集する必要がある）
@@ -1110,14 +1432,8 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
         inputData[key] = value;
     }
 
-    // 実行ボタンを無効化
-    executeBtn.disabled = true;
-    executeBtnText.textContent = '実行中...';
-
-    // スピナーを表示
-    if (executeBtnSpinner) {
-        executeBtnSpinner.style.display = 'inline';
-    }
+    // 実行中状態に設定
+    setExecutionButtonState(true);
 
     // 全ての入力フィールドを無効化
     const inputFields = form.querySelectorAll('input, textarea, select, button');
@@ -1153,16 +1469,7 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
                 confirmButtonColor: USER_SWAL.primary
             });
             // ボタンを再有効化
-            executeBtn.disabled = false;
-            executeBtnText.textContent = '実行';
-            if (executeBtnSpinner) {
-                executeBtnSpinner.style.display = 'none';
-            }
-            inputFields.forEach(field => {
-                if (field !== executeBtn) {
-                    field.disabled = false;
-                }
-            });
+            setExecutionButtonState(false);
             return;
         }
 
@@ -1175,17 +1482,7 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
             outputFormat: outputFormat !== 'txt' ? outputFormat : undefined
         });
 
-        // ボタンを再有効化
-        executeBtn.disabled = false;
-        executeBtnText.textContent = '実行';
-        if (executeBtnSpinner) {
-            executeBtnSpinner.style.display = 'none';
-        }
-        inputFields.forEach(field => {
-            if (field !== executeBtn) {
-                field.disabled = false;
-            }
-        });
+        setExecutionButtonState(false);
         return;
     }
 
@@ -1210,12 +1507,54 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
 
         console.log('[Execute] Request body:', requestBody);
 
+        if (window.NexMAGIRuntime?.shouldUseDesktopLocalExecution?.()) {
+            showProcessingMessage();
+
+            // バックグラウンドパネルを開始
+            const skillName = document.getElementById('skill-name')?.textContent || `Skill ${skillId}`;
+            if (typeof PersistentStatusBar !== 'undefined') {
+                PersistentStatusBar.start(null, parseInt(skillId), skillName);
+            }
+
+            // fire-and-forget でsidecar実行
+            executeWithDesktopLocalEngine({
+                skillId,
+                inputData,
+                outputFormat,
+            }).then((result) => {
+                // sidecar完了 → executionIdをPersistentStatusBarに設定
+                if (typeof PersistentStatusBar !== 'undefined') {
+                    if (result?.executionId) {
+                        PersistentStatusBar.executionId = result.executionId;
+                    }
+                    // 実際のステータスを確認して反映
+                    const actualStatus = result?._executionStatus || result?.status || 'success';
+                    const finalStatus = (actualStatus === 'success' || actualStatus === 'completed') ? 'success' : 'error';
+                    if (PersistentStatusBar.startTime) {
+                        PersistentStatusBar.markAsCompleted(finalStatus);
+                    }
+                }
+            }).catch((desktopError) => {
+                if (typeof PersistentStatusBar !== 'undefined' && PersistentStatusBar.startTime) {
+                    PersistentStatusBar.markAsCompleted('error');
+                }
+                setExecutionButtonState(false);
+                showAlert('スキル実行に失敗しました: ' + (desktopError?.message || desktopError), 'error');
+                console.error('Desktop skill execution failed:', desktopError);
+            });
+            return;
+        }
+
         const initialResponse = await apiRequest('/api/execute', {
             method: 'POST',
             body: JSON.stringify(requestBody)
         });
 
         const executionId = initialResponse.execution_id;
+        const skillName = document.getElementById('skill-name').textContent;
+        const desktopRunPromise = createDesktopExecutionRun(executionId, skillName).catch((error) => {
+            console.error('Failed to create desktop execution run:', error);
+        });
         executeBtnText.textContent = '実行中...';
 
         // ドロップアニメーションとステータスバー開始
@@ -1252,7 +1591,7 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
             });
 
             // アニメーション完了時の処理
-            setTimeout(() => {
+            setTimeout(async () => {
                 if (document.body.contains(particle)) {
                     document.body.removeChild(particle);
                 }
@@ -1267,12 +1606,12 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
                 }, 200);
 
                 // ステータスバーを開始（ここでアイコンが青くなる）
-                const skillName = document.getElementById('skill-name').textContent;
+                await desktopRunPromise;
                 PersistentStatusBar.start(executionId, parseInt(skillId), skillName);
             }, 600);
         } else {
             // ターゲットが見つからない場合は即座に開始（フォールバック）
-            const skillName = document.getElementById('skill-name').textContent;
+            await desktopRunPromise;
             PersistentStatusBar.start(executionId, parseInt(skillId), skillName);
         }
 
@@ -1280,7 +1619,7 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
         showProcessingMessage();
 
         // 3. 履歴テーブルに仮の行を追加（即時反映）
-        const historyTableBody = document.querySelector('#history-container tbody');
+        const historyTableBody = document.getElementById('history-tbody');
         if (historyTableBody) {
             const now = new Date();
             const tempRow = document.createElement('tr');
@@ -1318,11 +1657,16 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
 
         if (isReasoning) {
             // 推論モデルの場合はストリーミング接続を開始せずに、ポーリングで完了を待つ
+            await desktopRunPromise;
+            await ensureDesktopExecutionProviderStarted({
+                boundaryKind: 'polling_completion',
+            });
             await waitForReasoningModelCompletion(executionId, outputFormat);
             return;
         }
 
         // ストリーミング開始（完了は createWorkerMessageHandler が独立して処理）
+        await desktopRunPromise;
         startStreaming(executionId, outputFormat);
         // fire-and-forget: ユーザーは自由にページ遷移可能
         // 完了時の処理:
@@ -1346,7 +1690,7 @@ async function copyOutput() {
     const outputContent = document.getElementById('output-content');
     const text = outputContent.textContent || outputContent.innerText;
 
-    if (!text || text === '実行ボタンを押すと結果がここに表示されます') {
+    if (!text || text.includes('実行すると結果がここに表示されます')) {
         showAlert('コピーする内容がありません', 'warning');
         return;
     }
@@ -1354,14 +1698,6 @@ async function copyOutput() {
     try {
         await navigator.clipboard.writeText(text);
         showAlert('出力をクリップボードにコピーしました', 'success');
-
-        // ボタンの視覚的フィードバック
-        const copyBtn = document.getElementById('copy-output-btn');
-        const originalOpacity = copyBtn.style.opacity;
-        copyBtn.style.opacity = '1';
-        setTimeout(() => {
-            copyBtn.style.opacity = originalOpacity;
-        }, 500);
     } catch (error) {
         // フォールバック: テキストエリアを使用
         const textarea = document.createElement('textarea');
@@ -1464,6 +1800,11 @@ window.executeQueuedTask = async function(taskData) {
 
         const executionId = initialResponse.execution_id;
         const skillName = taskData.skillName || document.getElementById('skill-name')?.textContent || '実行中...';
+        try {
+            await createDesktopExecutionRun(executionId, skillName);
+        } catch (error) {
+            console.error('Failed to create desktop execution run from queue:', error);
+        }
 
         // ステータスバーを開始
         PersistentStatusBar.start(executionId, parseInt(taskData.skillId), skillName);
@@ -1488,66 +1829,12 @@ window.executeQueuedTask = async function(taskData) {
 
 // getQueryParam は user-common.js で定義済み
 
-// モバイルデバイスかどうかを判定する関数
-function isMobileDevice() {
-    return window.innerWidth <= 768;
-}
-
-// execute-input-panelの高さに合わせてexecute-output-panelの高さを調整する関数
-function syncPanelHeights() {
-    // モバイルデバイスの場合は高さ同期を行わない
-    if (isMobileDevice()) {
-        return;
-    }
-
-    const inputPanel = document.querySelector('.execute-input-panel');
-    const outputPanel = document.querySelector('.execute-output-panel');
-
-    if (inputPanel && outputPanel) {
-        // input-panelの実際の高さを取得
-        const inputHeight = inputPanel.offsetHeight;
-        // output-panelの高さをinput-panelに合わせる
-        outputPanel.style.height = `${inputHeight}px`;
-    }
-}
+// パネル高さ同期（wf-io-panelsのgrid align-items:stretchで自動化済み — 互換用stub）
+function syncPanelHeights() {}
 
 // ResizeObserverでinput-panelの高さ変更を監視
 let panelResizeObserver = null;
 function setupPanelHeightSync() {
-    // モバイルデバイスの場合は高さ同期を設定しない
-    if (isMobileDevice()) {
-        // 既存のオブザーバーがあれば切断
-        if (panelResizeObserver) {
-            panelResizeObserver.disconnect();
-            panelResizeObserver = null;
-        }
-        return;
-    }
-
-    const inputPanel = document.querySelector('.execute-input-panel');
-    if (inputPanel && typeof ResizeObserver !== 'undefined') {
-        // 既存のオブザーバーがあれば切断
-        if (panelResizeObserver) {
-            panelResizeObserver.disconnect();
-        }
-
-        // 新しいResizeObserverを作成
-        panelResizeObserver = new ResizeObserver(() => {
-            syncPanelHeights();
-        });
-
-        // input-panelとその子要素を監視
-        panelResizeObserver.observe(inputPanel);
-        const inputFieldsContainer = inputPanel.querySelector('#input-fields-container');
-        if (inputFieldsContainer) {
-            panelResizeObserver.observe(inputFieldsContainer);
-        }
-
-        // テキストエリアのリサイズも監視
-        inputPanel.querySelectorAll('textarea').forEach(textarea => {
-            panelResizeObserver.observe(textarea);
-        });
-    }
 }
 
 
@@ -1572,37 +1859,4 @@ function setupPanelHeightSync() {
         }
     }
 
-    // 高さを同期（DOMが完全に読み込まれた後、デスクトップのみ）
-    setTimeout(() => {
-        syncPanelHeights();
-        setupPanelHeightSync();
-    }, 100);
-
-    // リサイズ時にも高さを同期（デスクトップのみ）
-    window.addEventListener('resize', () => {
-        // リサイズ時にモバイル/デスクトップの切り替えがあった場合に備えて、ResizeObserverを再設定
-        setupPanelHeightSync();
-        syncPanelHeights();
-    });
-
-    // MutationObserverでDOMの変更を監視して高さを同期（デスクトップのみ）
-    const observer = new MutationObserver(() => {
-        if (!isMobileDevice()) {
-            syncPanelHeights();
-            // 新しいテキストエリアが追加された場合に備えて、ResizeObserverを再設定
-            setTimeout(() => {
-                setupPanelHeightSync();
-            }, 50);
-        }
-    });
-
-    const inputPanel = document.querySelector('.execute-input-panel');
-    if (inputPanel) {
-        observer.observe(inputPanel, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ['style', 'class']
-        });
-    }
 })();

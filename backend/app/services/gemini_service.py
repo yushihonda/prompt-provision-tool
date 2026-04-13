@@ -45,7 +45,7 @@ class GeminiService:
         Args:
             api_key: Gemini APIキー（指定しない場合は設定ファイルから取得）
         """
-        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.api_key = api_key or ""
         self.demo_mode = not self.api_key or self.api_key.strip() == ""
 
         if not self.demo_mode:
@@ -57,7 +57,7 @@ class GeminiService:
                 try:
                     self.genai_client = genai_new.Client(
                         api_key=self.api_key,
-                        http_options={"headers": {"Referer": "https://prompt-provision-tool.local"}},
+                        http_options={"headers": {"Referer": "https://nexmagi.local"}},
                     )
                     logger.info("✓ Gemini Service: 直接Gemini API接続で初期化（新SDK対応）")
                 except Exception as e:
@@ -201,8 +201,8 @@ class GeminiService:
         # 本番環境でのデモモード禁止
         if settings.is_production and self.demo_mode:
             raise Exception(
-                "Gemini APIキー未設定のため本番では実行できません。"
-                "GEMINI_API_KEY を設定してください。"
+                "Gemini APIキー未設定のため実行できません。"
+                "API設定ページからキーを登録してください。"
             )
 
         # デモモード
@@ -212,7 +212,7 @@ class GeminiService:
                 "output": (
                     f"【デモモード】\n\n"
                     f"Gemini APIキーが設定されていないため、実際のAI応答は生成されません。\n\n"
-                    f"実際に使用するには、.envファイルにGEMINI_API_KEYを設定してください。\n\n"
+                    f"実際に使用するには、API設定ページからGemini APIキーを登録してください。\n\n"
                     f"入力プロンプト（最初の100文字）:\n{prompt[:100]}..."
                 ),
                 "model": f"{model_name} (demo)",

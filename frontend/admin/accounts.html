@@ -3,21 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>アカウント管理 - Prompt Provision Tool</title>
+    <title>アカウント管理 - NexMAGI</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body class="admin-theme">
     <div class="container">
             <div class="content">
-            <h1 class="page-title">アカウント管理</h1>
-            <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
-                <div id="desktop-nav" style="display: flex; gap: 10px;"></div>
-                <button class="btn btn-success" onclick="showCreateModal()" style="white-space: nowrap; display: inline-flex; align-items: center; gap: 8px;">
-                    <img src="../img/iconmonstr-id-card-17.svg" alt="作成" style="width: 18px; height: 18px; filter: brightness(0) invert(1);">
+            <div class="page-title-container">
+                <h1 class="page-title">アカウント管理</h1>
+                <button class="btn btn-admin-create" onclick="showCreateModal()" style="margin-left: auto; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     アカウント作成
                 </button>
             </div>
+            <div class="nav" id="desktop-nav" style="display: none;"></div>
 
 
             <div class="card">
@@ -51,6 +51,16 @@
 
 
 
+    <script>
+        window.__NEXMAGI_RUNTIME = window.__NEXMAGI_RUNTIME || {
+            desktop: true,
+            apiBase: 'http://127.0.0.1:8000',
+            workerScriptPath: 'js/execution-worker.js'
+        };
+    </script>
+    <script src="../js/runtime-adapter.js"></script>
+    <script src="../js/swal-defaults.js"></script>
+    <script src="../js/mini-cube.js"></script>
     <script src="js/admin-common.js"></script>
     <script src="js/accounts.js"></script>
 </body>

@@ -4,8 +4,29 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 from app.config import settings
-from app.api import auth, admin, user, execute, worker
+from app.api import auth, admin, user, execute, worker, adapters
+from app.database import engine
+from app.models import Base
 import logging
+
+# 起動時に未作成のテーブルを作成 (coordinator 拡張テーブル群を含む)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as _e:
+    logging.getLogger(__name__).warning(f"create_all failed: {_e}")
+
+# 既定の coordinator アダプターを seed (idempotent)
+try:
+    from app.database import SessionLocal
+    from app.services.coordinator_extensions import seed_default_adapters
+    _db = SessionLocal()
+    try:
+        seed_default_adapters(_db)
+    finally:
+        _db.close()
+except Exception as _e:
+    logging.getLogger(__name__).warning(f"adapter seed failed: {_e}")
+
 
 # ログ設定（環境に応じてログレベルを変更）
 log_level = logging.DEBUG if settings.is_debug_mode else logging.INFO
@@ -24,18 +45,18 @@ if settings.is_production:
 # FastAPIアプリケーションの作成（本番はドキュメント無効化）
 if settings.ENVIRONMENT == "production":
     app = FastAPI(
-        title="Skill Provision Tool",
-        description="GPT及びGeminiのスキルを外部に漏らさず、実行機能のみを提供するツール",
-        version="2.0.0",
+        title="NexMAGI",
+        description="次世代AIオーケストレーションデスクトップアプリ — マルチエージェントワークフローを実行・管理",
+        version="3.0.0",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
     )
 else:
     app = FastAPI(
-        title="Skill Provision Tool",
-        description="GPT及びGeminiのスキルを外部に漏らさず、実行機能のみを提供するツール",
-        version="2.0.0"
+        title="NexMAGI",
+        description="次世代AIオーケストレーションデスクトップアプリ — マルチエージェントワークフローを実行・管理",
+        version="3.0.0"
     )
 
 # CORS設定
@@ -53,6 +74,7 @@ app.include_router(admin.router)
 app.include_router(user.router)
 app.include_router(execute.router)
 app.include_router(worker.router)
+app.include_router(adapters.router)
 
 # 静的ファイルの提供（フロントエンド）
 frontend_path = Path(__file__).parent.parent.parent / "frontend"
@@ -69,7 +91,7 @@ async def root():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Skill Provision Tool</title>
+        <title>NexMAGI</title>
         <style>
             body {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -123,9 +145,9 @@ async def root():
     </head>
     <body>
         <div class="container">
-            <h1>🔐 Skill Provision Tool</h1>
+            <h1>NexMAGI</h1>
             <p style="text-align: center; color: #666;">
-                スキルを保護しながらAI機能を提供するツール
+                次世代AIオーケストレーションデスクトップアプリ
             </p>
             <div class="links">
                 <a href="/static/admin/login.html" class="link-button admin">管理者ログイン</a>

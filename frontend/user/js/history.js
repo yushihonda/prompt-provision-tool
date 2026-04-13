@@ -69,7 +69,7 @@ function renderHistory() {
     const pageRows = groupedRows.slice(start, start + itemsPerPage);
 
     if (pageRows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: rgba(255, 255, 255, 0.6);">実行履歴がありません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: #a0a0a0;">実行履歴がありません</td></tr>';
         return;
     }
 
@@ -82,18 +82,27 @@ function renderHistory() {
     }).join('');
 }
 
+function _runtimeBadgeForExec(execution) {
+    if (window.runtimeBadge && execution && execution.extra_metadata) {
+        return window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata) || '';
+    }
+    return '';
+}
+
 function renderSkillRow(execution) {
     const modelDisplay = formatModelDisplay(execution.model_used, execution);
     const statusColor = getStatusColor(execution.status);
+    const runtimeBadge = _runtimeBadgeForExec(execution) || '<span style="color:#a0a0a0; font-size:11px;">-</span>';
 
     return `
     <tr>
         <td>${formatDate(execution.executed_at)}</td>
         <td>${escapeHtmlCommon(execution.skill_name || '-')}</td>
+        <td>${runtimeBadge}</td>
         <td>${modelDisplay}</td>
         <td>${execution.output_format ? execution.output_format.toUpperCase() : 'TXT'}</td>
         <td>${execution.execution_time || '-'}${execution.execution_time ? 'ms' : ''}</td>
-        <td>${execution.tokens_used || '-'}</td>
+        <td>${formatCompact(execution.tokens_used)}</td>
         <td><span style="color: ${statusColor}">${execution.status}</span></td>
         <td>
             <button onclick="showDetail(${execution.id})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer;">
@@ -115,14 +124,49 @@ function renderWorkflowRow(group) {
     const leaderExec = normalExecs.find(e => !e.workflow_skill_id);
     const parentModel = leaderExec?.model_used || normalExecs[0]?.model_used || '-';
     const modelDisplay = typeof formatModelDisplay === 'function' ? formatModelDisplay(parentModel, null, {}) : parentModel;
+    const runtimeSourceExec = leaderExec || normalExecs[0];
+    const runtimeBadge = _runtimeBadgeForExec(runtimeSourceExec) || '<span style="color:#a0a0a0; font-size:11px;">-</span>';
     const weId = group.workflowExecutionId;
 
-    // 各スキルの小さなバー
-    const skillBars = stepExecs.map(e => {
-        const sc = getStatusColor(e.status);
-        const name = escapeHtmlCommon(e.skill_name || `Step ${e.skill_order}`);
-        return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px;background:rgba(0,0,0,0.2);border-left:2px solid ${sc};color:rgba(255,255,255,0.8);">${name}</span>`;
-    }).join(' ');
+    // 各スキルのミニキューブ（並列グループは縦並べ・小さめ）
+    const arrow = '<span style="color:#ccc; font-size:10px; vertical-align:middle;">→</span>';
+
+    // parallel_group_id でグルーピングして並列検出
+    const groupMap = new Map();
+    const orderedGroups = [];
+    for (const e of stepExecs) {
+        const gid = e.parallel_group_id;
+        if (gid) {
+            if (!groupMap.has(gid)) {
+                const g = { type: 'parallel', execs: [] };
+                groupMap.set(gid, g);
+                orderedGroups.push(g);
+            }
+            groupMap.get(gid).execs.push(e);
+        } else {
+            orderedGroups.push({ type: 'serial', execs: [e] });
+        }
+    }
+
+    const groupHtmls = [];
+    for (const g of orderedGroups) {
+        if (g.type === 'parallel') {
+            const cubes = g.execs.map(e => {
+                const sc = getStatusColor(e.status);
+                return renderMiniCube(e.agent_profile || 'default', { size: 18, borderColor: sc, showLabel: false });
+            }).join('');
+            groupHtmls.push(`<span style="display:inline-flex;flex-direction:column;gap:2px;align-items:center;vertical-align:middle;">${cubes}</span>`);
+        } else {
+            for (const e of g.execs) {
+                const sc = getStatusColor(e.status);
+                groupHtmls.push(renderMiniCube(e.agent_profile || 'default', { size: 22, borderColor: sc, showLabel: false }));
+            }
+        }
+    }
+    let skillBars = groupHtmls.join(arrow);
+    // リーダーキューブを追加
+    const leaderSc = getStatusColor(overallStatus);
+    skillBars += arrow + renderMiniCube('default', { size: 22, borderColor: leaderSc, showLabel: false });
 
     return `
     <tr>
@@ -130,14 +174,15 @@ function renderWorkflowRow(group) {
         <td>
             <div style="margin-bottom:4px;">
                 <span style="color: #7c3aed; font-weight: 600; font-size: 13px;">${escapeHtmlCommon(group.workflowName)}</span>
-                <span style="color: rgba(255,255,255,0.4); font-size: 11px; margin-left: 6px;">${stepExecs.length} steps</span>
+                <span style="color: #a0a0a0; font-size: 11px; margin-left: 6px;">${stepExecs.length} steps</span>
             </div>
-            <div style="display:flex;flex-wrap:wrap;gap:4px;">${skillBars}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:12px;perspective:300px;align-items:center;">${skillBars}</div>
         </td>
+        <td>${runtimeBadge}</td>
         <td>${modelDisplay}</td>
         <td>-</td>
         <td>${totalTime ? totalTime + 'ms' : '-'}</td>
-        <td>${totalTokens || '-'}</td>
+        <td>${formatCompact(totalTokens)}</td>
         <td><span style="color: ${statusColor}">${overallStatus}</span></td>
         <td>
             <button onclick="showWorkflowDetail(${weId})" title="詳細" class="icon-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer;">
@@ -153,14 +198,16 @@ function getStatusColor(status) {
     if (status === 'error') return '#dc3545';
     if (status === 'cancelled') return '#ffc107';
     if (status === 'pending' || status === 'pending_local' || status === 'processing') return '#7c3aed';
-    return 'rgba(255, 255, 255, 0.6)';
+    return '#a0a0a0';
 }
 
 function getOverallStatus(execs) {
-    if (execs.some(e => e.status === 'error')) return 'error';
-    if (execs.some(e => e.status === 'cancelled')) return 'cancelled';
-    if (execs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
-    if (execs.every(e => e.status === 'success')) return 'success';
+    // 特殊ロール（quality_gate, supervisor等）のエラーはWF全体のエラーとしない
+    const normalExecs = execs.filter(e => !e.execution_role);
+    if (normalExecs.some(e => e.status === 'error')) return 'error';
+    if (normalExecs.some(e => e.status === 'cancelled')) return 'cancelled';
+    if (normalExecs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
+    if (normalExecs.every(e => e.status === 'success')) return 'success';
     return 'pending';
 }
 
@@ -251,6 +298,7 @@ async function showWorkflowDetail(weId) {
             skillId: exec.skill_id,
             inputData: exec.input_data || null,
             agentProfile: exec.agent_profile || null,
+            extraMetadata: exec.extra_metadata || null,
         }));
         const finalOutput = leaderExec?.output_data || '';
         // coordinator view / synthesis events を取得
@@ -258,8 +306,21 @@ async function showWorkflowDetail(weId) {
         try {
             wfStatus = await apiRequest(`/api/user/workflow-executions/${weId}/status`);
         } catch (e) { /* ignore */ }
-        const resultHtml = execDetailModal.buildWorkflowFlowHTML({
-            finalOutput, allStepResults, workflowName, groups,
+
+        // Coordinator plan + eval を取得して渡す
+        let coordinatorData = null;
+        let coordinatorEval = null;
+        try {
+            coordinatorData = await apiRequest(`/api/user/coordinator/plans/${weId}`);
+        } catch (e) { /* ignore */ }
+        try {
+            const ev = await apiRequest(`/api/user/coordinator/eval/${weId}`);
+            coordinatorEval = ev?.current || null;
+        } catch (e) { /* ignore */ }
+
+        await execDetailModal.showWorkflowDetailPopup({
+            workflowName, allStepResults, leaderExec, groups,
+            leaderModel: leaderExec?.model_used || '',
             stageMeta: {
                 currentStage: wfStatus?.current_stage || null,
                 finalVerdict: wfStatus?.final_verdict || null,
@@ -267,30 +328,11 @@ async function showWorkflowDetail(weId) {
                 coordinatorView: wfStatus?.coordinator_view || null,
                 synthesisEvents: wfStatus?.synthesis_events || [],
             },
-        });
-
-        const detailHTML = `
-            <div style="text-align: left;">
-                <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);">
-                    <div style="color: #c4b5fd; font-weight: 600; font-size: 16px; margin-bottom: 6px;">${esc(workflowName)}</div>
-                    <div style="display: flex; gap: 16px; color: #888; font-size: 12px;">
-                        <span>${stepExecs.length} ステップ</span>
-                        <span>${typeof formatModelDisplay === 'function' ? formatModelDisplay(leaderExec?.model_used || '', null, {}) : (leaderExec?.model_used || '-')}</span>
-                        <span>合計 ${totalTime}ms</span>
-                        <span>${totalTokens} tokens</span>
-                    </div>
-                </div>
-                ${resultHtml}
-            </div>
-        `;
-
-        await Swal.fire({
-            title: 'ワークフロー実行詳細',
-            html: detailHTML,
-            width: '880px',
-            confirmButtonText: USER_SWAL.btnClose,
-            confirmButtonColor: USER_SWAL.primary,
-            customClass: { popup: 'swal-wide swal-exec-detail' },
+            stepCount: stepExecs.length,
+            totalTime,
+            totalTokens,
+            coordinatorData,
+            coordinatorEval,
         });
     } catch (error) {
         await showAlert('詳細情報の読み込みに失敗しました', 'error');

@@ -34,7 +34,7 @@ class OpenAIService:
         Args:
             api_key: OpenAI APIキー（指定しない場合は設定ファイルから取得）
         """
-        self.api_key = api_key or settings.OPENAI_API_KEY
+        self.api_key = api_key or ""
         self.demo_mode = not self.api_key or self.api_key.strip() == ""
         self.client: Optional[AsyncOpenAI] = None
 
@@ -413,8 +413,8 @@ class OpenAIService:
         # 本番環境でのデモモード禁止
         if settings.is_production and self.demo_mode:
             raise Exception(
-                "OpenAI APIキー未設定のため本番では実行できません。"
-                "OPENAI_API_KEY を設定してください。"
+                "OpenAI APIキー未設定のため実行できません。"
+                "API設定ページからキーを登録してください。"
             )
 
         # デモモード
@@ -424,7 +424,7 @@ class OpenAIService:
                 "output": (
                     f"【デモモード】\n\n"
                     f"OpenAI APIキーが設定されていないため、実際のAI応答は生成されません。\n\n"
-                    f"実際に使用するには、.envファイルにOPENAI_API_KEYを設定してください。\n\n"
+                    f"実際に使用するには、API設定ページからOpenAI APIキーを登録してください。\n\n"
                     f"入力プロンプト（最初の100文字）:\n{prompt[:100]}..."
                 ),
                 "model": f"{model} (demo)",

@@ -111,7 +111,7 @@ def _authenticate_worker(
 
 
 # ---------------------------------------------------------------------------
-# Schemas
+# スキーマ
 # ---------------------------------------------------------------------------
 
 class WorkerCompleteRequest(BaseModel):
@@ -119,6 +119,8 @@ class WorkerCompleteRequest(BaseModel):
     tokens_used: int = 0
     model_used: str = ""
     execution_time_ms: int = 0
+    provider_meta: Optional[dict] = None
+    external_cli_meta: Optional[dict] = None
 
 
 class WorkerCompleteResponse(BaseModel):
@@ -147,10 +149,16 @@ class BundleResponse(BaseModel):
     signature: str
     api_keys: Optional[dict] = None  # {"openai": "sk-...", "gemini": "AI..."} ローカル実行用
     agent_profile: Optional[str] = None
+    provider_payload: Optional[dict] = None  # coordinator が選択した http provider 設定
+    fallback_provider_payload: Optional[dict] = None  # runtime fallback 用 remote 設定
+    # バンドル実行種別判別子 + external_cli ペイロード（ルーティング用）。
+    # provider_payload（HTTP）か external_cli_payload（CLI）のどちらか一方のみが設定される。
+    execution_kind: str = "http_provider"
+    external_cli_payload: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
-# Bundle GET
+# バンドル取得
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -173,25 +181,64 @@ async def claim_pending_jobs(
     account_id = auth["account_id"]
 
     # pending_local の Execution を取得
-    pending = (
+    #
+    # external_cli は claim 対象から除外する。
+    # external_cli 種別の step は Tauri desktop 側の external_cli_poller
+    # (frontend/user/js/workflow-execute.js) が pending_local/processing を
+    # 見て consume_external_cli_bundle 経由で実行するのが唯一の正しいパス。
+    # docker/常駐 local_worker がこれを claim してしまうと、
+    # コンテナ内には claude CLI も Tauri workspace も存在しないため
+    # `external_cli payload missing cwd` で即失敗し、
+    # さらに Tauri 側には step が流れなくなる（claim レース負け）。
+    # 過去インシデント: workflow "[test] parent=CLI, child=API" の親ステップが
+    # worker 復活後に連続エラーしていた件（2026-04-09）。
+    #
+    # アトミック claim: SELECT 後に行ごとの UPDATE で status を `processing`
+    # に変更する（ただし現在 `pending_local` の場合のみ）。UPDATE の rowcount
+    # で *この* ワーカーがレースに勝ったかどうかを判定する。負けた行は
+    # レスポンスから黙って除外し、呼び出し側が所有していない exec の bundle
+    # を取得しようとすることを防ぐ。
+    #
+    # この仕組みがないと、docker の local_worker デーモンと Tauri の
+    # orchestration sidecar が毎 tick で pending_local 行をポーリングして
+    # bundle/complete を競合する。負けた側の bundle 取得は 409 になり、
+    # 負けた側が /executions/{id}/error を POST して勝者の成功行を
+    # 上書きしてしまう。実際に「exec 188 は成功したが DB 行が error
+    # → リトライ機構が 191 を生成 → 幽霊重複実行」として顕在化した。
+    candidates = (
         db.query(Execution)
         .filter(
             Execution.account_id == account_id,
             Execution.status == "pending_local",
             Execution.dispatch_mode != "server",
+            Execution.execution_kind != "external_cli",
         )
         .order_by(Execution.id.asc())
         .limit(limit)
         .all()
     )
 
-    if not pending:
+    if not candidates:
         return {"jobs": []}
 
     from app.services.worker_auth import create_job_token
 
     jobs = []
-    for execution in pending:
+    for execution in candidates:
+        # アトミック変更: status がまだ pending_local の場合のみ成功する。
+        # rowcount==1 = 勝利。rowcount==0 = 別のワーカーに先を越された。
+        result = (
+            db.query(Execution)
+            .filter(
+                Execution.id == execution.id,
+                Execution.status == "pending_local",
+            )
+            .update({"status": "processing"}, synchronize_session=False)
+        )
+        if result == 0:
+            # レース負け — この行はスキップ
+            continue
+        db.commit()
         job_token = create_job_token(execution.id, account_id)
         jobs.append({
             "execution_id": execution.id,
@@ -206,7 +253,7 @@ async def claim_pending_jobs(
 
 
 # ---------------------------------------------------------------------------
-# Bundle GET
+# バンドル取得
 # ---------------------------------------------------------------------------
 
 @router.get("/executions/{execution_id}/bundle", response_model=BundleResponse)
@@ -252,7 +299,21 @@ async def _get_execution_bundle_inner(
         raise HTTPException(status_code=400, detail="この実行はサーバーモードです")
 
     # ステータスチェック
-    if execution.status not in ("pending", "pending_local"):
+    #
+    # External CLI 実行は特殊: Tauri の OrchestrationManager が独自の tick で
+    # sidecar ワーカーをディスパッチし、行を即座に `processing` に変更する。
+    # sidecar は execution_kind=external_cli のため短絡終了し（delegated
+    # マーカーを返す）、*実際の* ランナー — フロントエンドポーラーから呼ばれる
+    # Rust の consume_external_cli_bundle — は sidecar がステータスを
+    # 進めた後に bundle を取得する必要がある。この例外がないと
+    # Rust ランナーが毎回 409 になってしまう。
+    #
+    # /claim がアトミックに `processing` へ変更してから job_token を
+    # 発行するようになったため、`processing` は両方の経路で許可される。
+    # これがないと http_provider 経路が次の bundle 取得で自分自身を
+    # 409 にしてしまう（claim → processing → bundle = 409）。
+    allowed_statuses = ("pending", "pending_local", "processing")
+    if execution.status not in allowed_statuses:
         raise HTTPException(
             status_code=409,
             detail=f"この実行は取得できません（status={execution.status}）",
@@ -392,15 +453,51 @@ async def _get_execution_bundle_inner(
             workflow_goal=workflow_goal,
             parent_skill_prompt=parent_prompt,
             current_skill_prompt=resolved_skill_prompt,
-            handoff_context=input_data.get("_ppt_handoff_context") or {},
+            handoff_context=input_data.get("_nexmagi_handoff_context") or {},
             resolved_input_data=input_data,
-            readonly_constraints=input_data.get("_ppt_readonly_constraints"),
-            verification_contract=input_data.get("_ppt_verification_contract"),
+            readonly_constraints=input_data.get("_nexmagi_readonly_constraints"),
+            verification_contract=input_data.get("_nexmagi_verification_contract"),
             blackboard_summary=build_blackboard_summary(input_data.get("blackboard") or {}),
-            step_metadata=input_data.get("_ppt_step_metadata") or {},
+            step_metadata=input_data.get("_nexmagi_step_metadata") or {},
         )
     else:
         final_prompt = resolved_skill_prompt
+
+    # ジャッジ: 並列ステップの実際の出力をプロンプトに追加する。
+    # デフォルトの judge_prompt はスキル *名* を列挙して「比較せよ」と
+    # 指示するだけだが、CLI パスではモデルが出力を読む他のチャネルがない
+    # （input_data もワークスペースファイルもない）。インライン化して
+    # ジャッジが実際に評価できるようにする。HTTP provider パスでは
+    # input_data dict 全体がプロンプトと共に渡されていたため、
+    # このギャップは見えなかった。
+    if exec_role == "debate_judge":
+        try:
+            judge_inputs = input_data.get("group_outputs") or []
+            if isinstance(judge_inputs, list) and judge_inputs:
+                appended_blocks = []
+                for go in judge_inputs:
+                    if not isinstance(go, dict):
+                        continue
+                    name = go.get("skill_name") or "(unnamed)"
+                    out = (go.get("output") or "").strip()
+                    if not out:
+                        continue
+                    appended_blocks.append(
+                        f"### スキル: {name}\n\n```\n{out}\n```"
+                    )
+                if appended_blocks:
+                    final_prompt = (
+                        final_prompt
+                        + "\n\n# 評価対象の出力\n\n以下が並列実行された各スキルの実際の出力です。"
+                        + "これらを直接比較・評価してください（ワークスペース内のファイルを"
+                        + "探す必要はありません — すべてここに含まれています）。\n\n"
+                        + "\n\n".join(appended_blocks)
+                    )
+        except Exception as _judge_inline_err:
+            logger.warning(
+                "judge inline outputs failed for execution %s: %s",
+                execution_id, _judge_inline_err,
+            )
 
     # 永続メモリ注入（ワークフロー実行時のみ）
     if execution.workflow_execution_id and normalized_profile:
@@ -446,17 +543,605 @@ async def _get_execution_bundle_inner(
             except Exception:
                 logger.warning(f"Failed to decrypt Anthropic API key for account {execution.account_id}")
 
-    # サーバーのデフォルトキーもフォールバックとして含める
-    if "openai" not in api_keys and settings.OPENAI_API_KEY:
-        api_keys["openai"] = settings.OPENAI_API_KEY
-    if "gemini" not in api_keys and settings.GEMINI_API_KEY:
-        api_keys["gemini"] = settings.GEMINI_API_KEY
-    if "anthropic" not in api_keys and settings.ANTHROPIC_API_KEY:
-        api_keys["anthropic"] = settings.ANTHROPIC_API_KEY
-
     # ステータスを processing に
     execution.status = "processing"
     db.commit()
+
+    # Coordinator が plan を持っていれば、該当 task の provider routing を解決して
+    # provider_payload と fallback_provider_payload を bundle に載せる。
+    # 失敗しても bundle 発行は止めない。
+    provider_payload: Optional[dict] = None
+    fallback_provider_payload: Optional[dict] = None
+    execution_kind: str = "http_provider"
+    external_cli_payload: Optional[dict] = None
+    try:
+        # ──────────────────────────────────────────────────────────
+        # Parent Leader の特殊ケース: workflow_skill_id が None。
+        #
+        # Leader は _start_parent_skill が作成する合成ステップで、
+        # WorkflowSkill 行を持たないため、4 階層の設定チェーンは
+        # `workflow.config_json` のみに縮退する。
+        # ワークフローレベルで external_cli を選択している場合、
+        # Workflow + parent_model_type から直接 external_cli ペイロードを
+        # 構築する。子ステップに対する build_external_cli_payload と同様。
+        # ──────────────────────────────────────────────────────────
+        if (
+            execution.workflow_execution_id
+            and not execution.workflow_skill_id
+            and execution.execution_kind == "external_cli"
+        ):
+            from app.services.workflow_step_schema import (
+                parse_execution_config,
+                is_legacy_step,
+            )
+            from app.services.external_cli_adapters import build_external_cli_payload
+            from app.services.coordinator_extensions import list_adapters
+            from app.services.coordinator_service import (
+                EXECUTION_KIND_EXTERNAL_CLI as _EK_CLI,
+            )
+            from app.models import Workflow as _WF, WorkflowExecution as _WE
+            wf_row = None
+            we_row = db.query(_WE).filter(_WE.id == execution.workflow_execution_id).first()
+            if we_row and we_row.workflow_id:
+                wf_row = db.query(_WF).filter(_WF.id == we_row.workflow_id).first()
+            if wf_row and wf_row.config_json:
+                wf_cfg = parse_execution_config(wf_row.config_json)
+                if not is_legacy_step(wf_cfg) and wf_cfg.execution.execution_kind == "external_cli":
+                    # preferred_adapter / candidate / runtime hint でアダプタを解決する。
+                    target = None
+                    enabled_adapters = list_adapters(db, only_enabled=True)
+                    pref = wf_cfg.execution.preferred_adapter
+                    candidates = list(wf_cfg.execution.candidate_adapters or [])
+                    if pref:
+                        for a in enabled_adapters:
+                            if a.transport == "external_cli" and a.name == pref:
+                                target = a
+                                break
+                    if target is None:
+                        for name in candidates:
+                            for a in enabled_adapters:
+                                if a.transport == "external_cli" and a.name == name:
+                                    target = a
+                                    break
+                            if target is not None:
+                                break
+                    if target is None and wf_cfg.execution.cli_runtime_hint:
+                        for a in enabled_adapters:
+                            if a.transport != "external_cli":
+                                continue
+                            try:
+                                cfg = json.loads(a.config or "{}")
+                            except json.JSONDecodeError:
+                                cfg = {}
+                            if cfg.get("runtime") == wf_cfg.execution.cli_runtime_hint:
+                                target = a
+                                break
+                    if target is not None:
+                        # ペイロード構築 — 親のプロンプトを CLI 入力として使用し、
+                        # approval ポリシーから allow_writes を取得する。
+                        approval = wf_cfg.approval
+                        allow_writes = bool(
+                            approval.allow_writes or approval.policy == "allow_write"
+                        )
+                        allow_shell = bool(
+                            approval.allow_shell or approval.policy == "allow_shell"
+                        )
+                        # 子ステップと同様に CoordinatorWorkspace を予約する。
+                        # これは重要: Rust ランナーの workspace_ensure_dir 呼び出し
+                        # （エンドツーエンドで動作する分岐 — WE 35 で実証済み）は
+                        # /api/worker/workspaces/{id}/path に POST するため、
+                        # CoordinatorWorkspace に行が存在する必要がある。
+                        # ここで予約しないと ensure_dir の POST が 404 になり、
+                        # Rust ランナーが claude の起動まで進まない。
+                        #
+                        # 以前の試み（workspace_id を省略して cwd_hint のみに
+                        # 依存）は backend ログからは原因を特定できない理由で
+                        # ハングした — ホストの claude が同じプロンプトを 6 秒で
+                        # 実行できるのに Rust は /complete を POST しなかった。
+                        # 動作実績のある子ステップパスをミラーするのが最も
+                        # 確実な修正。
+                        from app.services.coordinator_service import (
+                            get_plan_by_workflow_execution,
+                            reserve_workspace,
+                            WORKSPACE_TEMP_DIR,
+                        )
+                        leader_workspace_id = None
+                        leader_plan = get_plan_by_workflow_execution(
+                            db, execution.workflow_execution_id
+                        )
+                        if leader_plan is not None:
+                            leader_ws_row = reserve_workspace(
+                                db, leader_plan.plan_id,
+                                task_id=f"leader_{execution.id}",
+                                mode=WORKSPACE_TEMP_DIR,
+                            )
+                            leader_workspace_id = leader_ws_row.workspace_id
+                            db.commit()
+                        # cwd は意図的に空にする: Rust の
+                        # consume_external_cli_bundle は
+                        # `workspace_path.is_none() || cwd.is_empty()`
+                        # で workspace_ensure_dir を呼ぶかどうか判定する。
+                        # ensure_dir は実際の作業ディレクトリを
+                        # ~/.nexmagi/workspaces/<plan_id>/<task_id>-<workspace_id>/
+                        # に作成し、パスを backend に POST で返す。
+                        # そのパスを Rust ランナーが検証して claude の cwd
+                        # として渡す。空でない cwd_hint を渡すと ensure_dir が
+                        # スキップされ、ランナーが cwd_hint に対して直接
+                        # validate_cwd を試みる — それが以前の失敗パスだった。
+                        cli_payload = build_external_cli_payload(
+                            target,
+                            cwd="",
+                            prompt=final_prompt or "",
+                            task_id=f"leader_{execution.id}",
+                            workflow_run_id=str(execution.workflow_execution_id),
+                            task_role="leader",
+                            allow_writes=allow_writes,
+                            allow_shell=allow_shell,
+                            approval_policy=approval.policy,
+                            selection_reason=f"workflow_pref:external_cli:{target.name}",
+                            workspace_id=leader_workspace_id,
+                            workspace_mode="temp_dir",
+                            cli_model=getattr(wf_cfg.execution, "cli_model", None),
+                        )
+                        if cli_payload is not None:
+                            external_cli_payload = cli_payload
+                            execution_kind = _EK_CLI
+                            logger.info(
+                                "external_cli_selected (parent leader) execution_id=%s adapter=%s",
+                                execution.id, target.name,
+                            )
+        # ──────────────────────────────────────────────────────────
+        # ディベートジャッジの CLI ルーティング。
+        #
+        # ジャッジは WorkflowSkill を持たない — WorkflowGroup に
+        # 付随する内部ロール。グループの
+        # config_json.judge_execution_config が external_cli を
+        # 選択した場合、_launch_judge が Execution 行に
+        # execution_kind="external_cli" をスタンプする。ここでは
+        # group.judge_prompt + 並列グループの出力（既に input_data 内）
+        # から external_cli ペイロードを構築して対応する。
+        # ──────────────────────────────────────────────────────────
+        if (
+            execution.execution_kind == "external_cli"
+            and getattr(execution, "execution_role", None) == "debate_judge"
+            and getattr(execution, "execution_group_id", None)
+        ):
+            from app.services.external_cli_adapters import build_external_cli_payload
+            from app.services.coordinator_extensions import list_adapters
+            from app.services.coordinator_service import (
+                EXECUTION_KIND_EXTERNAL_CLI as _EK_CLI_J,
+            )
+            from app.models import WorkflowGroup as _WGJ
+            grp_row = (
+                db.query(_WGJ)
+                .filter(_WGJ.id == execution.execution_group_id)
+                .first()
+            )
+            judge_cfg = None
+            if grp_row and grp_row.config_json:
+                try:
+                    grp_cfg_dict = json.loads(grp_row.config_json) if isinstance(grp_row.config_json, str) else grp_row.config_json
+                    judge_cfg = (grp_cfg_dict or {}).get("judge_execution_config") or None
+                except (json.JSONDecodeError, TypeError):
+                    judge_cfg = None
+            if judge_cfg:
+                exec_block = (judge_cfg or {}).get("execution", {})
+                pref_adapter = exec_block.get("preferred_adapter")
+                runtime_hint = exec_block.get("cli_runtime_hint")
+                cli_model = exec_block.get("cli_model")
+                target_judge = None
+                enabled_adapters_j = list_adapters(db, only_enabled=True)
+                if pref_adapter:
+                    for a in enabled_adapters_j:
+                        if a.transport == "external_cli" and a.name == pref_adapter:
+                            target_judge = a
+                            break
+                if target_judge is None and runtime_hint:
+                    for a in enabled_adapters_j:
+                        if a.transport != "external_cli":
+                            continue
+                        try:
+                            cfg_j = json.loads(a.config or "{}")
+                        except json.JSONDecodeError:
+                            cfg_j = {}
+                        if cfg_j.get("runtime") == runtime_hint:
+                            target_judge = a
+                            break
+                if target_judge is not None:
+                    # ジャッジには実ワークスペースは不要（読み取り専用のテキスト
+                    # 評価、ファイル書き込みなし）だが、Rust ランナーは
+                    # 登録済み CoordinatorWorkspace ID がないと空の cwd を
+                    # 拒否する（ensure_dir のため）。leader パスと同様に
+                    # temp_dir ワークスペースを予約し、cwd を空にしておく。
+                    # ランナーが解決済みパスを POST で返す。
+                    from app.services.coordinator_service import (
+                        get_plan_by_workflow_execution as _get_plan_j,
+                        reserve_workspace as _reserve_ws_j,
+                        WORKSPACE_TEMP_DIR as _WS_TEMP_J,
+                    )
+                    judge_workspace_id = None
+                    judge_plan = _get_plan_j(db, execution.workflow_execution_id)
+                    if judge_plan is not None:
+                        judge_ws_row = _reserve_ws_j(
+                            db, judge_plan.plan_id,
+                            task_id=f"judge_{execution.id}",
+                            mode=_WS_TEMP_J,
+                        )
+                        judge_workspace_id = judge_ws_row.workspace_id
+                        db.commit()
+                    judge_payload = build_external_cli_payload(
+                        target_judge,
+                        cwd="",
+                        prompt=final_prompt or "",
+                        task_id=f"judge_{execution.id}",
+                        workflow_run_id=str(execution.workflow_execution_id),
+                        task_role="judge",
+                        allow_writes=False,
+                        allow_shell=False,
+                        approval_policy="read_only",
+                        selection_reason=f"judge_pref:external_cli:{target_judge.name}",
+                        workspace_id=judge_workspace_id,
+                        workspace_mode="temp_dir",
+                        cli_model=cli_model,
+                    )
+                    if judge_payload is not None:
+                        external_cli_payload = judge_payload
+                        execution_kind = _EK_CLI_J
+                        provider_payload = None
+                        fallback_provider_payload = None
+                        logger.info(
+                            "external_cli_selected (judge) execution_id=%s adapter=%s",
+                            execution.id, target_judge.name,
+                        )
+        if execution.workflow_execution_id and execution.workflow_skill_id:
+            from app.services.coordinator_service import (
+                EXECUTION_KIND_EXTERNAL_CLI,
+                get_plan_by_workflow_execution,
+                resolve_execution_kind,
+                resolve_execution_provider_bundle,
+            )
+            plan = get_plan_by_workflow_execution(db, execution.workflow_execution_id)
+            if plan:
+                try:
+                    plan_tasks = json.loads(plan.tasks or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    plan_tasks = []
+                matched_task = next(
+                    (
+                        t for t in plan_tasks
+                        if t.get("workflow_skill_id") == execution.workflow_skill_id
+                    ),
+                    None,
+                )
+                if matched_task:
+                    # 完全に構成されたステッププロンプトを注入し、
+                    # external_cli ペイロードビルダーが起動する CLI バイナリに
+                    # 渡せるようにする。これがないとペイロードのプロンプトは
+                    # task["objective"]（"claude_impl" のような短いスキル名）に
+                    # フォールバックし、CLI が実質的な指示もスキル内容も
+                    # 上流の出力コンテキストもなしで実行されてしまう。
+                    if final_prompt:
+                        matched_task["prompt"] = final_prompt
+                    # WorkflowSkill 行からパース済みの StepExecutionConfig を
+                    # 付与し、resolve_execution_kind がステップごとに
+                    # ルーティングできるようにする。レガシー行はデフォルト設定を
+                    # 返し、従来と同一の動作になる。
+                    try:
+                        from app.services.workflow_step_schema import (
+                            parse_execution_config,
+                            merge_step_execution_config_chain,
+                        )
+                        from app.models import (
+                            WorkflowSkill as _WorkflowSkill,
+                            WorkflowGroup as _WorkflowGroup,
+                            Workflow as _Workflow,
+                        )
+                        ws_row = (
+                            db.query(_WorkflowSkill)
+                            .filter(_WorkflowSkill.id == execution.workflow_skill_id)
+                            .first()
+                        )
+                        if ws_row is not None:
+                            # 4-level inheritance chain (left = weakest):
+                            #   workflow → group → skill → workflow_skill
+                            # ブロック単位の置換 —
+                            # merge_step_execution_configs の docstring を参照。
+                            workflow_cfg = None
+                            group_cfg = None
+                            skill_cfg = None
+                            if ws_row.workflow_id is not None:
+                                wf_row = (
+                                    db.query(_Workflow)
+                                    .filter(_Workflow.id == ws_row.workflow_id)
+                                    .first()
+                                )
+                                if wf_row is not None and getattr(wf_row, "config_json", None):
+                                    workflow_cfg = parse_execution_config(wf_row.config_json)
+                            if ws_row.group_id is not None:
+                                grp_row = (
+                                    db.query(_WorkflowGroup)
+                                    .filter(_WorkflowGroup.id == ws_row.group_id)
+                                    .first()
+                                )
+                                if grp_row is not None and getattr(grp_row, "config_json", None):
+                                    group_cfg = parse_execution_config(grp_row.config_json)
+                            if ws_row.skill_id is not None:
+                                skill_row = (
+                                    db.query(Skill)
+                                    .filter(Skill.id == ws_row.skill_id)
+                                    .first()
+                                )
+                                if skill_row is not None and getattr(
+                                    skill_row, "config_json", None
+                                ):
+                                    skill_cfg = parse_execution_config(skill_row.config_json)
+                            step_cfg = parse_execution_config(ws_row.config_json)
+                            matched_task["_step_execution_config"] = (
+                                merge_step_execution_config_chain(
+                                    workflow_cfg, group_cfg, skill_cfg, step_cfg
+                                )
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "step execution_config parse skipped for execution %s: %s",
+                            execution_id, exc,
+                        )
+
+                    # ステップ 1: 実行種別を決定。resolve_execution_kind は
+                    # external_cli_payload を返すか HTTP パスに委譲する。
+                    # 矛盾するペイロードを避けるため、同一バンドルで
+                    # 両方のルーティングを実行することはない。
+                    kind_result = resolve_execution_kind(
+                        db, plan, matched_task,
+                        retry_count=int(getattr(execution, "retry_count", 0) or 0),
+                    )
+                    if kind_result.get("execution_kind") == EXECUTION_KIND_EXTERNAL_CLI:
+                        execution_kind = EXECUTION_KIND_EXTERNAL_CLI
+                        external_cli_payload = kind_result.get("external_cli_payload")
+                        # ルーティング決定を永続化し、フロントエンドのポーリング
+                        # ループが bundle を再取得せずに適切なランナーに
+                        # ディスパッチできるようにする。リクエスト終了時ではなく
+                        # ここで commit し、次の /api/user/executions 読み取りで
+                        # 反映されるようにする。
+                        try:
+                            execution.execution_kind = EXECUTION_KIND_EXTERNAL_CLI
+                            db.commit()
+                        except Exception as persist_err:  # noqa: BLE001
+                            logger.warning(
+                                "execution_kind persist failed for %s: %s",
+                                execution.id, persist_err,
+                            )
+                        # External CLI バンドルは provider_payload を持ってはならない —
+                        # desktop ランタイムがこれらを所有し、sidecar はバイパスする。
+                        provider_payload = None
+                        fallback_provider_payload = None
+                        logger.info(
+                            "external_cli_selected execution_id=%s adapter=%s runtime=%s",
+                            execution.id,
+                            kind_result.get("adapter_name"),
+                            kind_result.get("runtime"),
+                        )
+                    else:
+                        # ステップ 2: HTTP / 内部 provider パス。
+                        # resolve_execution_provider_bundle が生成するより
+                        # リッチなフォールバックペイロードが必要なので、
+                        # kind_result の provider_payload ではなくここで呼ぶ。
+                        routing = resolve_execution_provider_bundle(
+                            db, plan, matched_task,
+                            retry_count=int(getattr(execution, "retry_count", 0) or 0),
+                        )
+                        provider_payload = routing.get("provider_payload")
+                        fallback_provider_payload = routing.get("fallback_provider_payload")
+                        # ルーティング理由をペイロード自体に埋め込み、sidecar が
+                        # 実際の provider メタデータにエコーバックできるようにする。
+                        if provider_payload is not None:
+                            provider_payload = dict(provider_payload)
+                            provider_payload["provider_mode_selected"] = routing.get(
+                                "provider_mode_selected"
+                            )
+                            provider_payload["provider_selection_reason"] = routing.get(
+                                "provider_selection_reason"
+                            )
+                        if fallback_provider_payload is not None:
+                            fallback_provider_payload = dict(fallback_provider_payload)
+                            fallback_provider_payload["provider_mode_selected"] = (
+                                "remote_only"
+                            )
+                            fallback_provider_payload["provider_selection_reason"] = (
+                                "runtime_fallback_remote"
+                            )
+                        logger.info(
+                            "provider_selected execution_id=%s mode=%s adapter=%s "
+                            "fallback=%s reason=%s",
+                            execution.id,
+                            routing.get("provider_mode_selected"),
+                            routing.get("selected_adapter_name"),
+                            routing.get("fallback_adapter_name"),
+                            routing.get("provider_selection_reason"),
+                        )
+                        # resolve_execution_kind が external_cli を要求したのに
+                        # HTTP パスに着地した場合、目立つようにログ出力する。
+                        # このログ行がないと worker 層で格下げが見えなくなる。
+                        cli_fallback = kind_result.get("external_cli_fallback_reason")
+                        if cli_fallback:
+                            logger.warning(
+                                "external_cli_fallback execution_id=%s reason=%s",
+                                execution.id,
+                                cli_fallback,
+                            )
+                            # 2つの永続化チャネル:
+                            # 1. provider_payload — sidecar が /complete 時に
+                            #    provider_meta の一部としてエコーバック
+                            #    できるようにする（ベストエフォート、未知の
+                            #    キーを転送しないアダプタでは失われる可能性あり）。
+                            # 2. input_data センチネル — completion_service が
+                            #    アーティファクトメタデータ構築時に Execution 行
+                            #    から直接読み取る。こちらが永続チャネルであり、
+                            #    ランタイムアダプタがペイロードキーを削除しても
+                            #    動作する。
+                            if provider_payload is not None:
+                                provider_payload["external_cli_fallback_reason"] = (
+                                    cli_fallback
+                                )
+                            try:
+                                if isinstance(input_data, dict):
+                                    input_data["_nexmagi_external_cli_fallback_reason"] = cli_fallback
+                            except Exception:  # noqa: BLE001
+                                pass
+    except Exception as exc:  # noqa: BLE001
+        # warning から exception に昇格し、スタックトレースを
+        # キャプチャする。以前のバージョンは実際のバグを飲み込んでいた
+        # （例: coordinator_service.py の logger インポート欠落が
+        # 全ステップをデフォルト HTTP provider パスに黙って格下げし、
+        # CLI ルーティングが発火しなかった理由がアーティファクトから
+        # 一切わからなかった）。
+        logger.exception(
+            "provider routing skipped for execution %s: %s",
+            execution_id, exc,
+        )
+        # input_data にセンチネルをスタンプし、finalize_execution が
+        # アーティファクトメタデータにエコーできるようにする。これがないと
+        # 下流のオブザーバーは全ルーティングロジックを黙ってバイパスした
+        # 「成功」実行を見ることになる。
+        try:
+            if isinstance(input_data, dict):
+                input_data["_nexmagi_routing_failed"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------------
+    # スタンドアロンスキル実行 — external_cli ルーティング。
+    #
+    # POST /api/execute 経由で起動されたスキル（ワークフロープランなし）では、
+    # execute.py がスキルの execution_config を input_data の
+    # `_nexmagi_skill_execution_config` に埋め込む（スキルが非デフォルト設定を
+    # 宣言している場合）。ここで external_cli を処理する。スタンドアロンの
+    # provider 選択は既存の model_type パスに委ねる。
+    # ------------------------------------------------------------------
+    if (
+        external_cli_payload is None
+        and execution_kind == "http_provider"
+        and execution.skill_id
+        and not execution.workflow_execution_id
+    ):
+        try:
+            raw_cfg = input_data.get("_nexmagi_skill_execution_config") if isinstance(input_data, dict) else None
+            if isinstance(raw_cfg, dict):
+                from app.services.workflow_step_schema import StepExecutionConfig
+                skill_cfg = StepExecutionConfig.model_validate(raw_cfg)
+                if skill_cfg.execution.execution_kind == "external_cli":
+                    from app.services.external_cli_adapters import (
+                        build_external_cli_payload,
+                    )
+                    from app.services.coordinator_extensions import list_adapters
+                    from app.services.external_cli_capabilities import (
+                        required_capabilities_for_task,
+                    )
+
+                    # アダプタ選択: preferred_adapter → cli_runtime_hint。
+                    target = None
+                    preferred_name = skill_cfg.execution.preferred_adapter
+                    runtime_hint = skill_cfg.execution.cli_runtime_hint
+                    adapters = list_adapters(db, only_enabled=True)
+                    if preferred_name:
+                        for a in adapters:
+                            if a.transport == "external_cli" and a.name == preferred_name:
+                                target = a
+                                break
+                    if target is None and runtime_hint:
+                        for a in adapters:
+                            if a.transport != "external_cli":
+                                continue
+                            try:
+                                cfg = json.loads(a.config or "{}")
+                            except json.JSONDecodeError:
+                                cfg = {}
+                            if cfg.get("runtime") == runtime_hint:
+                                target = a
+                                break
+
+                    cwd = skill_cfg.execution.cwd_hint
+                    if target is not None and cwd:
+                        allow_writes = bool(
+                            skill_cfg.approval.allow_writes
+                            or skill_cfg.approval.policy == "allow_write"
+                        )
+                        allow_shell = bool(
+                            skill_cfg.approval.allow_shell
+                            or skill_cfg.approval.policy == "allow_shell"
+                        )
+                        required_caps = required_capabilities_for_task(
+                            role="writer",
+                            writes_files=allow_writes,
+                            allow_shell=allow_shell,
+                            has_workspace=False,
+                            requires_local_auth=True,
+                        )
+                        # ケイパビリティゲート（ワークフローパスと同一ポリシー）。
+                        try:
+                            target_caps_raw = json.loads(target.capabilities or "[]")
+                        except json.JSONDecodeError:
+                            target_caps_raw = []
+                        target_caps = set(
+                            target_caps_raw if isinstance(target_caps_raw, list) else []
+                        )
+                        step_required = set(skill_cfg.execution.required_capabilities or [])
+                        if allow_writes:
+                            step_required.add("file_write")
+                        if allow_shell:
+                            step_required.add("shell_exec")
+                        missing_caps = sorted(step_required - target_caps)
+                        if missing_caps:
+                            logger.warning(
+                                "standalone skill external_cli fallback to provider: "
+                                "execution=%s adapter=%s missing_caps=%s",
+                                execution.id, target.name, missing_caps,
+                            )
+                        else:
+                            external_cli_payload = build_external_cli_payload(
+                                target,
+                                cwd=cwd,
+                                prompt=final_prompt,
+                                task_id=f"skill_{execution.id}",
+                                workflow_run_id=f"standalone_{execution.id}",
+                                task_role="writer",
+                                allow_writes=allow_writes,
+                                allow_shell=allow_shell,
+                                required_capabilities=required_caps,
+                                approval_policy=skill_cfg.approval.policy,
+                                selection_reason=(
+                                    f"skill_standalone:external_cli:{target.name}"
+                                ),
+                                cli_model=getattr(skill_cfg.execution, "cli_model", None),
+                            )
+                            if external_cli_payload is not None:
+                                execution_kind = "external_cli"
+                                provider_payload = None
+                                fallback_provider_payload = None
+                                logger.info(
+                                    "standalone skill external_cli selected "
+                                    "execution_id=%s adapter=%s runtime=%s",
+                                    execution.id, target.name,
+                                    external_cli_payload.get("runtime"),
+                                )
+                    elif target is None:
+                        logger.warning(
+                            "standalone skill execution_config requested external_cli "
+                            "but no matching adapter found: execution=%s preferred=%s hint=%s",
+                            execution.id, preferred_name, runtime_hint,
+                        )
+                    elif not cwd:
+                        logger.warning(
+                            "standalone skill external_cli requires cwd_hint: execution=%s",
+                            execution.id,
+                        )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "standalone skill external_cli routing skipped for execution %s: %s",
+                execution_id, exc,
+            )
 
     # 署名生成（api_keys は署名対象に含めない）
     bundle_data = {
@@ -468,17 +1153,37 @@ async def _get_execution_bundle_inner(
         "output_format": execution.output_format or "txt",
         "enable_deep_think": bool(execution.enable_deep_think),
         "agent_profile": normalized_profile,
+        "provider_payload": provider_payload,
+        "fallback_provider_payload": fallback_provider_payload,
+        "execution_kind": execution_kind,
+        "external_cli_payload": external_cli_payload,
     }
     signature = sign_bundle(bundle_data)
     bundle_data["api_keys"] = api_keys if api_keys else None
 
     logger.info(f"Bundle issued for execution {execution_id} (dispatch_mode={execution.dispatch_mode}, has_keys={'openai' in api_keys or 'gemini' in api_keys})")
+    # external_cli バンドルのデバッグダンプ（WF13 の親パス検証後に削除予定）。
+    # Rust が受け取る構造化ペイロードをログ出力し、Tauri の stderr なしで
+    # validate_cwd / レジストリ検索 / ケイパビリティチェックの失敗モードと
+    # 突き合わせできるようにする。
+    if execution_kind == "external_cli" and external_cli_payload is not None:
+        logger.info(
+            "external_cli_payload_debug execution_id=%s adapter_id=%s runtime=%s cwd=%r workspace_id=%r required_caps=%s allow_writes=%s allow_shell=%s",
+            execution_id,
+            external_cli_payload.get("adapter_id"),
+            external_cli_payload.get("runtime"),
+            external_cli_payload.get("cwd"),
+            external_cli_payload.get("workspace_id"),
+            external_cli_payload.get("required_capabilities"),
+            external_cli_payload.get("allow_writes"),
+            external_cli_payload.get("allow_shell"),
+        )
 
     return BundleResponse(**bundle_data, signature=signature)
 
 
 # ---------------------------------------------------------------------------
-# Complete POST
+# 完了 POST
 # ---------------------------------------------------------------------------
 
 @router.post("/executions/{execution_id}/complete", response_model=WorkerCompleteResponse)
@@ -534,6 +1239,8 @@ async def complete_execution(
         execution_time_ms=body.execution_time_ms,
         status_result="success",
         template_text=template_text,
+        provider_meta=body.provider_meta,
+        external_cli_meta=body.external_cli_meta,
     )
 
     # Redis 完了イベント（UI SSE 用）
@@ -596,6 +1303,13 @@ async def post_chunk(
 class WorkerErrorRequest(BaseModel):
     error_message: str
     execution_time_ms: int = 0
+    # external_cli 実行が失敗した場合（非ゼロ終了、バイナリ欠落、
+    # auth_required、capability_mismatch 等）でも local worker は
+    # 構造化された meta dict を保持している。エラーパス経由で転送し、
+    # finalize_execution がアーティファクトにスタンプして失敗を
+    # 監査可能にする。通常の HTTP エラーでは None。
+    external_cli_meta: Optional[dict] = None
+    provider_meta: Optional[dict] = None
 
 
 @router.post("/executions/{execution_id}/error")
@@ -618,6 +1332,25 @@ async def report_execution_error(
     if auth["auth_type"] == "worker_key" and auth["account_id"] != execution.account_id:
         raise HTTPException(status_code=403, detail="アクセス権がありません")
 
+    # レースコンディションガード。
+    # 複数のワーカー（docker local_worker デーモン + Tauri orchestration
+    # sidecar）が同じ execution 行を競合する場合、一方が勝って
+    # /complete を POST する（status=success）。負けた側の bundle 取得は
+    # 409 になり、負けた側がここに /error を POST しようとする。
+    # そのエラー報告を受け入れると、正常に成功した行をエラーで
+    # 上書きしてしまい、ワークフローのリトライ機構が重複実行を生成する。
+    #
+    # 修正: 非エラーの終端状態で既に完了した execution のエラー報告は
+    # 無視する。監査でレースが見えるようログは残すが、行は変更しない。
+    if execution.status in ("success", "cancelled"):
+        logger.info(
+            "Ignoring late error report for execution %s (current status=%s, "
+            "loser-of-race scenario): %s",
+            execution_id, execution.status,
+            (body.error_message or "")[:200],
+        )
+        return {"status": execution.status, "execution_id": execution_id, "noop": True}
+
     finalize_execution(
         db=db,
         execution=execution,
@@ -627,6 +1360,8 @@ async def report_execution_error(
         execution_time_ms=body.execution_time_ms,
         status_result="error",
         error_message=body.error_message,
+        provider_meta=body.provider_meta,
+        external_cli_meta=body.external_cli_meta,
     )
 
     try:
@@ -722,6 +1457,112 @@ async def get_execution_output(
         "output": execution.output_data or "",
         "model_used": execution.model_used or "",
         "tokens_used": execution.tokens_used or 0,
+    }
+
+
+# ───────────────────────────────────────────────
+# ワークスペースライフサイクルエンドポイント（Tauri ファイルシステム連携）
+# ───────────────────────────────────────────────
+
+class WorkspacePathUpdateRequest(BaseModel):
+    workspace_path: str
+
+
+@router.post("/workspaces/{workspace_id}/path")
+async def api_update_workspace_path(
+    workspace_id: str,
+    body: WorkspacePathUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """Tauri 側がワークスペース用に作成した具体的なファイルシステムパスを報告する。
+    行を reserved -> active に遷移させる。
+
+    パスは絶対パスであること、トラバーサルシーケンスを含まないことを検証する。
+    backend はパスが desktop ユーザーの実際のワークスペースルート配下にあるか
+    完全には検証できない（マシン固有のため）が、明らかなエスケープは拒否する。
+    """
+    from app.services.coordinator_service import update_workspace_path
+    path_str = (body.workspace_path or "").strip()
+    if not path_str.startswith("/"):
+        raise HTTPException(
+            status_code=400,
+            detail="workspace_path must be absolute",
+        )
+    if ".." in path_str.split("/"):
+        raise HTTPException(
+            status_code=400,
+            detail="workspace_path must not contain traversal segments",
+        )
+    ws = update_workspace_path(db, workspace_id, path_str)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    return {"workspace_id": ws.workspace_id, "status": ws.status, "workspace_path": ws.workspace_path}
+
+
+@router.post("/workspaces/{workspace_id}/promote")
+async def api_promote_workspace(
+    workspace_id: str,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """Mark a workspace as promoted (files merged / kept)."""
+    from app.services.coordinator_service import promote_workspace
+    ws = promote_workspace(db, workspace_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    return {"workspace_id": ws.workspace_id, "status": ws.status}
+
+
+@router.post("/workspaces/{workspace_id}/cleanup")
+async def api_cleanup_workspace(
+    workspace_id: str,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """Mark a workspace as cleaned. Actual filesystem removal is the
+    Tauri side's responsibility — backend only records the status.
+    """
+    from app.services.coordinator_service import cleanup_workspace
+    ws = cleanup_workspace(db, workspace_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    return {"workspace_id": ws.workspace_id, "status": ws.status}
+
+
+@router.post("/adapters/{adapter_id}/health")
+async def api_sync_adapter_health(
+    adapter_id: str,
+    health_status: str = "unknown",
+    detail: str = None,
+    capabilities: str = None,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """Tauri ランタイムからアダプタの health 状態をバックエンドに同期する。"""
+    from app.models import CoordinatorAdapter
+    adapter = db.query(CoordinatorAdapter).filter(
+        CoordinatorAdapter.adapter_id == adapter_id,
+    ).first()
+    if not adapter:
+        # adapter_id で見つからない場合は名前 (human-readable) でも検索
+        adapter = db.query(CoordinatorAdapter).filter(
+            CoordinatorAdapter.name == adapter_id,
+        ).first()
+    if not adapter:
+        raise HTTPException(status_code=404, detail="adapter not found")
+
+    adapter.health_status = health_status
+    adapter.last_health_check = datetime.now(timezone.utc)
+    if capabilities:
+        adapter.supported_capabilities = capabilities
+    db.commit()
+    db.refresh(adapter)
+    return {
+        "adapter_id": adapter.adapter_id,
+        "name": adapter.name,
+        "health_status": adapter.health_status,
+        "last_health_check": adapter.last_health_check.isoformat() if adapter.last_health_check else None,
     }
 
 

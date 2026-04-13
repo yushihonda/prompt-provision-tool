@@ -1,0 +1,37 @@
+stateDiagram-v2
+    [*] --> initializing : create_session()
+    initializing --> running : plan built
+
+    running --> running : step_entered / step completed
+    running --> waiting_approval : approval_requested
+    running --> completed : all steps done (success)
+    running --> failed : step error / workflow error
+
+    waiting_approval --> running : approval granted
+    waiting_approval --> failed : approval rejected / timed_out
+
+    completed --> [*]
+    failed --> [*]
+    cancelled --> [*]
+
+    running --> cancelled : user cancel
+    waiting_approval --> cancelled : user cancel
+
+    note right of running
+        current_step_id updated
+        resume_cursor updated
+        runtime_bindings appended
+        workspace_bindings appended
+        normalized events emitted
+    end note
+
+    note right of waiting_approval
+        approval_requests row: pending
+        session.waiting_approval event
+        frontend modal shown
+    end note
+
+    note right of completed
+        session.completed event
+        artifact_refs finalized
+    end note

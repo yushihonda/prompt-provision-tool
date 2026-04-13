@@ -356,12 +356,17 @@ async def create_skill(
     # input_schemaをJSON文字列に変換
     input_schema_str = json.dumps(skill.input_schema) if skill.input_schema else None
 
+    # Skill-level execution_config (runtime selection) — stored as JSON
+    # string in config_json. Nullable; legacy behavior when absent.
+    config_json_str = json.dumps(skill.config_json) if skill.config_json else None
+
     db_skill = Skill(
         name=skill.name,
         description=skill.description,
         encrypted_content=encrypted_content,
         model_type=skill.model_type,
         input_schema=input_schema_str,
+        config_json=config_json_str,
         is_active=True,
         allows_file_output=skill.allows_file_output,
         enable_deep_think=skill.enable_deep_think,
@@ -380,6 +385,13 @@ async def create_skill(
         except (json.JSONDecodeError, TypeError):
             input_schema = None
 
+    config_json_out = None
+    if db_skill.config_json:
+        try:
+            config_json_out = json.loads(db_skill.config_json)
+        except (json.JSONDecodeError, TypeError):
+            config_json_out = None
+
     # SkillResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
     return SkillResponse(
         id=db_skill.id,
@@ -390,6 +402,7 @@ async def create_skill(
         allows_file_output=db_skill.allows_file_output,
         enable_deep_think=db_skill.enable_deep_think,
         default_agent_profile=getattr(db_skill, "default_agent_profile", None),
+        config_json=config_json_out,
         is_active=db_skill.is_active,
         created_by=db_skill.created_by,
         created_at=db_skill.created_at,
@@ -421,6 +434,13 @@ async def list_skills(
             except (json.JSONDecodeError, TypeError):
                 input_schema = None
 
+        config_json_out = None
+        if getattr(skill, "config_json", None):
+            try:
+                config_json_out = json.loads(skill.config_json)
+            except (json.JSONDecodeError, TypeError):
+                config_json_out = None
+
         # SkillResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
         items.append(
             SkillResponse(
@@ -432,6 +452,7 @@ async def list_skills(
                 allows_file_output=skill.allows_file_output,
                 enable_deep_think=skill.enable_deep_think,
                 default_agent_profile=getattr(skill, "default_agent_profile", None),
+                config_json=config_json_out,
                 is_active=skill.is_active,
                 created_by=skill.created_by,
                 created_at=skill.created_at,
@@ -565,6 +586,13 @@ async def list_workflows(
                 ) for ws in g_skills],
             ))
 
+        wf_cfg_out = None
+        if getattr(wf, "config_json", None):
+            try:
+                wf_cfg_out = json.loads(wf.config_json) if isinstance(wf.config_json, str) else wf.config_json
+            except (json.JSONDecodeError, TypeError):
+                wf_cfg_out = None
+
         items.append(
             WorkflowListItem(
                 id=wf.id,
@@ -572,6 +600,7 @@ async def list_workflows(
                 description=wf.description,
                 is_active=wf.is_active,
                 parent_model_type=wf.parent_model_type,
+                config_json=wf_cfg_out,
                 created_at=wf.created_at,
                 updated_at=wf.updated_at,
                 groups=groups_data,
@@ -606,6 +635,13 @@ async def create_workflow_with_parent_skill(
         except Exception:
             workflow_input_schema_str = None
 
+    workflow_config_json_str = None
+    if getattr(request, "config_json", None):
+        try:
+            workflow_config_json_str = json.dumps(request.config_json, ensure_ascii=False)
+        except Exception:
+            workflow_config_json_str = None
+
     db_wf = Workflow(
         name=request.name,
         description=request.description,
@@ -617,6 +653,7 @@ async def create_workflow_with_parent_skill(
         parent_enable_deep_think=request.parent_skill.enable_deep_think,
         parent_skill_mode="required",
         supervisor_mode=getattr(request, 'supervisor_mode', 'disabled') or 'disabled',
+        config_json=workflow_config_json_str,
     )
     db.add(db_wf)
     db.flush()  # IDを取得
@@ -652,6 +689,13 @@ async def create_workflow_with_parent_skill(
             if raw_judge_prompt:
                 encrypted_judge_prompt = encryption_service.encrypt(raw_judge_prompt)
 
+            grp_config_json_str = None
+            if getattr(grp_data, "config_json", None):
+                try:
+                    grp_config_json_str = json.dumps(grp_data.config_json, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    grp_config_json_str = None
+
             grp = WorkflowGroup(
                 workflow_id=db_wf.id,
                 group_order=grp_data.group_order,
@@ -664,6 +708,7 @@ async def create_workflow_with_parent_skill(
                 dynamic_mode=getattr(grp_data, 'dynamic_mode', 'static') or 'static',
                 judge_prompt=encrypted_judge_prompt,
                 judge_model=getattr(grp_data, 'judge_model', None),
+                config_json=grp_config_json_str,
             )
             db.add(grp)
             db.flush()
@@ -699,6 +744,7 @@ async def create_workflow_with_parent_skill(
                     on_error=getattr(skill_data, 'on_error', 'stop') or 'stop',
                     max_retries=getattr(skill_data, 'max_retries', 0) or 0,
                     retry_delay_seconds=getattr(skill_data, 'retry_delay_seconds', 5) or 5,
+                    depends_on=getattr(skill_data, 'depends_on', None),
                     input_mapping=input_mapping_str,
                     output_key=getattr(skill_data, 'output_key', None),
                     quality_gate_type=getattr(skill_data, 'quality_gate_type', 'disabled') or 'disabled',
@@ -788,6 +834,13 @@ async def create_workflow(
         )
         encrypted_parent_content = encryption_service.encrypt(default_content)
 
+    workflow_config_json_str = None
+    if getattr(workflow, "config_json", None) is not None:
+        try:
+            workflow_config_json_str = json.dumps(workflow.config_json, ensure_ascii=False)
+        except Exception:
+            workflow_config_json_str = None
+
     db_wf = Workflow(
         name=workflow.name,
         description=workflow.description,
@@ -799,10 +852,28 @@ async def create_workflow(
         parent_enable_deep_think=workflow.parent_enable_deep_think,
         parent_skill_mode="required",
         supervisor_mode=getattr(workflow, 'supervisor_mode', 'disabled') or 'disabled',
+        config_json=workflow_config_json_str,
     )
     db.add(db_wf)
     db.commit()
     db.refresh(db_wf)
+
+    # NOTE: This endpoint creates an EMPTY workflow (no groups/skills).
+    # If the caller wants to seed groups in one shot, they should use
+    # POST /workflows/with-parent-skill which has the full create path
+    # (group encryption, skill validation, dependency wiring, etc).
+    # We deliberately reject `groups` here rather than half-implementing
+    # group creation — last time we tried that, condition_expression /
+    # supervisor_prompt / judge_prompt / skip_on_condition_fail / skills
+    # all silently fell through.
+    if getattr(workflow, "groups", None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "groups を含むワークフロー作成は POST /workflows/with-parent-skill "
+                "を使用してください。このエンドポイントは空ワークフロー作成専用です。"
+            ),
+        )
 
     return _build_workflow_response(db_wf, db)
 
@@ -847,6 +918,20 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
                     handoff_rules_parsed = json.loads(ws.handoff_rules) if isinstance(ws.handoff_rules, str) else ws.handoff_rules
                 except (json.JSONDecodeError, TypeError):
                     pass
+            # Per-step execution_config (lives in WorkflowSkill.config_json
+            # alongside any other free-form keys). Parse the whole JSON
+            # blob and pass it through so the workflow builder UI can
+            # round-trip it intact.
+            ws_config_json_parsed = None
+            if getattr(ws, 'config_json', None):
+                try:
+                    ws_config_json_parsed = (
+                        json.loads(ws.config_json)
+                        if isinstance(ws.config_json, str)
+                        else ws.config_json
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    ws_config_json_parsed = None
             skill_item = WorkflowGroupSkillItem(
                 id=ws.id,
                 skill_id=ws.skill_id,
@@ -865,6 +950,13 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
                 max_reflection_loops=getattr(ws, 'max_reflection_loops', 0) or 0,
                 handoff_rules=handoff_rules_parsed,
                 agent_profile=getattr(ws, "agent_profile", None),
+                depends_on=getattr(ws, "depends_on", None),
+                # enable_deep_think is owned by the parent Skill row,
+                # not WorkflowSkill — there is no per-step override
+                # column. We surface the parent's value here so the
+                # builder UI can display it (read-only context).
+                enable_deep_think=(skill.enable_deep_think if skill is not None else None),
+                config_json=ws_config_json_parsed,
             )
             grp_skills.append(skill_item)
             # 後方互換: フラット skills
@@ -897,6 +989,17 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
             except Exception:
                 judge_prompt_val = "(復号エラー)"
 
+        grp_config_json_parsed = None
+        if getattr(grp, "config_json", None):
+            try:
+                grp_config_json_parsed = (
+                    json.loads(grp.config_json)
+                    if isinstance(grp.config_json, str)
+                    else grp.config_json
+                )
+            except (json.JSONDecodeError, TypeError):
+                grp_config_json_parsed = None
+
         groups_list.append(WorkflowGroupItem(
             id=grp.id,
             group_order=grp.group_order,
@@ -909,6 +1012,7 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
             dynamic_mode=getattr(grp, 'dynamic_mode', 'static') or 'static',
             judge_prompt=judge_prompt_val,
             judge_model=getattr(grp, 'judge_model', None),
+            config_json=grp_config_json_parsed,
             skills=grp_skills,
         ))
 
@@ -932,6 +1036,17 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
         except Exception:
             parent_content = "(復号エラー)"
 
+    workflow_config_json_parsed = None
+    if getattr(db_wf, "config_json", None):
+        try:
+            workflow_config_json_parsed = (
+                json.loads(db_wf.config_json)
+                if isinstance(db_wf.config_json, str)
+                else db_wf.config_json
+            )
+        except (json.JSONDecodeError, TypeError):
+            workflow_config_json_parsed = None
+
     return WorkflowResponse(
         id=db_wf.id,
         name=db_wf.name,
@@ -942,6 +1057,7 @@ def _build_workflow_response(db_wf: Workflow, db: Session) -> WorkflowResponse:
         parent_model_type=db_wf.parent_model_type,
         parent_enable_deep_think=db_wf.parent_enable_deep_think,
         supervisor_mode=getattr(db_wf, 'supervisor_mode', 'disabled') or 'disabled',
+        config_json=workflow_config_json_parsed,
         created_by=db_wf.created_by,
         created_at=db_wf.created_at,
         updated_at=db_wf.updated_at,
@@ -1009,7 +1125,23 @@ async def update_workflow(
         wf.parent_model_type = workflow_update.parent_model_type
     if workflow_update.parent_enable_deep_think is not None:
         wf.parent_enable_deep_think = workflow_update.parent_enable_deep_think
+    if workflow_update.supervisor_mode is not None:
         wf.supervisor_mode = workflow_update.supervisor_mode
+
+    # Workflow-level execution_config (top of inheritance chain).
+    # An explicit None in the request payload is "leave unchanged"; an
+    # empty dict clears the column so the workflow falls back to legacy
+    # defaults.
+    if workflow_update.config_json is not None:
+        if workflow_update.config_json == {}:
+            wf.config_json = None
+        else:
+            try:
+                wf.config_json = json.dumps(
+                    workflow_update.config_json, ensure_ascii=False
+                )
+            except Exception:
+                wf.config_json = None
 
     # グループ構造更新（全置換）
     if workflow_update.groups is not None:
@@ -1036,6 +1168,15 @@ async def update_workflow(
             if raw_judge_prompt:
                 encrypted_judge_prompt = encryption_service.encrypt(raw_judge_prompt)
 
+            # Group-level execution_config (sits between workflow and skill).
+            grp_config_json_str = None
+            raw_grp_cfg = getattr(grp_data, 'config_json', None)
+            if raw_grp_cfg:
+                try:
+                    grp_config_json_str = json.dumps(raw_grp_cfg, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    grp_config_json_str = None
+
             grp = WorkflowGroup(
                 workflow_id=workflow_id,
                 group_order=grp_data.group_order,
@@ -1048,6 +1189,7 @@ async def update_workflow(
                 dynamic_mode=getattr(grp_data, 'dynamic_mode', 'static') or 'static',
                 judge_prompt=encrypted_judge_prompt,
                 judge_model=getattr(grp_data, 'judge_model', None),
+                config_json=grp_config_json_str,
             )
             db.add(grp)
             db.flush()
@@ -1066,6 +1208,17 @@ async def update_workflow(
                 raw_handoff = getattr(skill_data, 'handoff_rules', None)
                 if raw_handoff:
                     handoff_rules_str = json.dumps(raw_handoff, ensure_ascii=False)
+                # Per-step config_json (holds execution_config). Serialize
+                # the dict the builder UI sent. None / empty dict clears
+                # the column so the step falls back to the parent skill's
+                # execution_config.
+                step_config_json_str = None
+                raw_step_cfg = getattr(skill_data, 'config_json', None)
+                if raw_step_cfg:
+                    try:
+                        step_config_json_str = json.dumps(raw_step_cfg, ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        step_config_json_str = None
                 ws = WorkflowSkill(
                     workflow_id=workflow_id,
                     skill_id=skill_data.skill_id,
@@ -1076,6 +1229,7 @@ async def update_workflow(
                     on_error=getattr(skill_data, 'on_error', 'stop') or 'stop',
                     max_retries=getattr(skill_data, 'max_retries', 0) or 0,
                     retry_delay_seconds=getattr(skill_data, 'retry_delay_seconds', 5) or 5,
+                    depends_on=getattr(skill_data, 'depends_on', None),
                     input_mapping=input_mapping_str,
                     output_key=getattr(skill_data, 'output_key', None),
                     quality_gate_type=getattr(skill_data, 'quality_gate_type', 'disabled') or 'disabled',
@@ -1084,6 +1238,7 @@ async def update_workflow(
                     max_reflection_loops=getattr(skill_data, 'max_reflection_loops', 0) or 0,
                     handoff_rules=handoff_rules_str,
                     agent_profile=getattr(skill_data, "agent_profile", None),
+                    config_json=step_config_json_str,
                 )
                 db.add(ws)
                 step_counter += 1
@@ -1274,7 +1429,15 @@ async def update_skill(
         skill.allows_file_output = skill_update.allows_file_output
     if skill_update.enable_deep_think is not None:
         skill.enable_deep_think = skill_update.enable_deep_think
+    if skill_update.default_agent_profile is not None:
         skill.default_agent_profile = skill_update.default_agent_profile
+    if skill_update.config_json is not None:
+        # Empty dict / None → clear column (revert to legacy default).
+        skill.config_json = (
+            json.dumps(skill_update.config_json)
+            if skill_update.config_json
+            else None
+        )
 
     db.commit()
     db.refresh(skill)
@@ -1287,6 +1450,13 @@ async def update_skill(
         except (json.JSONDecodeError, TypeError):
             input_schema = None
 
+    config_json_out = None
+    if skill.config_json:
+        try:
+            config_json_out = json.loads(skill.config_json)
+        except (json.JSONDecodeError, TypeError):
+            config_json_out = None
+
     # SkillResponseスキーマに合致するフィールドのみを返す（encrypted_contentは含めない）
     return SkillResponse(
         id=skill.id,
@@ -1296,6 +1466,7 @@ async def update_skill(
         input_schema=input_schema,
         allows_file_output=skill.allows_file_output,
         enable_deep_think=skill.enable_deep_think,
+        config_json=config_json_out,
         is_active=skill.is_active,
         created_by=skill.created_by,
         created_at=skill.created_at,
@@ -1510,7 +1681,7 @@ async def list_executions(
 
     items = []
     for execution in executions:
-        skill_name = execution.skill.name if execution.skill else None
+        skill_name = getattr(execution, 'skill_name_snapshot', None) or (execution.skill.name if execution.skill else None)
         # 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
         # 保存されていない場合はスキルの設定を参照（後方互換性のため）
         enable_deep_think = getattr(execution, 'enable_deep_think', None)
@@ -1525,14 +1696,38 @@ async def list_executions(
         if output_format is None:
             output_format = 'txt'  # デフォルト値
 
-        # ワークフロー情報を取得
+        # ワークフロー情報を取得（スナップショット優先）
         workflow_name = None
         wf_id = None
         if execution.workflow_execution_id:
             wf_exec = execution.workflow_execution
-            if wf_exec and wf_exec.workflow:
-                workflow_name = wf_exec.workflow.name
+            if wf_exec:
+                workflow_name = getattr(wf_exec, 'workflow_name_snapshot', None)
+                if not workflow_name and wf_exec.workflow:
+                    workflow_name = wf_exec.workflow.name
                 wf_id = wf_exec.workflow_id
+
+        # Provenance / runtime metadata lives on CoordinatorArtifact.extra_metadata
+        # (NOT executions.extra_metadata — that column doesn't exist).
+        # We pick the newest artifact tied to this execution_id and pass
+        # its parsed extra_metadata to the frontend so runtime-badge.js
+        # can render a chip.
+        extra_meta = None
+        try:
+            from app.models import CoordinatorArtifact
+            art = (
+                db.query(CoordinatorArtifact)
+                .filter(CoordinatorArtifact.execution_id == execution.id)
+                .order_by(CoordinatorArtifact.id.desc())
+                .first()
+            )
+            if art and art.extra_metadata:
+                try:
+                    extra_meta = json.loads(art.extra_metadata) if isinstance(art.extra_metadata, str) else art.extra_metadata
+                except (json.JSONDecodeError, TypeError):
+                    extra_meta = None
+        except Exception:  # noqa: BLE001
+            extra_meta = None
 
         # ExecutionResponseスキーマに合致するフィールドのみを返す（encrypted_contentやリレーションオブジェクトは含めない）
         execution_dict = {
@@ -1555,6 +1750,9 @@ async def list_executions(
             "skill_order": execution.skill_order,
             "workflow_name": workflow_name,
             "workflow_id": wf_id,
+            "agent_profile": getattr(execution, "agent_profile", None),
+            "execution_role": getattr(execution, "execution_role", None),
+            "extra_metadata": extra_meta,
         }
         items.append(execution_dict)
 

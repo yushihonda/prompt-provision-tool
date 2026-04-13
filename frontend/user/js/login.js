@@ -1,6 +1,7 @@
 // ユーザー ログイン画面 JavaScript
 
-const API_BASE = window.location.origin;
+const runtimeFetch = (path, options) => window.NexMAGIRuntime.fetchWithRuntime(path, options);
+const navigateTo = (path) => window.NexMAGIRuntime.navigate(path);
 
 function _loginEsc(s) {
     if (s == null) return '';
@@ -13,7 +14,7 @@ function _loginEsc(s) {
 
 // 前回の認証エラーを確認
 window.addEventListener('DOMContentLoaded', () => {
-    const authError = localStorage.getItem('auth_error');
+    const authError = sessionStorage.getItem('auth_error');
     if (authError) {
         try {
             const error = JSON.parse(authError);
@@ -40,7 +41,7 @@ window.addEventListener('DOMContentLoaded', () => {
                 customClass: { popup: 'swal-wide' }
             });
             // エラー情報をクリア
-            localStorage.removeItem('auth_error');
+            sessionStorage.removeItem('auth_error');
         } catch (e) {
             // エラー情報のパースに失敗した場合は無視
         }
@@ -60,7 +61,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
         formData.append('username', username);
         formData.append('password', password);
 
-        const response = await fetch(`${API_BASE}/api/auth/login`, {
+        const response = await runtimeFetch('/api/auth/login', {
             method: 'POST',
             body: formData
         });
@@ -96,12 +97,14 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
                 }
             }
 
-            // トークンをセッションストレージに保存
-            sessionStorage.setItem('token', data.access_token);
-            sessionStorage.setItem('username', username);
+            // desktop では secure storage、browser では sessionStorage に保存
+            await window.NexMAGIRuntime.saveAuthSession({
+                token: data.access_token,
+                username,
+            });
 
             // ダッシュボードへリダイレクト
-            window.location.href = 'dashboard.html';
+            navigateTo('dashboard.html');
         } else {
             showAlert(data.detail || 'ログインに失敗しました', 'error');
         }

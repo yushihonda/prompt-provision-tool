@@ -1,7 +1,11 @@
 // 共通のユーザー用JavaScript関数
 
-// API_BASEの設定（本番環境ではNginx経由でアクセス）
-const API_BASE = window.location.origin;
+// runtime adapter を唯一の読取窓口にする
+const getApiBase = () => window.NexMAGIRuntime.getApiBase();
+const runtimeFetch = (path, options) => window.NexMAGIRuntime.fetchWithRuntime(path, options);
+const navigateTo = (path) => window.NexMAGIRuntime.navigate(path);
+
+// SweetAlert2のデフォルト設定は swal-defaults.js で共通化
 
 /** HTML特殊文字をエスケープ（XSS防止） */
 function escapeHtmlCommon(text) {
@@ -13,6 +17,17 @@ function escapeHtmlCommon(text) {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
 }
+/** 数値をK/M表記に短縮 */
+function formatCompact(n) {
+    if (n == null) return '-';
+    n = Number(n);
+    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(n);
+}
+
+// renderMiniCube は mini-cube.js に統一（共通ファイル）
+
 /** escapeHtml のエイリアス — 各ページ JS から参照 */
 const escapeHtml = escapeHtmlCommon;
 
@@ -26,18 +41,18 @@ const USER_SWAL = {
 
 // 認証チェック（非同期）
 async function checkAuth() {
-    const token = sessionStorage.getItem('token');
-    const username = sessionStorage.getItem('username');
+    const token = await window.NexMAGIRuntime.getAuthToken();
+    const username = await window.NexMAGIRuntime.getAuthUsername();
 
     if (!token) {
-        window.location.href = 'login.html';
+        navigateTo('login.html');
         return;
     }
 
     // トークンの有効性をサーバー側で確認
     try {
         // ユーザー側のAPIエンドポイントを呼び出してトークンを検証
-        const response = await fetch(`${API_BASE}/api/user/skills?skip=0&limit=1`, {
+        const response = await runtimeFetch('/api/user/skills?skip=0&limit=1', {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${token}`,
@@ -48,24 +63,23 @@ async function checkAuth() {
         if (response.status === 401) {
             // トークンが無効な場合
             const errorText = await response.text().catch(() => '');
-            // エラー情報をlocalStorageに保存（リダイレクト後も確認できるように）
-            localStorage.setItem('auth_error', JSON.stringify({
+            // エラー情報をsessionStorageに保存（リダイレクト後も確認できるように）
+            sessionStorage.setItem('auth_error', JSON.stringify({
                 type: '401',
                 message: 'トークンが無効です',
                 response: errorText,
                 timestamp: new Date().toISOString()
             }));
-            sessionStorage.removeItem('token');
-            sessionStorage.removeItem('username');
-            window.location.href = 'login.html';
+            await window.NexMAGIRuntime.clearAuthSession();
+            navigateTo('login.html');
             return;
         }
 
         if (!response.ok) {
             // その他のエラー
             const errorText = await response.text().catch(() => '');
-            // エラー情報をlocalStorageに保存
-            localStorage.setItem('auth_error', JSON.stringify({
+            // エラー情報をsessionStorageに保存
+            sessionStorage.setItem('auth_error', JSON.stringify({
                 type: 'http_error',
                 status: response.status,
                 message: `認証チェックに失敗しました (${response.status})`,
@@ -90,16 +104,15 @@ async function checkAuth() {
             mobileUsernameDisplay.textContent = username;
         }
     } catch (error) {
-        // エラー情報をlocalStorageに保存
-        localStorage.setItem('auth_error', JSON.stringify({
+        // エラー情報をsessionStorageに保存
+        sessionStorage.setItem('auth_error', JSON.stringify({
             type: 'exception',
             message: error.message,
             stack: error.stack,
             timestamp: new Date().toISOString()
         }));
-        sessionStorage.removeItem('token');
-        sessionStorage.removeItem('username');
-        window.location.href = 'login.html';
+        await window.NexMAGIRuntime.clearAuthSession();
+        navigateTo('login.html');
     }
 }
 
@@ -117,8 +130,7 @@ async function logout() {
     });
 
     if (result.isConfirmed) {
-        sessionStorage.removeItem('token');
-        sessionStorage.removeItem('username');
+        await window.NexMAGIRuntime.clearAuthSession();
         await Swal.fire({
             title: 'ログアウトしました',
             text: 'ログイン画面に戻ります',
@@ -127,13 +139,13 @@ async function logout() {
             timer: 1500,
             showConfirmButton: false
         });
-        window.location.href = 'login.html';
+        navigateTo('login.html');
     }
 }
 
 // API リクエスト
 async function apiRequest(endpoint, options = {}) {
-    const token = sessionStorage.getItem('token');
+    const token = await window.NexMAGIRuntime.getAuthToken();
 
     const defaultOptions = {
         headers: {
@@ -152,13 +164,12 @@ async function apiRequest(endpoint, options = {}) {
     };
 
     try {
-        const response = await fetch(`${API_BASE}${endpoint}`, mergedOptions);
+        const response = await runtimeFetch(endpoint, mergedOptions);
 
         // 認証エラーの場合はログイン画面へ
         if (response.status === 401) {
-            sessionStorage.removeItem('token');
-            sessionStorage.removeItem('username');
-            window.location.href = 'login.html';
+            await window.NexMAGIRuntime.clearAuthSession();
+            navigateTo('login.html');
             return;
         }
 
@@ -198,7 +209,13 @@ async function apiRequest(endpoint, options = {}) {
         }
 
         if (!response.ok) {
-            throw new Error(data?.detail || 'リクエストに失敗しました');
+            // 409 Conflict はデスクトップのワークフロー完了後に発生しうる（完了済み実行への再アクセス）
+            // データが取得できていればエラーとして扱わない
+            if (response.status === 409 && data) {
+                console.warn(`API 409 (ignored): ${data?.detail || 'conflict'}`);
+                return data;
+            }
+            throw new Error(`API error ${response.status}: ${JSON.stringify(data?.detail || 'リクエストに失敗しました')}`);
         }
 
         return data;
@@ -257,61 +274,40 @@ function formatJSON(json) {
 // 共通レイアウト（ヘッダー＋ナビゲーション）
 // ---------------------------------------------------------------------------
 const USER_NAV_ITEMS = [
-    { href: 'dashboard.html', label: 'ワークフロー / スキル管理' },
+    { href: 'dashboard.html', label: 'ワークフロー / スキル' },
     { href: 'history.html',   label: '実行履歴' },
+    { href: 'settings.html',  label: 'API設定' },
+    { href: 'cli-terminal.html', label: 'ローカル実行環境' },
 ];
 
 /**
- * ヘッダー + モバイルメニュー + デスクトップナビを自動挿入する。
- *
- * @param {string} activePage - 現在のページ href (例: 'dashboard.html')
+ * NexMAGI app shell — dark header bar with cutout brand + pill nav.
  */
 function initUserLayout(activePage) {
     const container = document.querySelector('.container');
     if (!container) return;
 
-    const navHtml = () =>
-        USER_NAV_ITEMS.map(n =>
-            `<button class="nav-item${n.href === activePage ? ' active' : ''}" onclick="location.href='${n.href}'">${n.label}</button>`
-        ).join('\n');
+    const pillNavHtml = USER_NAV_ITEMS.map(n =>
+        `<button class="nav-pill${n.href === activePage ? ' active' : ''}" onclick="window.NexMAGIRuntime.navigate('${n.href}')">${n.label}</button>`
+    ).join('\n');
 
     const headerHtml = `
         <div class="header">
-            <span class="tool-name">Prompt Provision Tool</span>
-            <div class="user-info">
+            <div class="brand-cutout">
+                <span class="tool-name">NexMAGI</span>
+            </div>
+            <div class="header-nav">
+                ${pillNavHtml}
+            </div>
+            <div class="header-user">
                 <span id="username-display">-</span>
                 <button class="btn-logout" onclick="logout()">ログアウト</button>
-            </div>
-            <button class="hamburger-menu" onclick="toggleMobileMenu()">
-                <span></span><span></span><span></span>
-            </button>
-        </div>
-        <div class="menu-overlay" onclick="toggleMobileMenu()"></div>
-        <div class="mobile-menu" id="mobile-menu">
-            <div class="mobile-menu-header">
-                <span class="tool-name">Prompt Provision Tool</span>
-                <button class="hamburger-menu active" onclick="toggleMobileMenu()">
-                    <span></span><span></span><span></span>
-                </button>
-            </div>
-            <div class="mobile-menu-content">
-                <div class="nav">${navHtml()}</div>
-                <div class="user-info">
-                    <span id="mobile-username-display">-</span>
-                    <button class="btn btn-logout" onclick="logout()">ログアウト</button>
-                </div>
             </div>
         </div>`;
 
     const content = container.querySelector('.content');
     if (content) {
         content.insertAdjacentHTML('beforebegin', headerHtml);
-    }
-
-    // デスクトップナビ
-    const desktopNav = document.getElementById('desktop-nav');
-    if (desktopNav) {
-        desktopNav.insertAdjacentHTML('afterbegin', navHtml());
     }
 }
 
@@ -412,71 +408,58 @@ const PersistentStatusBar = {
         // Inject HTML if not exists
         if (!document.getElementById('persistent-status-bar')) {
             const statusBarHTML = `
-                <div id="persistent-status-bar" style="position: fixed; top: 120px; right: 20px; z-index: 1000; display: flex; flex-direction: column; align-items: flex-end;">
-                    <!-- 統合されたDock -->
-                    <div id="task-dock" style="width: 40px; height: 40px; background: rgba(30, 30, 30, 0.85); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 20px; overflow: hidden; transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); box-shadow: 0 4px 12px rgba(0,0,0,0.4); backdrop-filter: blur(15px); cursor: pointer;">
+                <div id="persistent-status-bar" style="position: fixed; top: 68px; right: 20px; z-index: 1000; display: flex; flex-direction: column; align-items: flex-end;">
+                    <div id="task-dock" style="width: 40px; height: 40px; background: rgba(94, 0, 255, 0.46); border: 1px solid rgba(94, 0, 255, 0.56); border-radius: 20px; overflow: hidden; transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); box-shadow: 0 2px 12px rgba(94, 0, 255, 0.35); cursor: pointer;">
 
-                        <!-- ヘッダー行（アイコン + 簡易情報） -->
                         <div id="dock-header" style="height: 40px; display: flex; align-items: center; padding: 0 10px; width: 100%;">
-                            <!-- アイコンコンテナ -->
                             <div style="width: 20px; height: 20px; display: flex; justify-content: center; align-items: center; flex-shrink: 0; margin-right: 10px;">
-                                <svg id="task-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" style="fill: rgba(255,255,255,0.5); transition: fill 0.3s ease;"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"/></svg>
-                                <div id="active-spinner" class="spinner" style="width: 18px; height: 18px; border-width: 2px; display: none; position: absolute; border-color: rgba(124, 58, 237, 0.8); border-top-color: #fff;"></div>
+                                <svg id="task-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" style="fill: rgba(255,255,255,0.8); transition: fill 0.3s ease;"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"/></svg>
+                                <div id="active-spinner" class="spinner" style="width: 18px; height: 18px; border-width: 2px; display: none; position: absolute; border-color: rgba(255,255,255,0.3); border-top-color: #fff;"></div>
                             </div>
 
-                            <!-- 簡易テキスト -->
                             <div id="dock-summary" style="flex-grow: 1; opacity: 0; display: flex; flex-direction: column; line-height: 1.2; overflow: hidden; white-space: nowrap; transition: opacity 0.3s ease;">
-                                <span style="font-size: 10px; color: #7c3aed; font-weight: bold;">バックグラウンド</span>
+                                <span style="font-size: 10px; color: rgba(255,255,255,0.7); font-weight: bold;">バックグラウンド</span>
                                 <span id="dock-prompt-name" style="font-size: 12px; color: #fff; font-weight: 500;">バックグラウンド</span>
                             </div>
 
-                            <!-- 展開インジケータ -->
-                            <svg id="expand-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="fill: rgba(255,255,255,0.5); margin-left: auto; opacity: 0; transition: opacity 0.3s ease, transform 0.3s ease;"><path d="M16.293 9.293 12 13.586 7.707 9.293l-1.414 1.414L12 16.414l5.707-5.707z"/></svg>
+                            <svg id="expand-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="fill: rgba(255,255,255,0.6); margin-left: auto; opacity: 0; transition: opacity 0.3s ease, transform 0.3s ease;"><path d="M16.293 9.293 12 13.586 7.707 9.293l-1.414 1.414L12 16.414l5.707-5.707z"/></svg>
                         </div>
 
-                        <!-- 詳細エリア（展開時のみ表示） -->
-                        <div id="dock-details" style="display: none; padding: 0 15px 15px 15px; opacity: 0; transform: translateY(-10px) scale(0.95); transition: opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s; max-height: 400px; overflow-y: auto; background: rgba(30, 30, 30, 0.85); border-radius: 0 0 20px 20px; backdrop-filter: blur(15px);">
-                            <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 0 0 10px 0;">
+                        <div id="dock-details" style="display: none; padding: 0 15px 15px 15px; opacity: 0; transform: translateY(-10px) scale(0.95); transition: opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s; max-height: 400px; overflow-y: auto; background: #DFDFD7; border-radius: 0 0 20px 20px;">
+                            <hr style="border: 0; border-top: 1px solid rgba(0,0,0,0.06); margin: 0 0 10px 0;">
 
-                            <!-- 実行中のタスク -->
                             <div id="active-task-section" style="display: none; margin-bottom: 15px;">
-                                <div style="color: #aaa; font-size: 11px; margin-bottom: 8px; font-weight: bold;">実行中</div>
-                                <div id="active-task-content" style="background: rgba(30, 30, 30, 0.6); border: 1px solid rgba(124, 58, 237, 0.4); border-radius: 8px; padding: 10px; backdrop-filter: blur(10px); transition: all 0.2s ease;">
-                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                                        <span id="active-task-name" style="color: #fff; font-size: 12px; font-weight: 500;"></span>
-                                    </div>
-                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                                        <span style="color: #aaa; font-size: 10px;">開始:</span>
-                                        <span id="active-task-start-time" style="font-family: monospace; color: #7c3aed; font-size: 10px;">00:00</span>
-                                    </div>
-                                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-                                        <button class="active-task-nav-btn btn btn-sm btn-secondary" style="padding: 4px 8px; font-size: 11px; background-color: rgba(108, 117, 125, 0.8); border: none; pointer-events: auto; flex: 1;">
-                                            詳細へ
-                                        </button>
-                                        <button id="stop-execution-btn" class="btn btn-danger" style="padding: 4px 8px; font-size: 11px; background-color: rgba(220, 53, 69, 0.8); border: none; pointer-events: auto;">
-                                            <span style="display: flex; align-items: center; gap: 5px;">
+                                <div style="color: #7a7a7a; font-size: 11px; margin-bottom: 8px; font-weight: bold;">実行中</div>
+                                <div class="card-cutout-wrapper">
+                                    <div id="active-task-content" class="card-cutout" style="--r:18px; --s:30px; background: #fff; padding: 12px 14px; border-radius: 18px;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                            <span id="active-task-name" style="color: #2d2d2d; font-size: 12px; font-weight: 500;"></span>
+                                        </div>
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                            <span style="color: #a0a0a0; font-size: 10px;">開始:</span>
+                                            <span id="active-task-start-time" style="font-family: monospace; color: #7c3aed; font-size: 10px;">00:00</span>
+                                        </div>
+                                        <button id="stop-execution-btn" class="btn" style="padding: 4px 8px; font-size: 11px; background: rgba(220, 53, 69, 0.1); border: 1px solid rgba(220,53,69,0.3); color: #dc3545; border-radius: 8px; pointer-events: auto; cursor: pointer; width: 100%;">
+                                            <span style="display: flex; align-items: center; justify-content: center; gap: 5px;">
                                                 <div class="spinner" id="stop-spinner" style="width: 10px; height: 10px; border-width: 1px; display: none;"></div>
                                                 停止
                                             </span>
                                         </button>
                                     </div>
+                                    <div class="active-task-nav-btn" style="width: 36px; height: 36px; position: absolute; top: 0; right: 0; border-radius: 50%; background: var(--accent); display: flex; justify-content: center; align-items: center; z-index: 2; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.2); pointer-events: auto; transition: transform 0.2s;" title="詳細へ">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg>
+                                    </div>
                                 </div>
                             </div>
 
-                            <!-- 待機中のタスク（キュー） -->
                             <div id="queued-tasks-section" style="display: none; margin-bottom: 15px;">
-                                <div style="color: #aaa; font-size: 11px; margin-bottom: 8px; font-weight: bold;">待機中</div>
-                                <div id="queued-tasks-list" style="display: flex; flex-direction: column; gap: 8px;">
-                                    <!-- 待機中タスクは動的に追加 -->
-                                </div>
+                                <div style="color: #7a7a7a; font-size: 11px; margin-bottom: 8px; font-weight: bold;">待機中</div>
+                                <div id="queued-tasks-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
                             </div>
 
-                            <!-- 完了したタスクのリスト -->
                             <div id="completed-tasks-section" style="display: none;">
-                                <div style="color: #aaa; font-size: 11px; margin-bottom: 8px; font-weight: bold;">完了</div>
-                                <div id="completed-tasks-list" style="display: flex; flex-direction: column; gap: 8px;">
-                                    <!-- 完了タスクは動的に追加 -->
-                                </div>
+                                <div style="color: #7a7a7a; font-size: 11px; margin-bottom: 8px; font-weight: bold;">完了</div>
+                                <div id="completed-tasks-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
                             </div>
                         </div>
                     </div>
@@ -508,7 +491,7 @@ const PersistentStatusBar = {
             // ホバーでパネル表示（実行中または完了タスクがある場合）
             dock.addEventListener('mouseenter', (e) => {
                 // 実行中または完了タスクがある場合のみ展開
-                const hasActive = !!this.executionId;
+                const hasActive = !!(this.executionId || this.workflowExecutionId || this.startTime);
                 const hasCompleted = Array.isArray(this.completedExecutions) && this.completedExecutions.length > 0;
                 const hasTasks = hasActive || hasCompleted;
 
@@ -554,7 +537,7 @@ const PersistentStatusBar = {
             // クリックでもパネル表示トグル
             dock.addEventListener('click', (e) => {
                 // 実行中、待機中、または完了タスクがある場合のみ展開
-                const hasActive = !!this.executionId;
+                const hasActive = !!(this.executionId || this.workflowExecutionId || this.startTime);
                 const hasQueued = Array.isArray(this.executionQueue) && this.executionQueue.length > 0;
                 const hasCompleted = Array.isArray(this.completedExecutions) && this.completedExecutions.length > 0;
                 const hasTasks = hasActive || hasQueued || hasCompleted;
@@ -676,9 +659,9 @@ const PersistentStatusBar = {
             dock.style.width = '300px';
             dock.style.maxHeight = '500px';
 
-            // 展開時は紫に戻す（完了時でも展開時は紫）
-            dock.style.background = 'rgba(124, 58, 237, 0.2)';
-            dock.style.borderColor = '#7c3aed';
+            // 展開時は紫
+            dock.style.background = '#7c3aed';
+            dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
 
             // 高さをautoに設定（アニメーションのため）
             requestAnimationFrame(() => {
@@ -710,8 +693,8 @@ const PersistentStatusBar = {
 
             // 展開時は確実にtask-dockを紫に設定（renderTasksの後に再度設定）
             if (dock) {
-                dock.style.background = 'rgba(124, 58, 237, 0.2)';
-                dock.style.borderColor = '#7c3aed';
+                dock.style.background = 'rgba(94, 0, 255, 0.46)';
+                dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
             }
         }
     },
@@ -734,42 +717,34 @@ const PersistentStatusBar = {
             dock.classList.remove('expanded');
 
             // 実行中または完了タスクがある場合のデフォルト状態に戻す
-            if (this.executionId) {
+            if (this.executionId || this.workflowExecutionId || this.startTime) {
                 dock.style.width = '200px';
                 dock.style.height = '40px';
-                dock.style.background = 'rgba(124, 58, 237, 0.2)';
-                dock.style.borderColor = '#7c3aed';
+                dock.style.background = '#7c3aed';
+                dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
             } else if ((this.executionQueue && this.executionQueue.length > 0) || (this.completedExecutions && this.completedExecutions.length > 0)) {
-                // 待機中または完了タスクがある場合、折りたたみ時は完了直後（5秒以内）かつ成功時のみ緑
                 dock.style.width = '200px';
                 dock.style.height = '40px';
                 const sortedTasks = [...this.completedExecutions].sort((a, b) => b.completedAt - a.completedAt);
                 const latestTask = sortedTasks[0];
-                const timeSinceCompletion = (Date.now() - latestTask.completedAt) / 1000; // 秒
-                const isRecentlyCompleted = timeSinceCompletion < 5; // 5秒以内
+                const timeSinceCompletion = (Date.now() - (latestTask?.completedAt || 0)) / 1000;
+                const isRecentlyCompleted = timeSinceCompletion < 5;
 
-                if (latestTask.status === 'success' && isRecentlyCompleted) {
-                    // 完了直後（5秒以内）かつ成功時は緑
-                    dock.style.background = 'rgba(40, 167, 69, 0.15)';
-                    dock.style.borderColor = '#28a745';
-                } else if (latestTask.status === 'error' && isRecentlyCompleted) {
-                    // 完了直後（5秒以内）かつエラー時は赤
-                    dock.style.background = 'rgba(220, 53, 69, 0.15)';
-                    dock.style.borderColor = '#dc3545';
-                } else if (latestTask.status === 'cancelled' && isRecentlyCompleted) {
-                    // 完了直後（5秒以内）かつキャンセル時は黄色
-                    dock.style.background = 'rgba(255, 193, 7, 0.15)';
-                    dock.style.borderColor = '#ffc107';
+                if (latestTask?.status === 'success' && isRecentlyCompleted) {
+                    dock.style.background = 'rgba(40, 167, 69, 0.08)';
+                    dock.style.borderColor = 'rgba(40, 167, 69, 0.3)';
+                } else if (latestTask?.status === 'error' && isRecentlyCompleted) {
+                    dock.style.background = 'rgba(220, 53, 69, 0.08)';
+                    dock.style.borderColor = 'rgba(220, 53, 69, 0.3)';
                 } else {
-                    // それ以外は紫
-                    dock.style.background = 'rgba(124, 58, 237, 0.15)';
-                    dock.style.borderColor = '#7c3aed';
+                    dock.style.background = '#7c3aed';
+                    dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
                 }
             } else {
                 dock.style.width = '40px';
                 dock.style.height = '40px';
-                dock.style.background = 'rgba(30, 30, 30, 0.6)';
-                dock.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                dock.style.background = '#7c3aed';
+                dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
             }
 
             dock.style.maxHeight = 'none';
@@ -1003,8 +978,8 @@ const PersistentStatusBar = {
                 this.greenDisplayTimeout = setTimeout(() => {
                     const dock = document.getElementById('task-dock');
                     if (dock && !dock.classList.contains('expanded')) {
-                        dock.style.background = 'rgba(124, 58, 237, 0.15)';
-                        dock.style.borderColor = '#7c3aed';
+                        dock.style.background = 'rgba(94, 0, 255, 0.46)';
+                        dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
 
                         // 完了サインを削除して「バックグラウンド」に戻す
                         const dockPromptName = document.getElementById('dock-prompt-name');
@@ -1034,8 +1009,8 @@ const PersistentStatusBar = {
             statusCancelled.style.display = 'none';
         }
         if (dock) {
-            dock.style.background = 'rgba(30, 30, 30, 0.6)';
-            dock.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+            dock.style.background = '#7c3aed';
+            dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
         }
 
         localStorage.removeItem('completed_execution');
@@ -1058,6 +1033,9 @@ const PersistentStatusBar = {
                 this.startTime = data.startTime;
                 this.updateUI(true);
                 this.renderTasks();
+
+                // バックエンドに確認して既に完了していればクリア
+                this._verifyStoredStatus(data);
             } catch (e) {
                 console.error('Failed to parse active_execution:', e);
                 localStorage.removeItem('active_execution');
@@ -1068,6 +1046,46 @@ const PersistentStatusBar = {
             this.updateUI(false);
             this.renderTasks();
         }
+    },
+
+    async _verifyStoredStatus(data) {
+        try {
+            if (data.workflowExecutionId) {
+                const wfStatus = await apiRequest(`/api/user/workflow-executions/${data.workflowExecutionId}/status`);
+                if (wfStatus && (wfStatus.status === 'success' || wfStatus.status === 'error' || wfStatus.status === 'cancelled')) {
+                    this.markAsCompleted(wfStatus.status === 'success' ? 'success' : wfStatus.status);
+                    return;
+                }
+            }
+            if (data.id) {
+                const exec = await apiRequest(`/api/user/executions/${data.id}`);
+                if (exec && (exec.status === 'success' || exec.status === 'error' || exec.status === 'cancelled')) {
+                    if (!(this.workflowExecutionId && exec.workflow_skill_id)) {
+                        this.markAsCompleted(exec.status === 'success' ? 'success' : exec.status);
+                        return;
+                    }
+                }
+            }
+            // IDが両方nullの場合、古すぎるデータ（10分以上）ならクリア
+            if (!data.workflowExecutionId && !data.id) {
+                const age = Date.now() - (data.startTime || 0);
+                if (age > 10 * 60 * 1000) {
+                    this._clearStale();
+                }
+            }
+        } catch (e) {
+            console.warn('Stored execution verify failed, clearing:', e);
+            this._clearStale();
+        }
+    },
+
+    _clearStale() {
+        localStorage.removeItem('active_execution');
+        this.startTime = null;
+        this.executionId = null;
+        this.workflowExecutionId = null;
+        this.updateUI(false);
+        this.renderTasks();
     },
 
     loadCompletedTasks() {
@@ -1146,17 +1164,14 @@ const PersistentStatusBar = {
         const title = isSuccess ? '実行完了' : '実行失敗';
         const body = isSuccess ? `${name} が完了しました` : `${name} でエラーが発生しました`;
 
-        // ブラウザ通知（Notification API）
-        if ('Notification' in window) {
-            if (Notification.permission === 'granted') {
+        // ブラウザ通知（Notification API）— パーミッション取得済みの場合のみ送信
+        // requestPermission はユーザージェスチャーが必要なため、非同期完了時には呼ばない
+        try {
+            if ('Notification' in window && Notification.permission === 'granted') {
                 new Notification(title, { body, icon: '/favicon.ico' });
-            } else if (Notification.permission !== 'denied') {
-                Notification.requestPermission().then(perm => {
-                    if (perm === 'granted') {
-                        new Notification(title, { body, icon: '/favicon.ico' });
-                    }
-                });
             }
+        } catch (e) {
+            // 通知送信失敗は無視
         }
     },
 
@@ -1209,8 +1224,8 @@ const PersistentStatusBar = {
         const completedTasksSection = document.getElementById('completed-tasks-section');
         const completedTasksList = document.getElementById('completed-tasks-list');
 
-        // 実行中のタスクを表示
-        if (this.executionId && activeTaskSection && activeTaskContent) {
+        // 実行中のタスクを表示（executionId, workflowExecutionId, または startTime があればアクティブ）
+        if ((this.executionId || this.workflowExecutionId || this.startTime) && activeTaskSection && activeTaskContent) {
             activeTaskSection.style.display = 'block';
             if (activeTaskName) {
                 // ワークフロー実行の場合はワークフロー名とステップ名を表示
@@ -1235,7 +1250,15 @@ const PersistentStatusBar = {
                 activeTaskNavBtn.onclick = (e) => {
                     e.stopPropagation();
                     if (this.workflowId) {
-                        const weParam = this.workflowExecutionId ? `&we_id=${this.workflowExecutionId}` : '';
+                        // workflowExecutionId が無い場合は localStorage から復元を試みる
+                        let weId = this.workflowExecutionId;
+                        if (!weId) {
+                            try {
+                                const saved = JSON.parse(localStorage.getItem('active_execution') || '{}');
+                                weId = saved.workflowExecutionId || null;
+                            } catch (e) {}
+                        }
+                        const weParam = weId ? `&we_id=${weId}` : '';
                         window.location.href = `workflow-execute.html?id=${this.workflowId}${weParam}`;
                     } else if (this.skillId) {
                         window.location.href = `execute.html?id=${this.skillId}`;
@@ -1258,17 +1281,17 @@ const PersistentStatusBar = {
 
             this.executionQueue.forEach((task, index) => {
                 const taskItem = document.createElement('div');
-                taskItem.style.cssText = 'background: rgba(30, 30, 30, 0.6); border: 1px solid rgba(255, 193, 7, 0.4); border-radius: 8px; padding: 10px; backdrop-filter: blur(10px); transition: all 0.2s ease;';
+                taskItem.style.cssText = 'background: #E9EAE5; border: 1px solid rgba(255, 193, 7, 0.3); border-radius: 12px; padding: 10px; transition: all 0.2s ease;';
 
                 taskItem.innerHTML = `
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <span style="color: #fff; font-size: 12px; font-weight: 500;">${escapeHtmlCommon(task.skillName || 'スキル')}</span>
+                        <span style="color: #2d2d2d; font-size: 12px; font-weight: 500;">${escapeHtmlCommon(task.skillName || 'スキル')}</span>
                         <span style="color: #ffc107; font-size: 11px; font-weight: bold;">待機中 #${index + 1}</span>
                     </div>
                     <div style="display: flex; gap: 8px;">
                         <button class="queued-task-nav-btn btn btn-sm btn-secondary"
                                 data-prompt-id="${task.skillId}"
-                                style="padding: 4px 8px; font-size: 11px; background-color: rgba(108, 117, 125, 0.8); border: none; pointer-events: auto; flex: 1;">
+                                style="padding: 4px 8px; font-size: 11px; background: rgba(94, 0, 255, 0.46); border: 1px solid rgba(94, 0, 255, 0.56); color: #fff; pointer-events: auto; flex: 1;">
                             詳細へ
                         </button>
                         <button class="queued-task-remove-btn btn btn-sm btn-danger"
@@ -1320,37 +1343,30 @@ const PersistentStatusBar = {
 
             sortedTasks.forEach(task => {
                 const taskItem = document.createElement('div');
+                taskItem.className = 'card-cutout-wrapper';
+                taskItem.style.cssText = 'margin-bottom: 4px;';
+
                 const isSuccess = task.status === 'success';
                 const isCancelled = task.status === 'cancelled';
-
-                // 背景を統一（成功時は緑、キャンセル時は黄色、エラー時は赤、それ以外は紫）
-                if (isSuccess) {
-                    taskItem.style.cssText = 'background: rgba(30, 30, 30, 0.6); border: 1px solid rgba(40, 167, 69, 0.4); border-radius: 8px; padding: 10px; backdrop-filter: blur(10px); transition: all 0.2s ease;';
-                } else if (isCancelled) {
-                    taskItem.style.cssText = 'background: rgba(30, 30, 30, 0.6); border: 1px solid rgba(255, 193, 7, 0.4); border-radius: 8px; padding: 10px; backdrop-filter: blur(10px); transition: all 0.2s ease;';
-                } else if (task.status === 'error') {
-                    taskItem.style.cssText = 'background: rgba(30, 30, 30, 0.6); border: 1px solid rgba(220, 53, 69, 0.4); border-radius: 8px; padding: 10px; backdrop-filter: blur(10px); transition: all 0.2s ease;';
-                } else {
-                    taskItem.style.cssText = 'background: rgba(30, 30, 30, 0.6); border: 1px solid rgba(124, 58, 237, 0.4); border-radius: 8px; padding: 10px; backdrop-filter: blur(10px); transition: all 0.2s ease;';
-                }
-
-                // ステータステキストは英語のまま
-                const statusText = isSuccess ? 'success' : (task.status === 'error' ? 'error' : task.status === 'cancelled' ? 'cancelled' : task.status);
                 const statusColor = isSuccess ? '#28a745' : (task.status === 'error' ? '#dc3545' : (isCancelled ? '#ffc107' : '#7c3aed'));
+                const statusText = isSuccess ? '✓' : (task.status === 'error' ? '✗' : isCancelled ? '⊘' : '•');
 
                 taskItem.innerHTML = `
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <span style="color: #fff; font-size: 12px; font-weight: 500;">${escapeHtmlCommon(task.skillName || 'スキル')}</span>
-                        <span style="color: ${statusColor}; font-size: 11px; font-weight: bold;">${statusText}</span>
+                    <div class="card-cutout" style="--r:16px; --s:26px; background:#fff; padding:10px 12px; border-radius:16px; border-left:3px solid ${statusColor};">
+                        <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                            <span style="color:${statusColor}; font-size:12px; font-weight:bold;">${statusText}</span>
+                            <span style="color:#2d2d2d; font-size:11px; font-weight:500; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtmlCommon(task.skillName || 'スキル')}</span>
+                        </div>
+                        <span style="color:${statusColor}; font-size:10px; font-weight:600;">${isSuccess ? 'success' : task.status === 'error' ? 'error' : isCancelled ? 'cancelled' : task.status}</span>
                     </div>
-                    <button class="completed-task-nav-btn btn btn-sm btn-secondary"
-                            data-prompt-id="${task.skillId}"
-                            data-execution-id="${task.id || task.executionId}"
-                            data-workflow-id="${task.workflowId || ''}"
-                            data-workflow-execution-id="${task.workflowExecutionId || ''}"
-                            style="padding: 4px 8px; font-size: 11px; background-color: rgba(108, 117, 125, 0.8); border: none; pointer-events: auto; width: 100%;">
-                        詳細へ
-                    </button>
+                    <div class="completed-task-nav-btn"
+                         data-prompt-id="${task.skillId}"
+                         data-execution-id="${task.id || task.executionId}"
+                         data-workflow-id="${task.workflowId || ''}"
+                         data-workflow-execution-id="${task.workflowExecutionId || ''}"
+                         style="width:32px; height:32px; position:absolute; top:0; right:0; border-radius:50%; background:var(--accent); display:flex; justify-content:center; align-items:center; z-index:2; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.2); pointer-events:auto; transition:transform 0.2s;" title="詳細へ">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg>
+                    </div>
                 `;
 
                 // 詳細へボタンのイベント
@@ -1403,8 +1419,8 @@ const PersistentStatusBar = {
                     dock.style.width = '200px';
                     dock.style.height = '40px';
                 }
-                dock.style.background = 'rgba(124, 58, 237, 0.2)';
-                dock.style.borderColor = '#7c3aed';
+                dock.style.background = 'rgba(94, 0, 255, 0.46)';
+                dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
                 if (dockPromptName) {
                     // ワークフロー実行の場合はワークフロー名を表示
                     if (this.workflowName) {
@@ -1447,8 +1463,8 @@ const PersistentStatusBar = {
                 } else {
                     // 展開中は常に紫、折りたたみ時は完了直後（5秒以内）かつ成功時のみ緑
                     if (isExpanded) {
-                        dock.style.background = 'rgba(124, 58, 237, 0.2)';
-                        dock.style.borderColor = '#7c3aed';
+                        dock.style.background = 'rgba(94, 0, 255, 0.46)';
+                        dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
                     } else {
                         // 完了直後（5秒以内）かつ成功時のみ緑
                         const timeSinceCompletion = (Date.now() - latestTask.completedAt) / 1000; // 秒
@@ -1464,8 +1480,8 @@ const PersistentStatusBar = {
                             dock.style.background = 'rgba(255, 193, 7, 0.15)';
                             dock.style.borderColor = '#ffc107';
                         } else {
-                            dock.style.background = 'rgba(124, 58, 237, 0.15)';
-                            dock.style.borderColor = '#7c3aed';
+                            dock.style.background = 'rgba(94, 0, 255, 0.46)';
+                            dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
                         }
                     }
                     if (dockPromptName) {
@@ -1500,8 +1516,8 @@ const PersistentStatusBar = {
             // タスクがない場合はデフォルト状態に戻す
             dock.style.width = '40px';
             dock.style.height = '40px';
-            dock.style.background = 'rgba(30, 30, 30, 0.6)';
-            dock.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+            dock.style.background = '#7c3aed';
+            dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
             if (dockSummary) dockSummary.style.opacity = '0';
             if (expandIcon) expandIcon.style.opacity = '0';
             // スキル名を「バックグラウンド」に戻す
@@ -1522,20 +1538,22 @@ const PersistentStatusBar = {
         const stopBtn = document.getElementById('stop-execution-btn');
         const stopSpinner = document.getElementById('stop-spinner');
         const navBtn = document.getElementById('status-nav-btn');
+        const dockPanel = document.getElementById('dock-panel');
+        const spinnerCircle = document.getElementById('dock-spinner-circle');
 
         if (!dock) return;
 
         if (isActive) {
-            // アクティブ状態のスタイル（横長展開）- 紫で統一
+            // アクティブ状態のスタイル（横長展開）
             dock.style.width = '200px';
             dock.style.height = '40px';
-            dock.style.background = 'rgba(124, 58, 237, 0.2)';
-            dock.style.borderColor = '#7c3aed';
+            dock.style.background = 'rgba(94, 0, 255, 0.46)';
+            dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
 
             if (icon) icon.style.display = 'none';
             if (activeSpinner) {
                 activeSpinner.style.display = 'block';
-                activeSpinner.style.borderColor = 'rgba(124, 58, 237, 0.8)';
+                activeSpinner.style.borderColor = 'rgba(94, 0, 255, 0.56)';
                 activeSpinner.style.borderTopColor = '#fff';
             }
             if (dockSummary) {
@@ -1599,12 +1617,12 @@ const PersistentStatusBar = {
             // 非アクティブ状態のスタイル（円形に戻す）
             dock.style.width = '40px';
             dock.style.height = '40px';
-            dock.style.background = 'rgba(30, 30, 30, 0.6)';
-            dock.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+            dock.style.background = '#7c3aed';
+            dock.style.borderColor = 'rgba(94, 0, 255, 0.56)';
 
             if (icon) {
                 icon.style.display = 'block';
-                icon.style.fill = 'rgba(255, 255, 255, 0.5)';
+                icon.style.fill = 'rgba(255,255,255,0.8)';
             }
             if (activeSpinner) activeSpinner.style.display = 'none';
             if (dockSummary) {
@@ -1622,46 +1640,49 @@ const PersistentStatusBar = {
     },
 
     async verifyStatus() {
+        // ワークフロー実行の場合: workflowExecutionId でステータスチェック
+        if (!this.executionId && this.workflowExecutionId) {
+            try {
+                const wfStatus = await apiRequest(`/api/user/workflow-executions/${this.workflowExecutionId}/status`);
+                if (wfStatus && (wfStatus.status === 'success' || wfStatus.status === 'error' || wfStatus.status === 'cancelled')) {
+                    this.markAsCompleted(wfStatus.status === 'success' ? 'success' : wfStatus.status);
+                }
+            } catch (e) {
+                console.warn('WF status check failed:', e);
+            }
+            return;
+        }
+
         if (!this.executionId) return;
 
         try {
-            // We need a way to check status without throwing 404 if we are on a different page
-            // Using the existing apiRequest
             const execution = await apiRequest(`/api/user/executions/${this.executionId}`);
 
             if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
                 // ワークフロー実行中は個別スキルの完了でワークフロー全体を完了扱いにしない
                 if (this.workflowExecutionId && execution.workflow_skill_id) {
-                    // ワークフロー内のスキルステップ完了 → markAsCompleted しない
                     return;
                 }
 
                 if (execution.status === 'success') {
-                    // 成功時は完了状態に移行（履歴として残す）
                     this.markAsCompleted();
                 } else {
-                    // エラー/キャンセル時も履歴として残す
                     this.markAsCompleted(execution.status);
                 }
 
-                // If we are on execute.html, dispatch custom event to let the page handle it
                 if (window.location.pathname.includes('execute.html')) {
                     const currentUrl = new URL(window.location.href);
                     const currentPromptId = currentUrl.searchParams.get('id');
-
-                    // 現在のスキルIDと一致する場合のみ処理
                     if (currentPromptId && parseInt(currentPromptId) === this.skillId) {
-                        // カスタムイベントを発火して、execute.html側で処理させる
                         window.dispatchEvent(new CustomEvent('executionCompleted', {
                             detail: { execution: execution, executionId: this.executionId || execution.id }
                         }));
-                        return; // イベントで処理されるのでここで終了
+                        return;
                     }
                 }
             }
         } catch (error) {
             console.error('Status verification failed:', error);
-            // Don't stop automatically on error, might be network issue
         }
     },
 

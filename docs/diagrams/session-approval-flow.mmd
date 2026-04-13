@@ -1,0 +1,53 @@
+sequenceDiagram
+    participant FE as Frontend
+    participant Tauri as Tauri (Rust)
+    participant BE as Backend (Python)
+    participant DB as MySQL
+
+    Note over BE,DB: Workflow Start
+    BE->>DB: create WorkflowExecution
+    BE->>DB: create CoordinatorPlan
+    BE->>DB: create_session(wf_exec) → session_id
+    BE->>DB: session_status = "running"
+    BE->>DB: emit workflow.session.started (event_seq=1)
+
+    Note over BE,DB: Step Dispatch
+    BE->>DB: create Execution (pending_local)
+    BE->>DB: emit step.planned (event_seq=2)
+
+    Note over Tauri: Worker claims execution
+    Tauri->>BE: GET /bundle
+    BE-->>Tauri: execution_kind + payload
+
+    alt execution_kind = http_provider
+        Tauri->>Tauri: sidecar LLM call
+    else execution_kind = external_cli
+        Tauri->>Tauri: lookup adapter in registry
+
+        alt approval_policy = ask_before_shell
+            Tauri->>FE: emit external_cli:approval_requested
+            Note over FE: SweetAlert modal<br/>(adapter / cwd / prompt preview)
+            FE->>Tauri: submit_workflow_approval_response<br/>(decision=granted)
+            Tauri->>Tauri: resolve oneshot → runner proceeds
+            Tauri->>BE: POST .../approvals/{id}/respond
+            BE->>DB: create_and_resolve_approval(granted)
+            BE->>DB: approval.requested + approval.granted events
+            BE->>DB: session_status running → waiting_approval → running
+        end
+
+        Tauri->>Tauri: spawn CLI (claude/codex/generic)
+        Note over Tauri: stream stdout/stderr<br/>file change detection
+    end
+
+    Tauri->>BE: POST /complete (output + meta)
+    BE->>DB: finalize_execution (output, status)
+    BE->>DB: bind_runtime(step, adapter/runtime)
+    BE->>DB: emit step.completed (event_seq=N)
+    BE->>DB: emit runtime.selected (event_seq=N+1)
+    BE->>DB: record CoordinatorArtifact
+    BE->>DB: add_artifact_ref(step, artifact_id)
+    BE->>DB: emit artifact.created (event_seq=N+2)
+
+    Note over BE,DB: Workflow Complete
+    BE->>DB: session_status = "completed"
+    BE->>DB: emit workflow.session.completed

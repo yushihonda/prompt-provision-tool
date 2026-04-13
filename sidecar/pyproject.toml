@@ -1,0 +1,8 @@
+[project]
+name = "nexmagi-sidecar"
+version = "0.1.0"
+description = "Desktop sidecar for NexMAGI"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+py-modules = []

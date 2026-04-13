@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>スキル実行 - Prompt Provision Tool</title>
+    <title>スキル実行 - NexMAGI</title>
     <link rel="stylesheet" href="../css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
@@ -13,103 +13,132 @@
             <div class="page-title-container">
                 <h1 class="page-title">スキル実行</h1>
             </div>
-            <div class="nav" style="display: flex; justify-content: space-between; align-items: center;">
-                <div style="display: flex; gap: 10px;">
-                    <button class="nav-item" onclick="location.href='dashboard.html'">ワークフロー / スキル管理</button>
-                    <button class="nav-item" onclick="location.href='history.html'">実行履歴</button>
+            <div class="nav" id="desktop-nav"></div>
+
+            <!-- スキル名 + 説明（切り抜きカード + 戻るボタン） -->
+            <div class="card-cutout-wrapper" style="margin-bottom: 16px;">
+                <div class="card-cutout" style="padding: 20px 24px;">
+                    <h2 id="skill-name">-</h2>
+                    <p id="skill-description" style="margin: 4px 0 0; color: var(--content-text-secondary); font-size: 13px;">-</p>
+                    <p style="margin: 6px 0 0; font-size: 12px; color: var(--content-text-muted);"><strong>モデル:</strong> <span id="skill-model">-</span></p>
                 </div>
-                <button class="btn btn-secondary" onclick="location.href='dashboard.html'" style="display: inline-flex; align-items: center; gap: 5px; padding: 10px 20px;">
-                    ← ワークフロー / スキル管理に戻る
-                </button>
+                <div class="card-cutout-circle" onclick="window.NexMAGIRuntime.navigate('dashboard.html')" title="ワークフロー / スキル管理に戻る">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+                </div>
             </div>
 
-
-            <div class="card">
-                <h2 id="skill-name">-</h2>
-                <p id="skill-description">-</p>
-                <p><strong>モデル:</strong> <span id="skill-model">-</span></p>
-            </div>
-
-            <div class="execute-layout">
-                <div class="execute-input-panel">
-                    <h3>入力</h3>
-                    <form id="execute-form">
-                        <div id="input-fields-container">
-                            <!-- 動的に生成される入力フィールド -->
+            <!-- 入力 + 出力 -->
+            <div class="wf-io-panels" style="border-top: none; padding-top: 0;">
+                <!-- 入力（切り抜き + 実行ボタン円） -->
+                <div class="card-cutout-wrapper">
+                    <div class="card-cutout wf-io-panel wf-io-input">
+                        <div class="wf-io-panel-header">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            入力
                         </div>
-
-                        <div id="file-output-container" style="display: none;">
-                            <div class="form-group">
-                                <label for="output-format">出力形式</label>
-                                <select id="output-format">
-                                    <option value="txt">テキスト (TXT)</option>
-                                    <option value="csv">CSV</option>
-                                    <option value="pdf">PDF</option>
-                                    <option value="docx">Word (DOCX)</option>
-                                    <option value="md">Markdown (MD)</option>
-                                </select>
-                                <small style="color: rgba(255, 255, 255, 0.6);">実行結果を指定した形式でファイルとして出力できます</small>
+                        <form id="execute-form">
+                            <div id="input-fields-container">
+                                <!-- 動的に生成される入力フィールド -->
                             </div>
-                        </div>
 
-                        <div style="margin-top: 8px; padding: 8px 12px; background: rgba(40, 167, 69, 0.08); border: 1px solid rgba(40, 167, 69, 0.2); border-radius: 6px; font-size: 11px; color: rgba(255,255,255,0.6);">
-                            ローカルワーカーで実行されます。ターミナルで <code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:3px; cursor:pointer;" onclick="navigator.clipboard.writeText('python -m local_worker daemon')" title="コピー">python -m local_worker daemon</code> を起動してください。
-                        </div>
+                            <div id="file-output-container" style="display: none;">
+                                <div class="form-group" style="margin-top: 12px;">
+                                    <label for="output-format">出力形式</label>
+                                    <select id="output-format">
+                                        <option value="txt">テキスト (TXT)</option>
+                                        <option value="csv">CSV</option>
+                                        <option value="pdf">PDF</option>
+                                        <option value="docx">Word (DOCX)</option>
+                                        <option value="md">Markdown (MD)</option>
+                                    </select>
+                                </div>
+                            </div>
 
-                        <button type="submit" class="btn btn-primary" id="execute-btn" style="display: flex; align-items: center; justify-content: center; gap: 10px;">
-                            <span id="execute-btn-text">実行</span>
-                            <span id="execute-btn-spinner" style="display: none;">
-                                <div class="spinner" style="display: inline-block; width: 16px; height: 16px; border-width: 2px; vertical-align: middle;"></div>
-                            </span>
-                        </button>
-                    </form>
+                            <button type="submit" id="execute-btn" style="display:none;">
+                                <span id="execute-btn-text">実行</span>
+                                <span id="execute-btn-spinner" style="display: none;">
+                                    <div class="wf-dots-loader"><span></span><span></span><span></span></div>
+                                </span>
+                            </button>
+                        </form>
+                    </div>
+                    <div class="card-cutout-circle" onclick="document.getElementById('execute-btn').click()" title="スキル実行" id="skill-execute-circle" style="font-size:12px; font-weight:700; color:#fff;">
+                        <span id="skill-exec-icon" style="color:#fff !important;">実行</span>
+                        <div id="skill-exec-spinner" style="display:none;"><div class="wf-dots-loader"><span></span><span></span><span></span></div></div>
+                    </div>
                 </div>
 
-                <div class="execute-output-panel">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.1);">
-                        <h3 style="margin: 0;">出力</h3>
-                        <button onclick="copyOutput()" title="出力をコピー" class="icon-btn" id="copy-output-btn" style="display: flex; align-items: center; justify-content: center; padding: 8px; background: none; border: none; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease; opacity: 0.5;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" style="width: 20px; height: 20px; fill: rgba(255, 255, 255, 0.7); transition: fill 0.2s ease, transform 0.2s ease;"><path d="M16 10c3.469 0 2 4 2 4s4-1.594 4 2v6h-10v-12h4zm.827-2h-6.827v16h14v-8.842c0-2.392-4.011-7.158-7.173-7.158zm-8.827 12h-6v-16h4l2.102 2h3.898l2-2h4v2.145c.656.143 1.327.391 2 .754v-4.899h-3c-1.229 0-2.18-1.084-3-2h-8c-.82.916-1.771 2-3 2h-3v20h8v-2zm2-18c.553 0 1 .448 1 1s-.447 1-1 1-1-.448-1-1 .447-1 1-1zm4 18h6v-1h-6v1zm0-2h6v-1h-6v1zm0-2h6v-1h-6v1z"/></svg>
-                        </button>
-                    </div>
-                    <div id="result-container">
-                        <div class="output-box" id="output-content">実行ボタンを押すと結果がここに表示されます</div>
+                <!-- 出力（切り抜き + コピーボタン円） -->
+                <div class="card-cutout-wrapper">
+                    <div class="card-cutout wf-io-panel wf-io-output">
+                        <div class="wf-io-panel-header">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                            出力
+                        </div>
+                        <div id="output-content" class="wf-io-output-content wf-flow-placeholder">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                            <span>実行すると結果がここに表示されます</span>
+                        </div>
                         <div id="file-output-result" style="display: none;"></div>
-                        <div class="stats">
-                            <div class="stat-item">
-                                <label>使用モデル</label>
-                                <value id="stat-model">-</value>
-                            </div>
-                            <div class="stat-item">
-                                <label>実行時間</label>
-                                <value id="stat-time">-</value>
-                            </div>
-                            <div class="stat-item">
-                                <label>トークン数</label>
-                                <value id="stat-tokens">-</value>
-                            </div>
+                        <div class="skill-exec-stats" id="skill-exec-stats" style="display:none;">
+                            <span><strong>モデル:</strong> <span id="stat-model">-</span></span>
+                            <span><strong>実行時間:</strong> <span id="stat-time">-</span></span>
+                            <span><strong>トークン:</strong> <span id="stat-tokens">-</span></span>
                         </div>
+                    </div>
+                    <div class="card-cutout-circle" onclick="copyOutput()" title="出力をコピー">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                     </div>
                 </div>
             </div>
 
-            <div class="history-section card" style="margin-top: 30px;">
-                <h3>実行履歴</h3>
-                <div id="history-container">
-                    <div class="loading">
-                        <div class="spinner"></div>
-                        <p>読み込み中...</p>
+            <!-- 下部: 実行履歴（折りたたみ式） -->
+            <div class="wf-history-section" style="margin-top: 20px;">
+                <details class="wf-history-details">
+                    <summary class="wf-history-summary">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        実行履歴
+                    </summary>
+                    <div class="wf-history-scroll">
+                        <table class="table wf-history-table">
+                            <thead>
+                                <tr>
+                                    <th>実行日時</th>
+                                    <th>モデル</th>
+                                    <th>出力形式</th>
+                                    <th>実行時間</th>
+                                    <th>トークン数</th>
+                                    <th>ステータス</th>
+                                    <th>アクション</th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-tbody">
+                                <tr>
+                                    <td colspan="7" style="text-align: center;">読み込み中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
-                </div>
+                </details>
             </div>
         </div>
     </div>
 
-
+    <script>
+        window.__NEXMAGI_RUNTIME = window.__NEXMAGI_RUNTIME || {
+            desktop: true,
+            apiBase: 'http://127.0.0.1:8000',
+            workerScriptPath: 'js/execution-worker.js'
+        };
+    </script>
+    <script src="../js/runtime-adapter.js"></script>
+    <script src="../js/runtime-resolver.js"></script>
+    <script src="../js/runtime-badge.js"></script>
+    <script src="../js/swal-defaults.js"></script>
+    <script src="../js/mini-cube.js"></script>
     <script src="../js/model-display.js"></script>
     <script src="../js/exec-detail-modal.js"></script>
     <script src="js/user-common.js"></script>
     <script src="js/execute.js"></script>
 </body>
 </html>
-

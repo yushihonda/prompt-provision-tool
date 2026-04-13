@@ -2,10 +2,47 @@
  * 実行ストリーミング用Web Worker
  * SSE接続を管理し、メインスレッドにイベントを送信
  */
+function emitDiagnostic(stage, details = {}) {
+    self.postMessage({
+        type: 'diagnostic',
+        data: {
+            stage,
+            ...details
+        }
+    });
+}
+
+function emitRuntimeError(code, message, details = {}) {
+    self.postMessage({
+        type: 'runtime_error',
+        data: {
+            code,
+            message,
+            ...details
+        }
+    });
+}
+
+function classifyConnectionError(error, responseStatus = null) {
+    if (responseStatus != null) {
+        return 'non_200_response';
+    }
+
+    const message = String(error?.message || error || '').toLowerCase();
+    if (message.includes('invalid url')) {
+        return 'invalid_url';
+    }
+    if (message.includes('failed to fetch') || message.includes('networkerror') || message.includes('network request failed')) {
+        return 'network_unreachable';
+    }
+    return 'network_unreachable';
+}
+
 class ExecutionStreamClient {
-    constructor(executionId, token) {
+    constructor(executionId, token, apiBase) {
         this.executionId = executionId;
         this.token = token;
+        this.apiBase = String(apiBase || self.location.origin).replace(/\/$/, '');
         this.reader = null;
         this.reconnectDelay = 3000;  // 3秒（SSE_RETRY_INTERVAL）
         this.maxReconnectAttempts = 10;
@@ -28,8 +65,31 @@ class ExecutionStreamClient {
         }
 
         this.isConnecting = true;
-        const url = `/api/execute/${this.executionId}/stream`;
+        if (!this.apiBase) {
+            this.isConnecting = false;
+            emitRuntimeError('runtime_config_missing', 'apiBase が未設定です', {
+                executionId: this.executionId
+            });
+            return;
+        }
+
+        let url;
+        try {
+            url = new URL(`/api/execute/${this.executionId}/stream`, `${this.apiBase}/`).toString();
+        } catch (error) {
+            this.isConnecting = false;
+            emitRuntimeError('invalid_url', 'SSE 接続 URL の構築に失敗しました', {
+                executionId: this.executionId,
+                apiBase: this.apiBase
+            });
+            return;
+        }
         const client = this; // コンテキストを保持
+        emitDiagnostic('connect_attempt', {
+            executionId: this.executionId,
+            apiBase: this.apiBase,
+            url
+        });
 
         // EventSourceは認証ヘッダーを設定できないため、fetch APIを使用してSSE接続を確立
         // fetch APIを使用することで、Authorizationヘッダーを設定可能
@@ -48,6 +108,12 @@ class ExecutionStreamClient {
                 return;
             }
             if (!response.ok) {
+                emitRuntimeError('non_200_response', 'SSE 接続が非 200 応答でした', {
+                    executionId: client.executionId,
+                    apiBase: client.apiBase,
+                    url,
+                    status: response.status
+                });
                 // エラーレスポンスの詳細を取得
                 return response.text().then(text => {
                     throw new Error(`HTTP error! status: ${response.status}, message: ${text}`);
@@ -66,6 +132,11 @@ class ExecutionStreamClient {
 
             client.reader = response.body.getReader();
             client.isConnecting = false;  // 接続完了
+            emitDiagnostic('connect_success', {
+                executionId: client.executionId,
+                apiBase: client.apiBase,
+                url
+            });
             const decoder = new TextDecoder();
             let buffer = '';
 
@@ -83,6 +154,10 @@ class ExecutionStreamClient {
                     if (done) {
                         // ストリーム終了（正常終了の可能性もある）
                         if (!client.isClosed) {
+                            emitRuntimeError('sse_closed_unexpectedly', 'ストリームが予期せず終了しました', {
+                                executionId: client.executionId,
+                                url
+                            });
                             self.postMessage({
                                 type: 'error',
                                 data: { message: 'ストリームが予期せず終了しました' }
@@ -167,6 +242,10 @@ class ExecutionStreamClient {
                     readStream();
                 }).catch(error => {
                     if (!client.isClosed) {
+                        emitRuntimeError('network_unreachable', `ストリーム読み取りエラー: ${error.message}`, {
+                            executionId: client.executionId,
+                            url
+                        });
                         self.postMessage({
                             type: 'error',
                             data: { message: `ストリーム読み取りエラー: ${error.message}` }
@@ -186,6 +265,12 @@ class ExecutionStreamClient {
             if (client.isClosed) {
                 return;
             }
+
+            emitRuntimeError(classifyConnectionError(error), `ストリーミング接続に失敗しました: ${error.message}`, {
+                executionId: client.executionId,
+                apiBase: client.apiBase,
+                url
+            });
 
             if (client.reconnectCount < client.maxReconnectAttempts) {
                 setTimeout(() => {
@@ -237,20 +322,24 @@ class ExecutionStreamClient {
 
 // メインスレッドからのメッセージ受信
 self.onmessage = function(e) {
-    const { type, executionId, token } = e.data;
+    const { type, executionId, token, apiBase } = e.data;
 
     if (type === 'start') {
+        emitDiagnostic('worker_initialized', {
+            executionId,
+            apiBase: apiBase || '',
+        });
         // 既存のクライアントがある場合は閉じる
         if (self.client) {
             self.client.close();
             // 少し待機してから新しいクライアントを作成（非同期処理の完了を待つ）
             setTimeout(() => {
-                const client = new ExecutionStreamClient(executionId, token);
+                const client = new ExecutionStreamClient(executionId, token, apiBase);
                 client.connect();
                 self.client = client;
             }, 100);
         } else {
-            const client = new ExecutionStreamClient(executionId, token);
+            const client = new ExecutionStreamClient(executionId, token, apiBase);
             client.connect();
             self.client = client;
         }

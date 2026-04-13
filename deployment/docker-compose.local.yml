@@ -1,13 +1,13 @@
 services:
   db:
     image: mysql:8.0
-    container_name: ppt-mysql
+    container_name: nexmagi-mysql
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpass}
-      MYSQL_DATABASE: ${DB_NAME:-prompttool}
-      MYSQL_USER: ${DB_USER:-prompt}
-      MYSQL_PASSWORD: ${DB_PASSWORD:-promptpass}
+      MYSQL_DATABASE: ${DB_NAME:-nexmagi}
+      MYSQL_USER: ${DB_USER:-nexmagi}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-nexmagipass}
     ports:
       - "3306:3306"
     volumes:
@@ -20,7 +20,7 @@ services:
 
   redis:
     image: redis:alpine
-    container_name: ppt-redis
+    container_name: nexmagi-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -36,7 +36,7 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
-    container_name: ppt-backend
+    container_name: nexmagi-backend
     restart: unless-stopped
     depends_on:
       db:
@@ -59,18 +59,21 @@ services:
       retries: 3
       start_period: 15s
 
-  web:
-    image: nginx:alpine
-    container_name: ppt-web
+  worker:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.worker
+    container_name: nexmagi-worker
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
+    env_file:
+      - ../.env.local
+    environment:
+      WORKER_SERVER_URL: http://backend:8000
     volumes:
-      - ../frontend:/usr/share/nginx/html:ro
-      - ./local/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    ports:
-      - "8080:80"
+      - ../local_worker:/app/local_worker
 
 volumes:
   db_data:

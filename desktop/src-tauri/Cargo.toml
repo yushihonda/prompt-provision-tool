@@ -1,0 +1,25 @@
+[package]
+name = "nexmagi-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "NexMAGI desktop shell"
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+base64 = "0.22.1"
+keyring = "3.6.3"
+parking_lot = "0.12"
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149" }
+tauri = { version = "2.10.3", features = [] }
+tauri-plugin-updater = "2.10.0"
+thiserror = { version = "2.0.18" }
+tokio = { version = "1", features = ["time", "process", "io-util", "sync", "rt", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+portable-pty = "0.8"
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
