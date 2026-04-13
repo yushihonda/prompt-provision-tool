@@ -262,6 +262,10 @@ impl OrchestrationManager {
         !self.active_runs.is_empty()
     }
 
+    pub fn active_run_count(&self) -> usize {
+        self.active_runs.len()
+    }
+
     /// Main poll tick. Called periodically from background task.
     pub fn tick(&mut self, app: &AppHandle) {
         if self.active_runs.is_empty() {

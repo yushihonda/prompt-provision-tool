@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 # VERDICT 行の正規表現（agent_profiles.py の検証契約と一致）
 VERDICT_REGEX = r"VERDICT\s*:\s*(PASS|FAIL|PARTIAL)"
+PROFILE_OUTPUT_KEY_BASE = {
+    "design_builder": "design_builder_result",
+}
 
 
 def compute_orchestration_overrides(
@@ -73,7 +76,7 @@ def compute_orchestration_overrides(
         if not current_output_key:
             profile_counter[profile] += 1
             count = profile_counter[profile]
-            base_key = f"{profile}_result"
+            base_key = PROFILE_OUTPUT_KEY_BASE.get(profile, f"{profile}_result")
             ws_overrides["output_key"] = base_key if count == 1 else f"{base_key}_{count}"
 
         # --- Rule 3: 品質ゲート → verification のみ regex ---

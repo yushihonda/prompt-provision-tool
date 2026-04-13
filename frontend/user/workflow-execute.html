@@ -95,6 +95,28 @@
                         <div id="wf-eval-metrics" class="wf-eval-metrics" style="display:none;"></div>
                     </div>
                 </div>
+
+                <div id="wf-plan-approval-panel" class="card-cutout wf-plan-review-panel" style="display:none; margin-top: 18px; padding: 18px 20px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+                        <div>
+                            <div style="font-size:12px; color:var(--content-text-muted); margin-bottom:4px;">Plan Review</div>
+                            <div style="font-size:18px; font-weight:700;">承認待ちの実行計画</div>
+                        </div>
+                        <div id="wf-plan-approval-count" style="font-size:12px; color:var(--content-text-muted);">0件</div>
+                    </div>
+                    <div id="wf-plan-approval-list"></div>
+                </div>
+
+                <div id="wf-review-feedback-panel" class="card-cutout wf-plan-review-panel" style="display:none; margin-top: 18px; padding: 18px 20px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+                        <div>
+                            <div style="font-size:12px; color:var(--content-text-muted); margin-bottom:4px;">Workflow Review</div>
+                            <div style="font-size:18px; font-weight:700;">レビュー差し戻しと必須修正</div>
+                        </div>
+                        <div id="wf-review-feedback-count" style="font-size:12px; color:var(--content-text-muted);">0件</div>
+                    </div>
+                    <div id="wf-review-feedback-list"></div>
+                </div>
             </div>
 
             <!-- 下部: 実行履歴（コンパクト） -->
@@ -149,5 +171,3 @@
     <script src="js/workflow-execute.js"></script>
 </body>
 </html>
-
-

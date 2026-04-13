@@ -82,8 +82,8 @@ async function restoreActiveExecution() {
         if (execution.status === 'success') {
             // 既に完了している場合は結果を表示
             // 完了状態をDockに表示（履歴として残す）
-            if (PersistentStatusBar.executionId === executionId) {
-                PersistentStatusBar.markAsCompleted('success');
+            if (PersistentStatusBar.activeTasks?.some((task) => task.id === executionId)) {
+                PersistentStatusBar.markAsCompleted('success', { executionId });
             }
 
             // 入力データを入力フィールドに復元
@@ -100,11 +100,11 @@ async function restoreActiveExecution() {
             displayExecutionResult(execution, executionId, null);
 
             // 完了ポップアップは廃止（Dockの詳細パネルに表示）
-        } else if (execution.status === 'error' || execution.status === 'cancelled') {
+        } else if (execution.status === 'error' || execution.status === 'cancelled' || execution.status === 'manual_review_required') {
             // エラーまたはキャンセル済み
             // 完了状態をDockに表示（履歴として残す）
-            if (PersistentStatusBar.executionId === executionId) {
-                PersistentStatusBar.markAsCompleted(execution.status);
+            if (PersistentStatusBar.activeTasks?.some((task) => task.id === executionId)) {
+                PersistentStatusBar.markAsCompleted(execution.status, { executionId });
             }
 
             // 入力データを入力フィールドに復元
@@ -553,8 +553,8 @@ function createWorkerMessageHandler(executionId) {
                 if (parsed.type === 'workflow_next_step' && parsed.next_execution_id) {
                     // ワークフロー実行の次のステップが起動された
                     const nextExecutionId = parsed.next_execution_id;
-                    const nextSkillOrder = parsed.next_skill_order;
-                    const stepName = parsed.skill_name || `Step ${nextSkillOrder}`;
+                    const nextStepOrder = parsed.next_skill_order;
+                    const stepName = parsed.skill_name || `Step ${nextStepOrder}`;
                     const workflowName = parsed.workflow_name || 'ワークフロー';
                     
                     // バックグラウンドパネルに次のステップを追加
@@ -576,16 +576,16 @@ function createWorkerMessageHandler(executionId) {
             accumulatedOutput += chunk;
             updateOutputContent(accumulatedOutput);
         } else if (type === 'complete') {
-            if (PersistentStatusBar.executionId === executionId) {
-                PersistentStatusBar.markAsCompleted('success');
+            if (PersistentStatusBar.activeTasks?.some((task) => task.id === executionId)) {
+                PersistentStatusBar.markAsCompleted('success', { executionId });
             }
 
             setTimeout(() => {
                 handleStreamingComplete(executionId);
             }, 100);
         } else if (type === 'error') {
-            if (PersistentStatusBar.executionId === executionId) {
-                PersistentStatusBar.markAsCompleted('error');
+            if (PersistentStatusBar.activeTasks?.some((task) => task.id === executionId)) {
+                PersistentStatusBar.markAsCompleted('error', { executionId });
             }
             const errorMsg = typeof data === 'string' ? data : (data?.message || data?.text || '実行エラーが発生しました');
             handleStreamingError(executionId, errorMsg, 'error', {
@@ -604,8 +604,8 @@ function createWorkerMessageHandler(executionId) {
         } else if (type === 'diagnostic') {
             console.debug('Worker diagnostic:', data);
         } else if (type === 'cancel') {
-            if (PersistentStatusBar.executionId === executionId) {
-                PersistentStatusBar.markAsCompleted('cancelled');
+            if (PersistentStatusBar.activeTasks?.some((task) => task.id === executionId)) {
+                PersistentStatusBar.markAsCompleted('cancelled', { executionId });
             }
             handleStreamingError(executionId, '実行がキャンセルされました', 'cancelled', {
                 errorCode: 'cancelled_by_user',
@@ -691,7 +691,7 @@ async function waitForReasoningModelCompletion(executionId, outputFormat) {
         try {
             const execution = await apiRequest(`/api/user/executions/${executionId}`);
 
-            if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+            if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled' || execution.status === 'manual_review_required') {
                 await finishDesktopExecutionRun(execution.status, execution.error_message || null, {
                     boundaryKind: 'polling_completion',
                     workerStage: 'polling',
@@ -701,13 +701,15 @@ async function waitForReasoningModelCompletion(executionId, outputFormat) {
                 setExecutionButtonState(false);
 
                 // ステータスバーを更新
-                if (PersistentStatusBar.executionId === executionId) {
+                if (PersistentStatusBar.activeTasks?.some((task) => task.id === executionId)) {
                     if (execution.status === 'success') {
-                        PersistentStatusBar.markAsCompleted('success');
+                        PersistentStatusBar.markAsCompleted('success', { executionId });
                     } else if (execution.status === 'error') {
-                        PersistentStatusBar.markAsCompleted('error');
+                        PersistentStatusBar.markAsCompleted('error', { executionId });
                     } else if (execution.status === 'cancelled') {
-                        PersistentStatusBar.markAsCompleted('cancelled');
+                        PersistentStatusBar.markAsCompleted('cancelled', { executionId });
+                    } else if (execution.status === 'manual_review_required') {
+                        PersistentStatusBar.markAsCompleted('manual_review_required', { executionId });
                     }
                 }
 
@@ -768,15 +770,17 @@ async function resumeStreaming(executionId) {
         restoreInputData(execution);
 
         // 既に完了している場合は完了処理を実行
-        if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+        if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled' || execution.status === 'manual_review_required') {
             // ステータスバーを更新
-            if (PersistentStatusBar.executionId === executionId) {
+            if (PersistentStatusBar.activeTasks?.some((task) => task.id === executionId)) {
                 if (execution.status === 'success') {
-                    PersistentStatusBar.markAsCompleted('success');
+                    PersistentStatusBar.markAsCompleted('success', { executionId });
                 } else if (execution.status === 'error') {
-                    PersistentStatusBar.markAsCompleted('error');
+                    PersistentStatusBar.markAsCompleted('error', { executionId });
                 } else if (execution.status === 'cancelled') {
-                    PersistentStatusBar.markAsCompleted('cancelled');
+                    PersistentStatusBar.markAsCompleted('cancelled', { executionId });
+                } else if (execution.status === 'manual_review_required') {
+                    PersistentStatusBar.markAsCompleted('manual_review_required', { executionId });
                 }
             }
 
@@ -845,13 +849,13 @@ async function handleStreamingComplete(executionId) {
         setExecutionButtonState(false);
 
         // ステータスバーを更新
-        if (PersistentStatusBar.executionId === executionId) {
+        if (PersistentStatusBar.activeTasks?.some((task) => task.id === executionId)) {
             if (execution.status === 'success') {
-                PersistentStatusBar.markAsCompleted('success');
+                PersistentStatusBar.markAsCompleted('success', { executionId });
             } else if (execution.status === 'error') {
-                PersistentStatusBar.markAsCompleted('error');
+                PersistentStatusBar.markAsCompleted('error', { executionId });
             } else if (execution.status === 'cancelled') {
-                PersistentStatusBar.markAsCompleted('cancelled');
+                PersistentStatusBar.markAsCompleted('cancelled', { executionId });
             }
         }
 
@@ -927,7 +931,17 @@ function renderHistory() {
         const runtimeBadge = (window.runtimeBadge && execution.extra_metadata)
             ? window.runtimeBadge.renderRuntimeBadge(execution.extra_metadata)
             : '';
-        const statusColor = execution.status === 'success' ? '#28a745' : execution.status === 'error' ? '#dc3545' : execution.status === 'cancelled' ? '#ffc107' : execution.status === 'pending' || execution.status === 'processing' ? '#7c3aed' : 'var(--content-text-muted)';
+        const statusColor = execution.status === 'success'
+            ? '#28a745'
+            : execution.status === 'error'
+                ? '#dc3545'
+                : execution.status === 'manual_review_required'
+                    ? '#d97706'
+                    : execution.status === 'cancelled'
+                        ? '#ffc107'
+                        : execution.status === 'pending' || execution.status === 'pending_local' || execution.status === 'processing' || execution.status === 'pending_approval'
+                            ? '#7c3aed'
+                            : 'var(--content-text-muted)';
 
         return `
         <tr>
@@ -1098,7 +1112,7 @@ async function restoreExecutionData(executionId) {
         restoreInputData(execution);
 
         // 実行ボタンの状態を設定（完了済みの場合は有効化）
-        if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled') {
+        if (execution.status === 'success' || execution.status === 'error' || execution.status === 'cancelled' || execution.status === 'manual_review_required') {
             setExecutionButtonState(false);
         } else {
             // 実行中またはpendingの場合は無効化
@@ -1419,6 +1433,68 @@ async function executeWithDesktopLocalEngine({ skillId, inputData, outputFormat 
     return result;
 }
 
+let backgroundSkillProgressCleanup = null;
+const handledBackgroundSkillCompletionIds = new Set();
+
+function ensureBackgroundSkillProgressListener() {
+    if (backgroundSkillProgressCleanup || !window.NexMAGIRuntime?.onBackgroundSkillProgress) {
+        return;
+    }
+
+    backgroundSkillProgressCleanup = window.NexMAGIRuntime.onBackgroundSkillProgress(async (payload) => {
+        const executionId = payload?.executionId;
+        const status = payload?.status;
+        if (!executionId || !['success', 'error', 'cancelled', 'manual_review_required'].includes(status)) {
+            return;
+        }
+        if (handledBackgroundSkillCompletionIds.has(executionId)) {
+            return;
+        }
+        handledBackgroundSkillCompletionIds.add(executionId);
+
+        try {
+            const execution = await apiRequest(`/api/user/executions/${executionId}`);
+            window.dispatchEvent(new CustomEvent('executionCompleted', {
+                detail: { execution, executionId },
+            }));
+        } catch (error) {
+            handledBackgroundSkillCompletionIds.delete(executionId);
+            console.error('Failed to load background execution result:', error);
+        }
+    });
+
+    window.addEventListener('pagehide', () => {
+        if (backgroundSkillProgressCleanup) {
+            backgroundSkillProgressCleanup();
+            backgroundSkillProgressCleanup = null;
+        }
+    }, { once: true });
+}
+
+async function enqueueDesktopBackgroundSkillExecution({ skillId, inputData, outputFormat, skillName, trackStatusBar = true }) {
+    const token = await window.NexMAGIRuntime.getAuthToken();
+    if (!token) {
+        throw new Error('ログイン情報が見つかりません');
+    }
+
+    ensureBackgroundSkillProgressListener();
+
+    const status = await window.NexMAGIRuntime.enqueueBackgroundSkillExecution({
+        authToken: token,
+        skillId: parseInt(skillId),
+        skillName,
+        inputData,
+        outputFormat,
+        enableDeepThink: skillDetail?.enable_deep_think ?? undefined,
+    });
+
+    if (trackStatusBar && typeof PersistentStatusBar !== 'undefined') {
+        PersistentStatusBar.start(status.executionId, parseInt(skillId), skillName);
+    }
+
+    return status;
+}
+
 document.getElementById('execute-form').addEventListener('submit', async (e) => {
     e.preventDefault();
 
@@ -1457,8 +1533,10 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
     // デバッグログ
     console.log('[Execute] Output format selected:', outputFormat);
 
-    // 既に実行中の場合、キューに追加
-    if (PersistentStatusBar.executionId) {
+    const useDesktopBackground = window.NexMAGIRuntime?.shouldUseDesktopLocalExecution?.();
+
+    // Web/SSE系では既存の直列キューを維持
+    if (PersistentStatusBar.getActiveTaskCount() > 0 && !useDesktopBackground) {
         // キューが満杯かチェック
         if (PersistentStatusBar.executionQueue.length >= PersistentStatusBar.MAX_QUEUE_SIZE) {
             await Swal.fire({
@@ -1507,41 +1585,30 @@ document.getElementById('execute-form').addEventListener('submit', async (e) => 
 
         console.log('[Execute] Request body:', requestBody);
 
-        if (window.NexMAGIRuntime?.shouldUseDesktopLocalExecution?.()) {
+        if (useDesktopBackground) {
+            if (typeof PersistentStatusBar !== 'undefined' && !PersistentStatusBar.canStartMoreTasks()) {
+                setExecutionButtonState(false);
+                await Swal.fire({
+                    title: '上限に達しています',
+                    text: `バックグラウンド実行は合計${PersistentStatusBar.MAX_ACTIVE_TASKS}件までです。`,
+                    icon: 'warning',
+                    confirmButtonText: USER_SWAL.btnClose,
+                    confirmButtonColor: USER_SWAL.primary
+                });
+                return;
+            }
             showProcessingMessage();
 
-            // バックグラウンドパネルを開始
             const skillName = document.getElementById('skill-name')?.textContent || `Skill ${skillId}`;
-            if (typeof PersistentStatusBar !== 'undefined') {
-                PersistentStatusBar.start(null, parseInt(skillId), skillName);
-            }
-
-            // fire-and-forget でsidecar実行
-            executeWithDesktopLocalEngine({
+            const status = await enqueueDesktopBackgroundSkillExecution({
                 skillId,
                 inputData,
                 outputFormat,
-            }).then((result) => {
-                // sidecar完了 → executionIdをPersistentStatusBarに設定
-                if (typeof PersistentStatusBar !== 'undefined') {
-                    if (result?.executionId) {
-                        PersistentStatusBar.executionId = result.executionId;
-                    }
-                    // 実際のステータスを確認して反映
-                    const actualStatus = result?._executionStatus || result?.status || 'success';
-                    const finalStatus = (actualStatus === 'success' || actualStatus === 'completed') ? 'success' : 'error';
-                    if (PersistentStatusBar.startTime) {
-                        PersistentStatusBar.markAsCompleted(finalStatus);
-                    }
-                }
-            }).catch((desktopError) => {
-                if (typeof PersistentStatusBar !== 'undefined' && PersistentStatusBar.startTime) {
-                    PersistentStatusBar.markAsCompleted('error');
-                }
-                setExecutionButtonState(false);
-                showAlert('スキル実行に失敗しました: ' + (desktopError?.message || desktopError), 'error');
-                console.error('Desktop skill execution failed:', desktopError);
+                skillName,
+                trackStatusBar: true,
             });
+            currentExecutionId = status.executionId;
+            setExecutionButtonState(false);
             return;
         }
 
@@ -1774,7 +1841,7 @@ window.addEventListener('executionCompleted', async (event) => {
 
         // 実行履歴を再読み込み
         loadHistory();
-    } else if (execution.status === 'error' || execution.status === 'cancelled') {
+    } else if (execution.status === 'error' || execution.status === 'cancelled' || execution.status === 'manual_review_required') {
         // エラーまたはキャンセル済み
         restoreInputData(execution);
 
@@ -1789,6 +1856,20 @@ window.addEventListener('executionCompleted', async (event) => {
 // キューからタスクを実行する関数（グローバルスコープに公開）
 window.executeQueuedTask = async function(taskData) {
     try {
+        if (window.NexMAGIRuntime?.shouldUseDesktopLocalExecution?.()) {
+            const skillName = taskData.skillName || document.getElementById('skill-name')?.textContent || '実行中...';
+            await enqueueDesktopBackgroundSkillExecution({
+                skillId: taskData.skillId,
+                inputData: taskData.inputData,
+                outputFormat: taskData.outputFormat || 'txt',
+                skillName,
+                trackStatusBar: true,
+            });
+            showProcessingMessage();
+            setExecutionButtonState(false);
+            return;
+        }
+
         const initialResponse = await apiRequest('/api/execute', {
             method: 'POST',
             body: JSON.stringify({

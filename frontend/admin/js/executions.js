@@ -67,15 +67,18 @@ async function loadExecutions(page = 1) {
 }
 
 function getStatusColor(status) {
-    const colors = { success: '#28a745', error: '#dc3545', cancelled: '#ffc107', pending: '#7c3aed', processing: '#7c3aed', pending_local: '#7c3aed' };
+    const colors = { success: '#28a745', error: '#dc3545', manual_review_required: '#d97706', cancelled: '#ffc107', pending: '#7c3aed', processing: '#7c3aed', pending_local: '#7c3aed', pending_approval: '#7c3aed' };
     return colors[status] || 'var(--content-text-muted)';
 }
 
 function getOverallStatus(execs) {
+    const workflowStatus = execs.find(e => e.workflow_execution_status)?.workflow_execution_status;
+    if (workflowStatus) return workflowStatus;
     const normalExecs = execs.filter(e => !e.execution_role);
     if (normalExecs.some(e => e.status === 'error')) return 'error';
+    if (normalExecs.some(e => e.status === 'manual_review_required')) return 'manual_review_required';
     if (normalExecs.some(e => e.status === 'cancelled')) return 'cancelled';
-    if (normalExecs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
+    if (normalExecs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing' || e.status === 'pending_approval')) return 'processing';
     if (normalExecs.every(e => e.status === 'success')) return 'success';
     return 'pending';
 }

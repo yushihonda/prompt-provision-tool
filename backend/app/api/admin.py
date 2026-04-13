@@ -152,18 +152,46 @@ async def list_accounts(
 
     from app.services.account_stats import check_and_reset_monthly_stats
 
-    # 各アカウントのスキル数、実行回数、総トークン数、総料金を個別に取得
+    # 一括プリフェッチ: アカウントごとスキル数、WF→skill_id マッピング
+    account_ids = [a.id for a in accounts]
+    # スキル数を一括取得
+    skill_counts_rows = (
+        db.query(AccountSkill.account_id, func.count(AccountSkill.id))
+        .filter(AccountSkill.account_id.in_(account_ids))
+        .group_by(AccountSkill.account_id)
+        .all()
+    )
+    skill_counts_map = dict(skill_counts_rows)
+    # アカウントごとの割り当て済みスキルIDを一括取得
+    assigned_rows = (
+        db.query(AccountSkill.account_id, AccountSkill.skill_id)
+        .filter(AccountSkill.account_id.in_(account_ids))
+        .all()
+    )
+    assigned_map: dict[int, set] = {}
+    for acc_id, sid in assigned_rows:
+        assigned_map.setdefault(acc_id, set()).add(sid)
+    # 有効ワークフローとそのスキルIDを一括取得（ループ外で1回だけ）
+    active_wfs = db.query(Workflow).filter(Workflow.is_active == True, Workflow.deleted_at.is_(None)).all()
+    wf_ids = [w.id for w in active_wfs]
+    wf_skill_rows = (
+        db.query(WorkflowSkill.workflow_id, WorkflowSkill.skill_id)
+        .filter(WorkflowSkill.workflow_id.in_(wf_ids), WorkflowSkill.skill_id.isnot(None))
+        .all()
+    ) if wf_ids else []
+    wf_skill_map: dict[int, set] = {}
+    for wid, sid in wf_skill_rows:
+        wf_skill_map.setdefault(wid, set()).add(sid)
+
     items = []
     for acc in accounts:
-        skill_count = db.query(func.count(AccountSkill.id)).filter(
-            AccountSkill.account_id == acc.id
-        ).scalar() or 0
+        skill_count = skill_counts_map.get(acc.id, 0)
 
-        # 割り当て済みスキルIDから有効ワークフロー数を計算
-        assigned_ids = {row[0] for row in db.query(AccountSkill.skill_id).filter(AccountSkill.account_id == acc.id).all()}
+        # 割り当て済みスキルIDから有効ワークフロー数を計算（プリフェッチ済みデータで判定）
+        assigned_ids = assigned_map.get(acc.id, set())
         wf_count = 0
-        for wf in db.query(Workflow).filter(Workflow.is_active == True, Workflow.deleted_at.is_(None)).all():
-            wf_skill_ids = {ws.skill_id for ws in db.query(WorkflowSkill).filter(WorkflowSkill.workflow_id == wf.id).all() if ws.skill_id}
+        for wf in active_wfs:
+            wf_skill_ids = wf_skill_map.get(wf.id, set())
             if wf_skill_ids and wf_skill_ids.issubset(assigned_ids):
                 wf_count += 1
 
@@ -545,6 +573,33 @@ async def list_workflows(
         query.order_by(Workflow.created_at.desc()).offset(skip).limit(limit).all()
     )
 
+    # グループ・スキルを一括プリフェッチして N+1 回避
+    from app.models import WorkflowGroup as WG_list
+    from app.schemas import WorkflowGroupItem, WorkflowGroupSkillItem
+    wf_ids = [w.id for w in workflows]
+    all_groups = (
+        db.query(WG_list)
+        .filter(WG_list.workflow_id.in_(wf_ids))
+        .order_by(WG_list.group_order.asc())
+        .all()
+    ) if wf_ids else []
+    group_ids = [g.id for g in all_groups]
+    all_wf_skills = (
+        db.query(WorkflowSkill)
+        .options(joinedload(WorkflowSkill.skill))
+        .filter(WorkflowSkill.group_id.in_(group_ids))
+        .order_by(WorkflowSkill.order_in_group.asc())
+        .all()
+    ) if group_ids else []
+    # グループIDごとにスキルをまとめる
+    skills_by_group: dict[int, list] = {}
+    for ws in all_wf_skills:
+        skills_by_group.setdefault(ws.group_id, []).append(ws)
+    # ワークフローIDごとにグループをまとめる
+    groups_by_wf: dict[int, list] = {}
+    for g in all_groups:
+        groups_by_wf.setdefault(g.workflow_id, []).append(g)
+
     items: list[WorkflowListItem] = []
     for wf in workflows:
         # input_schema を JSON から dict に変換
@@ -559,17 +614,10 @@ async def list_workflows(
             except Exception:
                 workflow_input_schema = None
 
-        # グループ構造を構築
-        from app.models import WorkflowGroup as WG_list
-        from app.schemas import WorkflowGroupItem, WorkflowGroupSkillItem
+        # グループ構造を構築（プリフェッチ済みデータから）
         groups_data = []
-        wf_groups = db.query(WG_list).filter(
-            WG_list.workflow_id == wf.id
-        ).order_by(WG_list.group_order.asc()).all()
-        for g in wf_groups:
-            g_skills = db.query(WorkflowSkill).filter(
-                WorkflowSkill.group_id == g.id
-            ).order_by(WorkflowSkill.order_in_group.asc()).all()
+        for g in groups_by_wf.get(wf.id, []):
+            g_skills = skills_by_group.get(g.id, [])
             groups_data.append(WorkflowGroupItem(
                 id=g.id,
                 group_order=g.group_order,
@@ -1746,6 +1794,7 @@ async def list_executions(
             "output_format": output_format,
             "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None,
             "workflow_execution_id": execution.workflow_execution_id,
+            "workflow_execution_status": execution.workflow_execution.status if execution.workflow_execution else None,
             "workflow_skill_id": execution.workflow_skill_id,
             "skill_order": execution.skill_order,
             "workflow_name": workflow_name,

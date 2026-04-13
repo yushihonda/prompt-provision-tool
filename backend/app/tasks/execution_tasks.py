@@ -58,6 +58,11 @@ from app.services.auto_orchestration import (
     compute_orchestration_overrides,
     get_effective,
 )
+from app.services.coordinator_service import (
+    record_artifact,
+    default_artifact_type_for_role,
+    map_profile_to_role,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +72,13 @@ JST = timezone(timedelta(hours=9))
 ROLE_QUALITY_GATE = "quality_gate"
 ROLE_SUPERVISOR = "supervisor"
 ROLE_DEBATE_JUDGE = "debate_judge"
+
+REVIEW_ACTION_APPROVE = "approve"
+REVIEW_ACTION_REVISE = "revise"
+REVIEW_ACTION_STOP = "stop"
+REVIEW_ACTION_MANUAL_REVIEW = "manual_review"
+REVIEW_ACTION_REPEAT_GROUP = "repeat_group"
+WORKFLOW_STATUS_MANUAL_REVIEW_REQUIRED = "manual_review_required"
 
 
 def _parse_json_text(value, default=None):
@@ -78,6 +90,208 @@ def _parse_json_text(value, default=None):
         return json.loads(value)
     except (json.JSONDecodeError, TypeError):
         return {} if default is None else default
+
+
+def _parse_review_action(output_text: str | None) -> dict:
+    """review系ノードの構造化結果を正規化する。
+
+    期待形式:
+    - {"action":"approve|revise|stop|manual_review","critique":"..."}
+    - 旧形式 {"pass": bool, "critique":"..."}
+
+    非構造化テキストは安全側に倒して revise として扱う。
+    """
+    fallback = {
+        "action": REVIEW_ACTION_REVISE,
+        "critique": (output_text or "").strip(),
+        "raw_output": output_text or "",
+    }
+    if not output_text:
+        return fallback
+    try:
+        parsed = json.loads(output_text)
+    except (json.JSONDecodeError, TypeError):
+        return fallback
+    if not isinstance(parsed, dict):
+        return fallback
+
+    action = parsed.get("action")
+    if isinstance(action, str):
+        normalized = action.strip().lower()
+        if normalized in {
+            REVIEW_ACTION_APPROVE,
+            REVIEW_ACTION_REVISE,
+            REVIEW_ACTION_STOP,
+            REVIEW_ACTION_MANUAL_REVIEW,
+            REVIEW_ACTION_REPEAT_GROUP,
+        }:
+            return {
+                "action": normalized,
+                "critique": str(parsed.get("critique", "") or ""),
+                "raw_output": output_text,
+            }
+
+    if "pass" in parsed:
+        passed = bool(parsed.get("pass"))
+        return {
+            "action": REVIEW_ACTION_APPROVE if passed else REVIEW_ACTION_REVISE,
+            "critique": str(parsed.get("critique", "") or ""),
+            "raw_output": output_text,
+        }
+
+    return fallback
+
+
+def _parse_group_review_action(output_text: str | None) -> dict:
+    """supervisor / judge 用の互換パーサ。
+
+    旧 supervisor 形式:
+    - {"action":"continue|repeat|goto|stop","reason":"..."}
+    新 review contract:
+    - {"action":"approve|revise|repeat_group|stop|manual_review","critique":"..."}
+    """
+    fallback = _parse_review_action(output_text)
+    if not output_text:
+        return fallback
+    try:
+        parsed = json.loads(output_text)
+    except (json.JSONDecodeError, TypeError):
+        return fallback
+    if not isinstance(parsed, dict):
+        return fallback
+
+    action = str(parsed.get("action", "") or "").strip().lower()
+    critique = str(parsed.get("critique") or parsed.get("reason") or "")
+    raw_goto_step_id = parsed.get("goto_step_id")
+    goto_step_id = None
+    if raw_goto_step_id is not None:
+        normalized_goto = str(raw_goto_step_id).strip()
+        if normalized_goto:
+            goto_step_id = normalized_goto
+    raw_required_fixes = parsed.get("required_fixes")
+    required_fixes = []
+    if isinstance(raw_required_fixes, list):
+        for value in raw_required_fixes:
+            if value is None:
+                continue
+            normalized_fix = str(value).strip()
+            if normalized_fix:
+                required_fixes.append(normalized_fix)
+    raw_targets = parsed.get("target_step_ids")
+    target_step_ids = []
+    if isinstance(raw_targets, list):
+        for value in raw_targets:
+            if value is None:
+                continue
+            normalized_value = str(value).strip()
+            if normalized_value:
+                target_step_ids.append(normalized_value)
+    if action in {"continue", "approve"}:
+        return {
+            "action": REVIEW_ACTION_APPROVE,
+            "critique": critique,
+            "raw_output": output_text,
+            "target_step_ids": target_step_ids,
+            "goto_step_id": goto_step_id,
+            "required_fixes": required_fixes,
+        }
+    if action in {"repeat", "revise", "retry_group"}:
+        return {
+            "action": REVIEW_ACTION_REPEAT_GROUP,
+            "critique": critique,
+            "raw_output": output_text,
+            "target_step_ids": target_step_ids,
+            "goto_step_id": goto_step_id,
+            "required_fixes": required_fixes,
+        }
+    if action == "goto":
+        if goto_step_id and goto_step_id not in target_step_ids:
+            target_step_ids.append(goto_step_id)
+        return {
+            "action": REVIEW_ACTION_REVISE,
+            "critique": critique,
+            "raw_output": output_text,
+            "target_step_ids": target_step_ids,
+            "goto_step_id": goto_step_id,
+            "required_fixes": required_fixes,
+        }
+    if action in {
+        REVIEW_ACTION_STOP,
+        REVIEW_ACTION_MANUAL_REVIEW,
+        REVIEW_ACTION_REPEAT_GROUP,
+        REVIEW_ACTION_REVISE,
+    }:
+        return {
+            "action": action,
+            "critique": critique,
+            "raw_output": output_text,
+            "target_step_ids": target_step_ids,
+            "goto_step_id": goto_step_id,
+            "required_fixes": required_fixes,
+        }
+    return fallback
+
+
+def _record_review_feedback(db, wf_exec, key: str, action: dict) -> None:
+    payload = {
+        "action": action.get("action"),
+        "critique": action.get("critique", ""),
+        "raw_output": action.get("raw_output", ""),
+        "target_step_ids": list(action.get("target_step_ids") or []),
+        "goto_step_id": action.get("goto_step_id"),
+        "required_fixes": list(action.get("required_fixes") or []),
+    }
+    _merge_blackboard(db, wf_exec, key, payload)
+
+
+def _collect_group_review_feedback(ws, structured_context) -> list[dict]:
+    if not getattr(ws, "group_id", None):
+        return []
+    blackboard = structured_context.get("blackboard", {}) if isinstance(structured_context, dict) else {}
+    if not isinstance(blackboard, dict):
+        return []
+    feedback = []
+    for key in (f"supervisor_group_{ws.group_id}", f"judge_group_{ws.group_id}"):
+        payload = blackboard.get(key)
+        if isinstance(payload, dict) and payload.get("critique"):
+            target_step_ids = list(payload.get("target_step_ids") or [])
+            if target_step_ids and str(getattr(ws, "id", "")) not in {
+                str(value).strip() for value in target_step_ids if str(value).strip()
+            }:
+                continue
+            feedback.append({
+                "source_key": key,
+                "action": payload.get("action"),
+                "critique": payload.get("critique"),
+                "raw_output": payload.get("raw_output"),
+                "target_step_ids": target_step_ids,
+                "goto_step_id": payload.get("goto_step_id"),
+                "required_fixes": list(payload.get("required_fixes") or []),
+            })
+    return feedback
+
+
+def _normalize_target_step_ids(target_step_ids) -> set[str]:
+    normalized = set()
+    if not isinstance(target_step_ids, list):
+        return normalized
+    for value in target_step_ids:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            normalized.add(text)
+    return normalized
+
+
+def _set_workflow_manual_review_required(db, wf_exec, critique: str, source: str | None = None) -> None:
+    wf_exec.status = WORKFLOW_STATUS_MANUAL_REVIEW_REQUIRED
+    wf_exec.error_message = critique or "Manual review required"
+    wf_exec.completed_at = datetime.now(JST)
+    if source:
+        wf_exec.current_stage = source
+    db.add(wf_exec)
+    db.commit()
 
 
 def _resolve_agent_profile(ws, skill) -> str:
@@ -117,6 +331,53 @@ def _build_step_metadata(ws, skill, agent_profile: str) -> dict:
         "output_key": getattr(ws, "output_key", None),
         "handoff_refs": _collect_handoff_refs(ws),
     }
+
+
+def _summarize_plan_input(skill_input: dict) -> list[str]:
+    keys = []
+    for key in skill_input.keys():
+        if str(key).startswith("_"):
+            continue
+        keys.append(str(key))
+    return keys[:8]
+
+
+def _build_plan_preview(ws, skill, skill_input: dict, agent_profile: str, predicted_kind: str) -> tuple[str, str]:
+    visible_keys = _summarize_plan_input(skill_input)
+    summary = f"{skill.name} の実行計画確認"
+    lines = [
+        f"ステップ: {getattr(ws, 'skill_name', None) or skill.name}",
+        f"skill_order: {getattr(ws, 'skill_order', None)}",
+        f"agent_profile: {agent_profile}",
+        f"runtime_hint: {predicted_kind}",
+        f"入力キー: {', '.join(visible_keys) if visible_keys else 'なし'}",
+    ]
+    output_key = getattr(ws, "output_key", None)
+    if output_key:
+        lines.append(f"output_key: {output_key}")
+    depends_on = getattr(ws, "depends_on", None)
+    if depends_on:
+        lines.append(f"depends_on: {depends_on}")
+    return summary, "\n".join(lines)
+
+
+def _resolve_step_execution_config(db, workflow, ws, skill):
+    """Workflow → Group → Skill → Step の継承チェーンから実効設定を解決する。"""
+    from app.services.workflow_step_schema import (
+        parse_execution_config,
+        merge_step_execution_config_chain,
+    )
+    from app.models import WorkflowGroup as _WG
+
+    wf_cfg = parse_execution_config(workflow.config_json) if (workflow and workflow.config_json) else None
+    grp_cfg = None
+    if ws.group_id is not None:
+        grp_row = db.query(_WG).filter(_WG.id == ws.group_id).first()
+        if grp_row is not None and getattr(grp_row, "config_json", None):
+            grp_cfg = parse_execution_config(grp_row.config_json)
+    skill_cfg = parse_execution_config(skill.config_json) if getattr(skill, "config_json", None) else None
+    step_cfg = parse_execution_config(ws.config_json) if ws.config_json else None
+    return merge_step_execution_config_chain(wf_cfg, grp_cfg, skill_cfg, step_cfg)
 
 
 def _augment_skill_input_with_profile(skill_input, wf_exec, workflow, ws, skill, structured_context):
@@ -318,6 +579,10 @@ def _build_skill_input(ws, structured_context, global_input, previous_output,
 
     # Blackboard を常に注入
     skill_input["blackboard"] = structured_context.get("blackboard", {})
+    review_feedback = _collect_group_review_feedback(ws, structured_context)
+    if review_feedback:
+        skill_input["review_feedback"] = review_feedback
+        skill_input["_nexmagi_review_feedback"] = review_feedback
 
     skill_overrides = per_skill_input.get(str(ws.id), {})
     if skill_overrides:
@@ -452,28 +717,38 @@ def _handle_quality_gate_result(db, wf_exec, gate_execution):
     if not ws:
         return
 
-    # ゲート出力をパース
-    verdict = {"pass": True, "critique": ""}
-    if gate_execution.output_data:
-        try:
-            verdict = json.loads(gate_execution.output_data)
-        except (json.JSONDecodeError, TypeError):
-            output_lower = gate_execution.output_data.lower()
-            verdict["pass"] = "pass" in output_lower or "true" in output_lower
-            verdict["critique"] = gate_execution.output_data
+    verdict = _parse_review_action(gate_execution.output_data)
+    critique = verdict.get("critique", "")
+    action = verdict.get("action", REVIEW_ACTION_REVISE)
 
-    if verdict.get("pass", True):
+    if action == REVIEW_ACTION_APPROVE:
         logger.info(f"WF {wf_exec.id}: quality gate passed for ws={ws.id}")
         # 通常のWF継続
         from app.tasks.execution_tasks import continue_workflow_execution
         continue_workflow_execution(wf_exec.id, gate_execution.skill_order)
         return
 
+    if action in {REVIEW_ACTION_STOP, REVIEW_ACTION_MANUAL_REVIEW}:
+        if action == REVIEW_ACTION_MANUAL_REVIEW:
+            _set_workflow_manual_review_required(db, wf_exec, critique or "Quality gate requested manual review", ROLE_QUALITY_GATE)
+        else:
+            wf_exec.status = "error"
+            wf_exec.error_message = critique or "Quality gate requested stop"
+            wf_exec.completed_at = datetime.now(JST)
+            db.add(wf_exec)
+            db.commit()
+        logger.warning(f"WF {wf_exec.id}: quality gate forced stop for ws={ws.id}")
+        return
+
     # 不合格 → リフレクション再実行
     current_loop = gate_execution.reflection_loop or 0
     if current_loop >= ws.max_reflection_loops:
-        logger.info(f"WF {wf_exec.id}: reflection exhausted for ws={ws.id}, proceeding")
-        continue_workflow_execution(wf_exec.id, gate_execution.skill_order)
+        wf_exec.status = "error"
+        wf_exec.error_message = critique or f"Quality gate failed for step {ws.skill_order}"
+        wf_exec.completed_at = datetime.now(JST)
+        db.add(wf_exec)
+        db.commit()
+        logger.warning(f"WF {wf_exec.id}: reflection exhausted for ws={ws.id}, stopping")
         return
 
     # 元のスキルを再実行 (critique付き)
@@ -504,15 +779,16 @@ def _handle_quality_gate_result(db, wf_exec, gate_execution):
             pass
 
     skill_input["previous_attempt_output"] = original_exec.output_data if original_exec else ""
-    skill_input["quality_critique"] = verdict.get("critique", "")
+    skill_input["quality_critique"] = critique
     skill_input["reflection_loop"] = current_loop + 1
     # follow-up continuation メタデータ
     skill_input["_nexmagi_continuation"] = {
         "continuation_of_execution_id": original_exec.id if original_exec else None,
         "continuation_reason": "reflection_retry",
-        "delta_instruction": f"品質ゲートが不合格でした: {verdict.get('critique', '')}。この指摘を踏まえて改善してください。",
-        "previous_execution_summary": verdict.get("critique", "品質基準を満たさず"),
+        "delta_instruction": f"品質ゲートが不合格でした: {critique}。この指摘を踏まえて改善してください。",
+        "previous_execution_summary": critique or "品質基準を満たさず",
         "reflection_loop": current_loop + 1,
+        "review_action": action,
     }
 
     new_exec = Execution(
@@ -674,24 +950,29 @@ def _launch_supervisor(db, wf_exec, group, workflow, structured_context, global_
 
 def _handle_supervisor_result(db, wf_exec, sv_execution):
     """スーパーバイザー完了時の処理。action に基づきルーティング"""
-    action = {"action": "continue"}
-    if sv_execution.output_data:
-        try:
-            action = json.loads(sv_execution.output_data)
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    act = action.get("action", "continue")
+    action = _parse_group_review_action(sv_execution.output_data)
+    act = action.get("action", REVIEW_ACTION_APPROVE)
+    critique = action.get("critique", "")
     logger.info(f"WF {wf_exec.id}: supervisor action={act}")
 
-    if act == "stop":
-        wf_exec.status = "error"
-        wf_exec.error_message = f"Supervisor stopped: {action.get('reason', '')}"
-        wf_exec.completed_at = datetime.now(JST)
-        db.commit()
+    _record_review_feedback(
+        db,
+        wf_exec,
+        f"supervisor_group_{sv_execution.execution_group_id or 'unknown'}",
+        action,
+    )
+
+    if act in {REVIEW_ACTION_STOP, REVIEW_ACTION_MANUAL_REVIEW}:
+        if act == REVIEW_ACTION_MANUAL_REVIEW:
+            _set_workflow_manual_review_required(db, wf_exec, critique or "Supervisor requested manual review", ROLE_SUPERVISOR)
+        else:
+            wf_exec.status = "error"
+            wf_exec.error_message = critique or "Supervisor requested stop"
+            wf_exec.completed_at = datetime.now(JST)
+            db.commit()
         return
 
-    if act == "repeat":
+    if act in {REVIEW_ACTION_REPEAT_GROUP, REVIEW_ACTION_REVISE}:
         # 対象グループの全Executionをリセット → continue_workflow_execution が再起動する
         group_id = sv_execution.execution_group_id
         if group_id:
@@ -705,12 +986,20 @@ def _handle_supervisor_result(db, wf_exec, sv_execution):
             )
             group_skills = db.query(WorkflowSkill).filter(WorkflowSkill.group_id == group_id).all()
             group_ws_ids = {ws.id for ws in group_skills}
+            targeted_step_ids = _normalize_target_step_ids(action.get("target_step_ids"))
+            goto_step_id = str(action.get("goto_step_id") or "").strip()
+            if goto_step_id:
+                targeted_step_ids.add(goto_step_id)
             for ex in group_execs:
-                if ex.workflow_skill_id in group_ws_ids and ex.status == "success":
+                if ex.workflow_skill_id not in group_ws_ids or ex.status != "success":
+                    continue
+                if targeted_step_ids and str(ex.workflow_skill_id) not in targeted_step_ids:
+                    continue
+                if ex.workflow_skill_id in group_ws_ids:
                     ex.status = "cancelled"
             db.commit()
 
-    # "continue" or "goto" → 通常のWF継続
+    # approve → 通常のWF継続
     continue_workflow_execution(wf_exec.id, sv_execution.skill_order)
 
 
@@ -865,7 +1154,7 @@ def continue_workflow_execution(
         ).first()
         if not wf_exec:
             return
-        if wf_exec.status in ("cancelled", "success", "error"):
+        if wf_exec.status in ("cancelled", "success", "error", WORKFLOW_STATUS_MANUAL_REVIEW_REQUIRED):
             return
 
         if not _acquire_continuation_lock(db, wf_exec.id, wf_exec.continuation_lock_version):
@@ -1159,6 +1448,8 @@ def _launch_skills(db, wf_exec, skills, structured_context,
                    global_input, previous_output, per_skill_input):
     workflow = db.query(Workflow).filter(Workflow.id == wf_exec.workflow_id).first()
     launched_profiles = []
+    created_approvals = 0
+    gated_step_ids = set()
     try:
         for ws in skills:
             skill = db.query(Skill).filter(Skill.id == ws.skill_id).first()
@@ -1172,6 +1463,25 @@ def _launch_skills(db, wf_exec, skills, structured_context,
                 ws, structured_context, global_input, previous_output,
                 per_skill_input, structured_context.get("all_step_results", []),
             )
+            review_feedback = skill_input.get("_nexmagi_review_feedback") or []
+            if review_feedback and "_nexmagi_continuation" not in skill_input:
+                latest_feedback = review_feedback[-1]
+                critique = latest_feedback.get("critique", "")
+                required_fixes = [str(item).strip() for item in (latest_feedback.get("required_fixes") or []) if str(item).strip()]
+                delta_instruction = f"レビュー差し戻しにより再実行されました。指摘: {critique}"
+                if required_fixes:
+                    delta_instruction += "。必須修正: " + " / ".join(required_fixes)
+                skill_input["_nexmagi_continuation"] = {
+                    "continuation_of_execution_id": None,
+                    "continuation_reason": "review_revise",
+                    "delta_instruction": delta_instruction,
+                    "previous_execution_summary": critique or "レビュー差し戻し",
+                    "review_action": latest_feedback.get("action"),
+                    "review_source_key": latest_feedback.get("source_key"),
+                    "target_step_ids": list(latest_feedback.get("target_step_ids") or []),
+                    "goto_step_id": latest_feedback.get("goto_step_id"),
+                    "required_fixes": required_fixes,
+                }
             agent_profile = _augment_skill_input_with_profile(
                 skill_input, wf_exec, workflow, ws, skill, structured_context
             )
@@ -1190,29 +1500,24 @@ def _launch_skills(db, wf_exec, skills, structured_context,
             # time. The two must agree; if they ever drift the bundle
             # endpoint wins (and overwrites the column).
             predicted_kind = "http_provider"
+            merged_cfg = None
             try:
                 from app.services.workflow_step_schema import (
-                    parse_execution_config,
-                    merge_step_execution_config_chain,
                     is_legacy_step,
                 )
-                from app.models import WorkflowGroup as _WG
-                wf_cfg = parse_execution_config(workflow.config_json) if (workflow and workflow.config_json) else None
-                grp_cfg = None
-                if ws.group_id is not None:
-                    grp_row = db.query(_WG).filter(_WG.id == ws.group_id).first()
-                    if grp_row is not None and getattr(grp_row, "config_json", None):
-                        grp_cfg = parse_execution_config(grp_row.config_json)
-                skill_cfg = parse_execution_config(skill.config_json) if getattr(skill, "config_json", None) else None
-                step_cfg = parse_execution_config(ws.config_json) if ws.config_json else None
-                merged = merge_step_execution_config_chain(wf_cfg, grp_cfg, skill_cfg, step_cfg)
-                if not is_legacy_step(merged) and merged.execution.execution_kind == "external_cli":
+                merged_cfg = _resolve_step_execution_config(db, workflow, ws, skill)
+                if not is_legacy_step(merged_cfg) and merged_cfg.execution.execution_kind == "external_cli":
                     predicted_kind = "external_cli"
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "execution_kind prediction failed for ws_id=%s: %s — defaulting to http_provider",
                     ws.id, exc,
                 )
+
+            step_id = f"task_{ws.id}"
+            requires_plan_approval = bool(
+                merged_cfg and getattr(getattr(merged_cfg, "approval", None), "policy", None) == "plan_required"
+            )
 
             execution = Execution(
                 account_id=wf_exec.account_id,
@@ -1221,7 +1526,7 @@ def _launch_skills(db, wf_exec, skills, structured_context,
                 workflow_skill_id=ws.id,
                 skill_order=ws.skill_order,
                 input_data=json.dumps(skill_input, ensure_ascii=False),
-                status="pending_local",
+                status="pending_approval" if requires_plan_approval else "pending_local",
                 dispatch_mode="local",
                 execution_kind=predicted_kind,
                 model_used=skill.model_type,
@@ -1232,6 +1537,54 @@ def _launch_skills(db, wf_exec, skills, structured_context,
             skill_name_snapshot=skill.name,
             )
             db.add(execution)
+            db.flush()
+
+            if requires_plan_approval:
+                from app.services.approval_service import create_approval_request
+
+                prompt_preview, plan_content = _build_plan_preview(
+                    ws, skill, skill_input, agent_profile, predicted_kind
+                )
+                cwd_hint = None
+                if merged_cfg is not None:
+                    cwd_hint = getattr(getattr(merged_cfg, "execution", None), "cwd_hint", None)
+                approval = create_approval_request(
+                    db,
+                    session_id=wf_exec.session_id,
+                    plan_id=wf_exec.coordinator_plan_id,
+                    step_id=step_id,
+                    execution_id=execution.id,
+                    workflow_execution_id=wf_exec.id,
+                    adapter_id=None,
+                    runtime=predicted_kind,
+                    approval_policy="plan_required",
+                    prompt_preview=prompt_preview,
+                    cwd=cwd_hint,
+                    attempt_no=(execution.retry_count or 0) + 1,
+                )
+                if wf_exec.coordinator_plan_id:
+                    role = map_profile_to_role(agent_profile)
+                    record_artifact(
+                        db,
+                        wf_exec.coordinator_plan_id,
+                        step_id,
+                        role,
+                        default_artifact_type_for_role(role),
+                        execution_id=execution.id,
+                        summary=prompt_preview,
+                        inline_content=plan_content,
+                        content_ref=f"approval:{approval.approval_id}",
+                        model_hint=skill.model_type,
+                        extra_metadata={
+                            "artifact_subtype": "execution_plan",
+                            "approval_id": approval.approval_id,
+                            "approval_policy": "plan_required",
+                            "status": "pending",
+                            "predicted_kind": predicted_kind,
+                        },
+                    )
+                created_approvals += 1
+                gated_step_ids.add(step_id)
 
         distinct_profiles = {profile for profile in launched_profiles if profile}
         if len(distinct_profiles) > 1:
@@ -1250,11 +1603,12 @@ def _launch_skills(db, wf_exec, skills, structured_context,
             try:
                 for ws_item in skills:
                     step_id = f"task_{ws_item.id}"
-                    update_session_status(db, wf_exec, SESSION_RUNNING, step_id=step_id)
+                    if step_id not in gated_step_ids:
+                        update_session_status(db, wf_exec, SESSION_RUNNING, step_id=step_id)
                     update_resume_cursor(db, wf_exec, {
                         "step_id": step_id,
                         "skill_order": ws_item.skill_order,
-                        "position": "step_started",
+                        "position": "awaiting_plan_approval" if step_id in gated_step_ids else "step_started",
                     })
                     emit_session_lifecycle(
                         db, wf_exec.session_id, wf_exec.coordinator_plan_id,
@@ -1263,13 +1617,22 @@ def _launch_skills(db, wf_exec, skills, structured_context,
                     emit_step_event(
                         db, wf_exec.session_id, wf_exec.coordinator_plan_id,
                         STEP_STARTED, step_id=step_id,
-                        payload={"skill_order": ws_item.skill_order, "predicted_kind": predicted_kind},
+                        payload={
+                            "skill_order": ws_item.skill_order,
+                            "predicted_kind": predicted_kind,
+                            "awaiting_plan_approval": step_id in gated_step_ids,
+                        },
                     )
             except Exception:
                 logger.debug("_launch_skills セッションイベント発行失敗", exc_info=True)
 
         db.commit()
-        logger.info(f"WF {wf_exec.id}: launched {len(skills)} skills")
+        logger.info(
+            "WF %s: launched %s skills (%s waiting plan approval)",
+            wf_exec.id,
+            len(skills),
+            created_approvals,
+        )
     except Exception as e:
         db.rollback()
         raise RuntimeError(f"Failed to launch skills: {e}") from e

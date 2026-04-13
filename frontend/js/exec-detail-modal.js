@@ -323,10 +323,12 @@
             plan: 'Plan',
             implement: 'Implement',
             verification: 'Verification',
+            design_builder: 'Design Builder',
         }[profile] || profile || '-');
         const profileColor = (profile) => ({
             default: '#9c27b0', explore: '#2196f3', plan: '#ff9800',
             implement: '#4caf50', verification: '#e91e63',
+            design_builder: '#00acc1',
         }[(profile || '').toLowerCase()] || '#9e9e9e');
 
         // Coordinator のメタデータを workflow_skill_id でマッピング

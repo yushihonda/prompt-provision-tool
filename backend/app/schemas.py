@@ -4,7 +4,14 @@ from datetime import datetime
 from app.models import AccountType
 
 
-AgentProfile = Literal["default", "explore", "plan", "implement", "verification"]
+AgentProfile = Literal[
+    "default",
+    "explore",
+    "plan",
+    "implement",
+    "verification",
+    "design_builder",
+]
 FinalVerdict = Literal["PASS", "FAIL", "PARTIAL"]
 
 
@@ -173,6 +180,7 @@ class ExecutionResponse(BaseModel):
     workflow_execution_id: Optional[int] = None
     workflow_skill_id: Optional[int] = None
     workflow_id: Optional[int] = None
+    workflow_execution_status: Optional[str] = None
     skill_order: Optional[int] = None
     # 表示用のワークフロー名・ステップ名
     workflow_name: Optional[str] = None

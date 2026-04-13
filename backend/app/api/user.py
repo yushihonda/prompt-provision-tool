@@ -22,6 +22,52 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 router = APIRouter(prefix="/api/user", tags=["ユーザー"])
+WORKFLOW_STATUS_MANUAL_REVIEW_REQUIRED = "manual_review_required"
+
+
+def _load_json_safe(value, default=None):
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def _get_plan_artifact_for_approval(db: Session, approval_id: str):
+    from app.models import CoordinatorArtifact
+
+    return (
+        db.query(CoordinatorArtifact)
+        .filter(CoordinatorArtifact.content_ref == f"approval:{approval_id}")
+        .order_by(CoordinatorArtifact.id.desc())
+        .first()
+    )
+
+
+def _extract_review_feedback(blackboard: dict | None):
+    if not isinstance(blackboard, dict):
+        return []
+    items = []
+    for key, payload in blackboard.items():
+        if not isinstance(key, str) or not isinstance(payload, dict):
+            continue
+        if not (key.startswith("supervisor_group_") or key.startswith("judge_group_")):
+            continue
+        critique = str(payload.get("critique") or "").strip()
+        if not critique:
+            continue
+        items.append({
+            "source_key": key,
+            "action": payload.get("action"),
+            "critique": critique,
+            "target_step_ids": list(payload.get("target_step_ids") or []),
+            "goto_step_id": payload.get("goto_step_id"),
+            "required_fixes": list(payload.get("required_fixes") or []),
+        })
+    return items
 
 
 def _build_coordinator_view(db, wf_exec):
@@ -45,12 +91,15 @@ def _build_coordinator_view(db, wf_exec):
     last_completed_profile = None
     last_completed_name = None
 
+    blackboard = _load_json_safe(getattr(wf_exec, "blackboard_data", None), {}) or {}
+    review_feedback = _extract_review_feedback(blackboard)
+
     for ex in all_execs:
         profile = normalize_agent_profile(getattr(ex, "agent_profile", None))
         role = getattr(ex, "execution_role", None)
         step_name = getattr(ex, "skill_name", None) or role or f"Step {ex.skill_order}"
 
-        if ex.status in ("pending", "pending_local", "processing"):
+        if ex.status in ("pending", "pending_local", "processing", "pending_approval"):
             waiting_on.append({
                 "execution_id": ex.id,
                 "step_name": step_name,
@@ -120,6 +169,9 @@ def _build_coordinator_view(db, wf_exec):
     elif wf_exec.status == "error":
         next_action = "failed"
         latest_summary = wf_exec.error_message or "エラーで停止"
+    elif wf_exec.status == WORKFLOW_STATUS_MANUAL_REVIEW_REQUIRED:
+        next_action = "manual_review_required"
+        latest_summary = wf_exec.error_message or "人手レビュー待ちです"
     elif waiting_on:
         waiting_names = [w["step_name"] for w in waiting_on]
         if any(w["role"] == "debate_judge" for w in waiting_on):
@@ -176,9 +228,87 @@ def _build_coordinator_view(db, wf_exec):
         "next_action_hint": handoff_next_hint,
         "next_expected_action": next_action,
         "latest_summary": latest_summary,
+        "review_feedback": review_feedback,
     }
 
     return coordinator_view, synthesis_events
+
+
+def _serialize_execution_item(db: Session, execution: Execution, *, prefetched_artifacts: dict | None = None) -> dict:
+    skill_name = getattr(execution, 'skill_name_snapshot', None) or (execution.skill.name if execution.skill else None)
+
+    workflow_name = None
+    skill_display_name = None
+    if execution.workflow_execution:
+        workflow_name = getattr(execution.workflow_execution, 'workflow_name_snapshot', None)
+        if not workflow_name:
+            wf = execution.workflow_execution.workflow
+            if wf:
+                workflow_name = wf.name
+        if execution.workflow_skill:
+            skill_display_name = execution.workflow_skill.skill_name or f"Step {execution.skill_order}"
+
+    enable_deep_think = getattr(execution, 'enable_deep_think', None)
+    if enable_deep_think is None and execution.skill:
+        enable_deep_think = getattr(execution.skill, 'enable_deep_think', None)
+        if enable_deep_think is None:
+            enable_deep_think = True
+
+    output_format = getattr(execution, 'output_format', None)
+    if output_format is None:
+        output_format = 'txt'
+
+    extra_meta = None
+    try:
+        if prefetched_artifacts is not None:
+            art = prefetched_artifacts.get(execution.id)
+        else:
+            from app.models import CoordinatorArtifact
+            art = (
+                db.query(CoordinatorArtifact)
+                .filter(CoordinatorArtifact.execution_id == execution.id)
+                .order_by(CoordinatorArtifact.id.desc())
+                .first()
+            )
+        if art and art.extra_metadata:
+            try:
+                extra_meta = json.loads(art.extra_metadata) if isinstance(art.extra_metadata, str) else art.extra_metadata
+            except (json.JSONDecodeError, TypeError):
+                extra_meta = None
+    except Exception:
+        extra_meta = None
+
+    return {
+        "id": execution.id,
+        "account_id": execution.account_id,
+        "skill_id": execution.skill_id,
+        "workflow_execution_id": execution.workflow_execution_id,
+        "workflow_execution_status": execution.workflow_execution.status if execution.workflow_execution else None,
+        "workflow_skill_id": execution.workflow_skill_id,
+        "workflow_id": execution.workflow_execution.workflow_id if execution.workflow_execution else None,
+        "workflow_name": workflow_name,
+        "skill_order": execution.skill_order,
+        "skill_display_name": skill_display_name,
+        "input_data": execution.input_data,
+        "output_data": execution.output_data,
+        "model_used": execution.model_used,
+        "tokens_used": execution.tokens_used,
+        "execution_time": execution.execution_time,
+        "status": execution.status,
+        "error_message": execution.error_message,
+        "executed_at": execution.executed_at,
+        "output_format": output_format,
+        "skill_name": skill_name,
+        "execution_role": getattr(execution, 'execution_role', None),
+        "execution_group_id": getattr(execution, 'execution_group_id', None),
+        "parallel_group_id": (execution.workflow_skill.group_id if execution.workflow_skill and execution.workflow_skill.group and execution.workflow_skill.group.execution_type == 'parallel' else None),
+        "agent_profile": getattr(execution, 'agent_profile', None),
+        "reflection_loop": getattr(execution, 'reflection_loop', 0),
+        "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None,
+        "dispatch_mode": getattr(execution, 'dispatch_mode', 'server'),
+        "execution_kind": getattr(execution, 'execution_kind', 'http_provider'),
+        "extra_metadata": extra_meta,
+    }
 
 
 # ==================== ダッシュボード ====================
@@ -740,97 +870,81 @@ async def list_my_executions(
         .all()
     )
 
+    # CoordinatorArtifact を一括取得して N+1 回避
+    from app.models import CoordinatorArtifact
+    exec_ids = [e.id for e in executions]
+    artifact_map: dict = {}
+    if exec_ids:
+        from sqlalchemy import func as sa_func
+        latest_ids_subq = (
+            db.query(sa_func.max(CoordinatorArtifact.id))
+            .filter(CoordinatorArtifact.execution_id.in_(exec_ids))
+            .group_by(CoordinatorArtifact.execution_id)
+            .subquery()
+        )
+        arts = db.query(CoordinatorArtifact).filter(CoordinatorArtifact.id.in_(latest_ids_subq)).all()
+        for a in arts:
+            artifact_map[a.execution_id] = a
+
     items = []
     for execution in executions:
-        skill_name = getattr(execution, 'skill_name_snapshot', None) or (execution.skill.name if execution.skill else None)
-
-        # ワークフロー実行情報を取得（スナップショット優先）
-        workflow_name = None
-        skill_display_name = None
-        if execution.workflow_execution:
-            workflow_name = getattr(execution.workflow_execution, 'workflow_name_snapshot', None)
-            if not workflow_name:
-                wf = execution.workflow_execution.workflow
-                if wf:
-                    workflow_name = wf.name
-            if execution.workflow_skill:
-                skill_display_name = execution.workflow_skill.skill_name or f"Step {execution.skill_order}"
-
-        # 実行時に保存されたenable_deep_thinkを使用（実行時点の状態を保持）
-        # 保存されていない場合はスキルの設定を参照（後方互換性のため）
-        enable_deep_think = getattr(execution, 'enable_deep_think', None)
-        if enable_deep_think is None and execution.skill:
-            # 古い実行履歴の場合、スキルの設定を参照
-            enable_deep_think = getattr(execution.skill, 'enable_deep_think', None)
-            if enable_deep_think is None:
-                enable_deep_think = True  # デフォルト値
-
-        # output_formatを取得（モデルから直接取得）
-        output_format = getattr(execution, 'output_format', None)
-        if output_format is None:
-            output_format = 'txt'  # デフォルト値
-
-        # 来歴 / ランタイムメタデータは CoordinatorArtifact.extra_metadata に格納
-        # される（executions.extra_metadata ではない）。この execution_id の
-        # 最新アーティファクトを検索し、その extra_metadata を返す。
-        extra_meta = None
-        try:
-            from app.models import CoordinatorArtifact
-            art = (
-                db.query(CoordinatorArtifact)
-                .filter(CoordinatorArtifact.execution_id == execution.id)
-                .order_by(CoordinatorArtifact.id.desc())
-                .first()
-            )
-            if art and art.extra_metadata:
-                try:
-                    extra_meta = json.loads(art.extra_metadata) if isinstance(art.extra_metadata, str) else art.extra_metadata
-                except (json.JSONDecodeError, TypeError):
-                    extra_meta = None
-        except Exception:  # noqa: BLE001
-            extra_meta = None
-
-        execution_dict = {
-            "id": execution.id,
-            "account_id": execution.account_id,
-            "skill_id": execution.skill_id,
-            "workflow_execution_id": execution.workflow_execution_id,
-            "workflow_skill_id": execution.workflow_skill_id,
-            "workflow_id": execution.workflow_execution.workflow_id if execution.workflow_execution else None,
-            "workflow_name": workflow_name,
-            "skill_order": execution.skill_order,
-            "skill_display_name": skill_display_name,
-            "input_data": execution.input_data,
-            "output_data": execution.output_data,
-            "model_used": execution.model_used,
-            "tokens_used": execution.tokens_used,
-            "execution_time": execution.execution_time,
-            "status": execution.status,
-            "error_message": execution.error_message,
-            "executed_at": execution.executed_at,
-            "output_format": output_format,
-            "skill_name": skill_name,
-            "execution_role": getattr(execution, 'execution_role', None),
-            "execution_group_id": getattr(execution, 'execution_group_id', None),
-            "parallel_group_id": (execution.workflow_skill.group_id if execution.workflow_skill and execution.workflow_skill.group and execution.workflow_skill.group.execution_type == 'parallel' else None),
-            "agent_profile": getattr(execution, 'agent_profile', None),
-            "reflection_loop": getattr(execution, 'reflection_loop', 0),
-            "enable_deep_think": bool(enable_deep_think) if enable_deep_think is not None else None,
-            # フロントエンドのポーリングループが SSE ストリーミング（HTTP）と
-            # Tauri の consume_external_cli_bundle（CLI）を切り替えるための
-            # ルーティングフィールド。dispatch_mode はレガシーの「どこで」ヒント、
-            # execution_kind は新しい「どのように」ヒント。
-            "dispatch_mode": getattr(execution, 'dispatch_mode', 'server'),
-            "execution_kind": getattr(execution, 'execution_kind', 'http_provider'),
-            "extra_metadata": extra_meta,
-        }
-        items.append(execution_dict)
+        items.append(_serialize_execution_item(db, execution, prefetched_artifacts=artifact_map))
 
     return {
         "items": items,
         "total": total,
         "skip": skip,
         "limit": limit
+    }
+
+
+@router.get("/workflow-executions/{wf_execution_id}/executions")
+async def list_workflow_execution_items(
+    wf_execution_id: int,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    wf_exec = db.query(WorkflowExecution).filter(
+        WorkflowExecution.id == wf_execution_id,
+        WorkflowExecution.account_id == current_user.id,
+    ).first()
+    if not wf_exec:
+        raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
+
+    executions = (
+        db.query(Execution)
+        .options(
+            joinedload(Execution.skill),
+            joinedload(Execution.workflow_execution).joinedload(WorkflowExecution.workflow),
+            joinedload(Execution.workflow_skill),
+        )
+        .filter(
+            Execution.account_id == current_user.id,
+            Execution.workflow_execution_id == wf_execution_id,
+        )
+        .order_by(Execution.id.asc())
+        .all()
+    )
+
+    # CoordinatorArtifact を一括取得して N+1 回避
+    from app.models import CoordinatorArtifact
+    exec_ids = [e.id for e in executions]
+    artifact_map: dict = {}
+    if exec_ids:
+        from sqlalchemy import func as sa_func
+        latest_ids_subq = (
+            db.query(sa_func.max(CoordinatorArtifact.id))
+            .filter(CoordinatorArtifact.execution_id.in_(exec_ids))
+            .group_by(CoordinatorArtifact.execution_id)
+            .subquery()
+        )
+        arts = db.query(CoordinatorArtifact).filter(CoordinatorArtifact.id.in_(latest_ids_subq)).all()
+        for a in arts:
+            artifact_map[a.execution_id] = a
+
+    return {
+        "items": [_serialize_execution_item(db, execution, prefetched_artifacts=artifact_map) for execution in executions],
+        "workflow_execution_id": wf_execution_id,
     }
 
 
@@ -848,10 +962,11 @@ async def get_workflow_execution_status(
     if not wf_exec:
         raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
     blackboard_keys = []
+    blackboard = {}
     if wf_exec.blackboard_data:
         try:
-            bb = json.loads(wf_exec.blackboard_data)
-            blackboard_keys = list(bb.keys())
+            blackboard = json.loads(wf_exec.blackboard_data)
+            blackboard_keys = list(blackboard.keys())
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -884,6 +999,7 @@ async def get_workflow_execution_status(
         "final_verdict": getattr(wf_exec, "final_verdict", None),
         "handoff_summary": handoff_summary,
         "blackboard_keys": blackboard_keys,
+        "review_feedback": _extract_review_feedback(blackboard),
         "coordinator_view": coordinator_view,
         "synthesis_events": synthesis_events,
     }
@@ -904,26 +1020,35 @@ async def get_workflow_execution_approvals(
     if not wf_exec:
         raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
     approvals = get_approvals_for_execution(db, wf_execution_id)
-    return {
-        "approvals": [
-            {
-                "approval_id": a.approval_id,
-                "session_id": a.session_id,
-                "step_id": a.step_id,
-                "adapter_id": a.adapter_id,
-                "runtime": a.runtime,
-                "approval_policy": a.approval_policy,
-                "status": a.status,
-                "prompt_preview": a.prompt_preview,
-                "cwd": a.cwd,
-                "decided_by": a.decided_by,
-                "decided_at": a.decided_at.isoformat() if a.decided_at else None,
-                "attempt_no": a.attempt_no,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
-            }
-            for a in approvals
-        ],
-    }
+    items = []
+    for a in approvals:
+        plan_artifact = None
+        if a.approval_policy == "plan_required":
+            art = _get_plan_artifact_for_approval(db, a.approval_id)
+            if art:
+                plan_artifact = {
+                    "artifact_id": art.artifact_id,
+                    "summary": art.summary,
+                    "content": art.inline_content,
+                    "extra_metadata": _load_json_safe(art.extra_metadata, {}),
+                }
+        items.append({
+            "approval_id": a.approval_id,
+            "session_id": a.session_id,
+            "step_id": a.step_id,
+            "adapter_id": a.adapter_id,
+            "runtime": a.runtime,
+            "approval_policy": a.approval_policy,
+            "status": a.status,
+            "prompt_preview": a.prompt_preview,
+            "cwd": a.cwd,
+            "decided_by": a.decided_by,
+            "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+            "attempt_no": a.attempt_no,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "plan_artifact": plan_artifact,
+        })
+    return {"approvals": items}
 
 
 @router.post("/workflow-executions/{wf_execution_id}/approvals/{approval_id}/respond")
@@ -938,6 +1063,7 @@ async def respond_to_approval(
     approval_policy: str = "ask_before_shell",
     prompt_preview: str = None,
     cwd: str = None,
+    comment: str = None,
     db: Session = Depends(get_db),
     current_user: Account = Depends(get_current_user),
 ):
@@ -975,17 +1101,150 @@ async def respond_to_approval(
             approval_policy=approval_policy,
             prompt_preview=prompt_preview,
             cwd=cwd,
+            decision_comment=comment,
         )
     else:
-        result = resolve_approval(db, approval_id, decision=decision, decided_by=actor)
+        result = resolve_approval(
+            db,
+            approval_id,
+            decision=decision,
+            decided_by=actor,
+            decision_comment=comment,
+        )
 
     if not result:
         raise HTTPException(status_code=404, detail="承認リクエストが見つかりません")
+
+    if result.approval_policy == "plan_required" and result.execution_id:
+        target_execution = db.query(Execution).filter(
+            Execution.id == result.execution_id,
+            Execution.workflow_execution_id == wf_execution_id,
+        ).first()
+        plan_artifact = _get_plan_artifact_for_approval(db, result.approval_id)
+        if plan_artifact:
+            meta = _load_json_safe(plan_artifact.extra_metadata, {}) or {}
+            meta["status"] = result.status
+            meta["decided_by"] = actor
+            if comment:
+                meta["decision_comment"] = comment
+            plan_artifact.extra_metadata = json.dumps(meta, ensure_ascii=False)
+            db.add(plan_artifact)
+        if target_execution:
+            if result.status == "granted" and target_execution.status == "pending_approval":
+                target_execution.status = "pending_local"
+                db.add(target_execution)
+                db.commit()
+            elif result.status in {"rejected", "timed_out"} and target_execution.status == "pending_approval":
+                target_execution.status = "error"
+                target_execution.error_message = (
+                    "Plan approval rejected by user"
+                    if result.status == "rejected"
+                    else "Plan approval timed out"
+                )
+                db.add(target_execution)
+                db.commit()
+                from app.tasks.execution_tasks import continue_workflow_execution
+                continue_workflow_execution(wf_execution_id, target_execution.skill_order or 0)
+
     return {
         "approval_id": result.approval_id,
         "status": result.status,
         "decided_by": result.decided_by,
         "decided_at": result.decided_at.isoformat() if result.decided_at else None,
+    }
+
+
+@router.post("/workflow-executions/{wf_execution_id}/approvals/{approval_id}/resubmit-plan")
+async def resubmit_plan_approval(
+    wf_execution_id: int,
+    approval_id: str,
+    updated_content: str,
+    updated_summary: str = None,
+    resubmitted_by: str = None,
+    db: Session = Depends(get_db),
+    current_user: Account = Depends(get_current_user),
+):
+    """差し戻された plan_required 承認を新しい承認リクエストとして再提出する。"""
+    from app.models import ApprovalRequest as _AR, CoordinatorArtifact
+    from app.services.approval_service import create_approval_request
+
+    wf_exec = db.query(WorkflowExecution).filter(
+        WorkflowExecution.id == wf_execution_id,
+        WorkflowExecution.account_id == current_user.id,
+    ).first()
+    if not wf_exec:
+        raise HTTPException(status_code=404, detail="ワークフロー実行が見つかりません")
+
+    existing = db.query(_AR).filter(
+        _AR.approval_id == approval_id,
+        _AR.workflow_execution_id == wf_execution_id,
+    ).first()
+    if not existing or existing.approval_policy != "plan_required":
+        raise HTTPException(status_code=404, detail="plan approval が見つかりません")
+
+    target_execution = db.query(Execution).filter(
+        Execution.id == existing.execution_id,
+        Execution.workflow_execution_id == wf_execution_id,
+    ).first()
+    if not target_execution:
+        raise HTTPException(status_code=404, detail="対象 Execution が見つかりません")
+
+    actor = resubmitted_by or getattr(current_user, "email", None) or "user"
+    prompt_preview = updated_summary or existing.prompt_preview or "更新された実行計画"
+    new_req = create_approval_request(
+        db,
+        session_id=wf_exec.session_id,
+        plan_id=wf_exec.coordinator_plan_id,
+        step_id=existing.step_id,
+        execution_id=existing.execution_id,
+        workflow_execution_id=wf_execution_id,
+        adapter_id=existing.adapter_id,
+        runtime=existing.runtime,
+        approval_policy="plan_required",
+        prompt_preview=prompt_preview,
+        cwd=existing.cwd,
+        attempt_no=(existing.attempt_no or 1) + 1,
+    )
+
+    target_execution.status = "pending_approval"
+    target_execution.error_message = None
+    db.add(target_execution)
+
+    if wf_exec.coordinator_plan_id:
+        from app.services.coordinator_service import record_artifact
+
+        latest_art = _get_plan_artifact_for_approval(db, approval_id)
+        role = (latest_art.role if latest_art else "writer")
+        artifact_type = (latest_art.artifact_type if latest_art else "draft")
+        prev_meta = _load_json_safe(latest_art.extra_metadata, {}) if latest_art else {}
+        revision_count = int((prev_meta or {}).get("revision_count", 0)) + 1
+        record_artifact(
+            db,
+            wf_exec.coordinator_plan_id,
+            existing.step_id or f"task_{target_execution.workflow_skill_id}",
+            role,
+            artifact_type,
+            execution_id=target_execution.id,
+            summary=prompt_preview,
+            inline_content=updated_content,
+            content_ref=f"approval:{new_req.approval_id}",
+            model_hint=target_execution.model_used,
+            extra_metadata={
+                "artifact_subtype": "execution_plan",
+                "approval_id": new_req.approval_id,
+                "approval_policy": "plan_required",
+                "status": "pending",
+                "resubmitted_by": actor,
+                "previous_approval_id": approval_id,
+                "revision_count": revision_count,
+            },
+        )
+    db.commit()
+
+    return {
+        "approval_id": new_req.approval_id,
+        "status": new_req.status,
+        "attempt_no": new_req.attempt_no,
     }
 
 
@@ -1141,6 +1400,7 @@ async def get_execution_detail(
         skill_id=execution.skill_id,
         skill_name=skill_name,
         workflow_execution_id=execution.workflow_execution_id,
+        workflow_execution_status=wf_exec.status if wf_exec else None,
         workflow_skill_id=execution.workflow_skill_id,
         workflow_id=wf_exec.workflow_id if wf_exec else None,
         skill_order=execution.skill_order,
@@ -1527,4 +1787,3 @@ async def snapshot_coordinator_eval(
         raise HTTPException(status_code=404, detail="プランが見つかりません")
     eval_run = record_eval_run(db, plan)
     return {"eval_id": eval_run.eval_id, "created_at": eval_run.created_at.isoformat() if eval_run.created_at else None}
-

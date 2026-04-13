@@ -1,0 +1,94 @@
+flowchart LR
+    subgraph PROFILES ["エージェントプロファイル（実行時の振る舞い）"]
+        direction TB
+        EXP["Explorer<br/>調査・偵察<br/>READ-ONLY"]
+        PLN["Planner<br/>設計・方針策定<br/>READ-ONLY"]
+        IMP["Implementer<br/>実装・変更<br/>WRITE OK"]
+        VER["Verifier<br/>敵対的テスト<br/>VERDICT 必須"]
+        DEF["Default<br/>汎用<br/>制約なし"]
+    end
+
+    subgraph ORCHESTRATION ["オーケストレーション役割（制御用特殊実行）"]
+        direction TB
+        QG["Quality Gate<br/>品質ゲート"]
+        SV["Supervisor<br/>監督者"]
+        JDG["Judge<br/>審判"]
+    end
+
+    PARENT["Parent Skill<br/>統合リーダー<br/>最終結果生成"]
+
+    subgraph SHARED ["共有レイヤー"]
+        BB["Blackboard<br/>共有メモリ"]
+        SL["Synthesis Log<br/>時系列イベント"]
+    end
+
+    %% ── Profile → Execution ──
+    EXP -->|"出力"| QG
+    PLN -->|"出力"| QG
+    IMP -->|"出力"| QG
+    VER -->|"出力 + VERDICT"| QG
+    DEF -->|"出力"| QG
+
+    %% ── Quality Gate effects ──
+    QG -->|"PASS"| BB
+    QG -->|"FAIL → Reflection Loop"| RETRY["同じステップを<br/>critique 付きで再実行"]
+    RETRY -.->|"再実行"| EXP
+    RETRY -.->|"再実行"| PLN
+    RETRY -.->|"再実行"| IMP
+    RETRY -.->|"再実行"| VER
+
+    %% ── Group-level control ──
+    BB -->|"グループ完了"| SV
+    BB -->|"並列グループ完了"| JDG
+
+    SV -->|"approve"| NEXT["次グループへ"]
+    SV -->|"revise / repeat"| REDO["ステップ or<br/>グループ再実行"]
+    SV -->|"stop"| HALT["ワークフロー停止"]
+    SV -->|"manual_review"| HUMAN["人間の判断待ち"]
+
+    JDG -->|"最良結果選択"| BB
+    JDG -->|"合意形成"| BB
+
+    %% ── Supervisor/Judge → Blackboard ──
+    SV -->|"supervisor_group_N"| BB
+    JDG -->|"judge_group_N"| BB
+
+    %% ── Blackboard → Downstream ──
+    BB -->|"_nexmagi_blackboard_summary"| EXP
+    BB -->|"_nexmagi_blackboard_summary"| PLN
+    BB -->|"_nexmagi_blackboard_summary"| IMP
+    BB -->|"_nexmagi_blackboard_summary"| VER
+
+    %% ── All done → Leader ──
+    NEXT -->|"全グループ完了"| PARENT
+    PARENT -->|"最終統合結果"| FINAL(["Workflow 完了"])
+
+    %% ── Logging ──
+    EXP -.->|"step_complete"| SL
+    PLN -.->|"step_complete"| SL
+    IMP -.->|"step_complete"| SL
+    VER -.->|"step_complete"| SL
+    PARENT -.->|"leader_complete"| SL
+
+    %% ── Styling ──
+    classDef explore fill:#4A90D9,color:#fff,stroke:#2E6BA8
+    classDef plan fill:#F5A623,color:#fff,stroke:#C4841A
+    classDef implement fill:#7ED321,color:#fff,stroke:#5CA318
+    classDef verify fill:#E91E8C,color:#fff,stroke:#B8176F
+    classDef leader fill:#9B59B6,color:#fff,stroke:#7D3F98
+    classDef gate fill:#E74C3C,color:#fff,stroke:#C0392B
+    classDef sv fill:#1ABC9C,color:#fff,stroke:#16A085
+    classDef judge fill:#F39C12,color:#fff,stroke:#D4860E
+    classDef shared fill:#34495E,color:#fff,stroke:#2C3E50
+    classDef success fill:#27AE60,color:#fff,stroke:#1E8449
+
+    class EXP explore
+    class PLN plan
+    class IMP implement
+    class VER verify
+    class PARENT leader
+    class QG gate
+    class SV sv
+    class JDG judge
+    class BB,SL shared
+    class FINAL success

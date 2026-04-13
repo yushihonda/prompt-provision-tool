@@ -447,6 +447,14 @@
         return invokeDesktop('run_local_workflow_execution', { input });
     }
 
+    async function enqueueBackgroundSkillExecution(input) {
+        return invokeDesktop('enqueue_background_skill_execution', { input });
+    }
+
+    async function getBackgroundSkillExecutionStatus(taskId) {
+        return invokeDesktop('get_background_skill_execution_status', { taskId });
+    }
+
     function classifyRetryDecision(details = {}) {
         const status = String(details.status || '').toLowerCase();
         const errorCode = String(details.errorCode || '').toLowerCase();
@@ -581,6 +589,7 @@
     }
 
     let orchestrationProgressUnlisten = null;
+    let backgroundSkillProgressUnlisten = null;
 
     function onOrchestrationProgress(callback) {
         if (!window.__TAURI__?.event?.listen) return () => {};
@@ -601,6 +610,23 @@
 
     function shouldUseOrchestratedExecution() {
         return Boolean(tauriInvoke) && isDesktopRuntime();
+    }
+
+    function onBackgroundSkillProgress(callback) {
+        if (!window.__TAURI__?.event?.listen) return () => {};
+        if (backgroundSkillProgressUnlisten) {
+            backgroundSkillProgressUnlisten();
+        }
+        const promise = window.__TAURI__.event.listen('background-skill-progress', (event) => {
+            callback(event.payload);
+        });
+        promise.then(unlisten => { backgroundSkillProgressUnlisten = unlisten; });
+        return () => {
+            if (backgroundSkillProgressUnlisten) {
+                backgroundSkillProgressUnlisten();
+                backgroundSkillProgressUnlisten = null;
+            }
+        };
     }
 
     window.NexMAGIRuntime = {
@@ -635,6 +661,8 @@
         updateWorkflowRunStatus,
         runLocalSkillExecution,
         runLocalWorkflowExecution,
+        enqueueBackgroundSkillExecution,
+        getBackgroundSkillExecutionStatus,
         classifyRetryDecision,
         shouldRecordProxyLifecycleEvents,
         getObservationSource,
@@ -643,6 +671,7 @@
         getOrchestrationStatus,
         cancelOrchestration,
         onOrchestrationProgress,
+        onBackgroundSkillProgress,
         shouldUseOrchestratedExecution,
         invoke: tauriInvoke,
     };

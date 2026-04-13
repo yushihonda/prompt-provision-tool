@@ -6,6 +6,7 @@ const itemsPerPage = 9;
 let totalItems = 0;
 
 let userWorkflows = [];
+let lastExecutingSkillId = null;
 
 async function loadDashboardStats() {
     try {
@@ -36,6 +37,7 @@ async function loadSkills(page = 1) {
         totalItems = response.total !== undefined ? response.total : (skills.length === itemsPerPage ? page * itemsPerPage + 1 : page * itemsPerPage);
 
         currentPage = page;
+        lastExecutingSkillId = PersistentStatusBar?.skillId ? parseInt(PersistentStatusBar.skillId) : null;
         renderSkills();
         renderPagination();
     } catch (error) {
@@ -69,8 +71,8 @@ function renderUserWorkflows() {
         return;
     }
 
-    const profileColors = { default: '#9c27b0', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63' };
-    const profileLabels = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification' };
+    const profileColors = { default: '#9c27b0', explore: '#2196f3', plan: '#ff9800', implement: '#4caf50', verification: '#e91e63', design_builder: '#00acc1' };
+    const profileLabels = { default: 'Leader', explore: 'Explore', plan: 'Plan', implement: 'Implement', verification: 'Verification', design_builder: 'Design Builder' };
 
     container.innerHTML = userWorkflows
         .map((item, idx) => {
@@ -194,32 +196,37 @@ function renderPagination() {
 }
 
 // 実行中スキルの状態を更新する関数
-function updateExecutingSkills() {
-    // スキルが表示されている場合のみ更新
-    if (skills.length > 0) {
-        renderSkills();
+function updateExecutingSkills(force = false) {
+    if (skills.length === 0) return;
+
+    const executingSkillId = PersistentStatusBar?.skillId ? parseInt(PersistentStatusBar.skillId) : null;
+    if (!force && executingSkillId === lastExecutingSkillId) {
+        return;
     }
+
+    lastExecutingSkillId = executingSkillId;
+    renderSkills();
 }
 
 // PersistentStatusBarの状態変更を監視
 if (typeof PersistentStatusBar !== 'undefined') {
-    // 定期的に実行中スキルの状態をチェック（1秒ごと）
-    const _dashboardPollId = setInterval(() => {
-        updateExecutingSkills();
-    }, 1000);
-
-    // ページ離脱時にインターバルをクリーンアップ
-    window.addEventListener('pagehide', () => {
-        clearInterval(_dashboardPollId);
-    });
-
     // カスタムイベントで即座に更新
     window.addEventListener('executionStarted', () => {
-        updateExecutingSkills();
+        updateExecutingSkills(true);
     });
 
     window.addEventListener('executionCompleted', () => {
-        updateExecutingSkills();
+        updateExecutingSkills(true);
+    });
+
+    window.addEventListener('storage', () => {
+        updateExecutingSkills(true);
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            updateExecutingSkills(true);
+        }
     });
 }
 

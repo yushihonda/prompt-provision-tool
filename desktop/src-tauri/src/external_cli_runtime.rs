@@ -84,9 +84,7 @@ fn runtime_from_str(s: &str) -> ExternalCliRuntimeKind {
     }
 }
 
-fn payload_to_request(
-    payload: serde_json::Value,
-) -> Result<ExternalCliExecutionRequest, String> {
+fn payload_to_request(payload: serde_json::Value) -> Result<ExternalCliExecutionRequest, String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "external_cli_payload_not_object".to_string())?;
@@ -106,7 +104,11 @@ fn payload_to_request(
     let args: Vec<String> = obj
         .get("args")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let env_overrides: HashMap<String, String> = obj
         .get("env_overrides")
@@ -239,7 +241,11 @@ fn build_external_cli_meta(
     })
 }
 
-fn fetch_bundle(api_base: &str, auth_token: &str, execution_id: i64) -> Result<BundleResponse, String> {
+fn fetch_bundle(
+    api_base: &str,
+    auth_token: &str,
+    execution_id: i64,
+) -> Result<BundleResponse, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()
@@ -315,7 +321,11 @@ fn trace_log(msg: &str) {
             .join("Library/Application Support/com.nexmagi.desktop/external_cli_runtime_trace.log"),
         None => std::path::PathBuf::from("/tmp/external_cli_runtime_trace.log"),
     };
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let ts = chrono::Utc::now().to_rfc3339();
         let _ = writeln!(f, "{} {}", ts, msg);
     }
@@ -334,12 +344,14 @@ pub async fn consume_external_cli_bundle(
     let api_base = req.api_base.clone();
     let auth_token = req.auth_token.clone();
     let execution_id = req.execution_id;
-    let bundle = tokio::task::spawn_blocking(move || {
-        fetch_bundle(&api_base, &auth_token, execution_id)
-    })
-    .await
-    .map_err(|e| format!("join_fetch: {e}"))??;
-    trace_log(&format!("bundle fetched execution_id={} kind={:?}", execution_id, bundle.execution_kind));
+    let bundle =
+        tokio::task::spawn_blocking(move || fetch_bundle(&api_base, &auth_token, execution_id))
+            .await
+            .map_err(|e| format!("join_fetch: {e}"))??;
+    trace_log(&format!(
+        "bundle fetched execution_id={} kind={:?}",
+        execution_id, bundle.execution_kind
+    ));
 
     if bundle.execution_kind.as_deref() != Some("external_cli") {
         return Err(format!(
@@ -358,16 +370,28 @@ pub async fn consume_external_cli_bundle(
     // この処理の後、アダプターに渡す cwd は存在が保証される。
     if let Some(ws_id) = cli_req.workspace_id.clone() {
         if cli_req.workspace_path.is_none() || cli_req.cwd.is_empty() {
-            trace_log(&format!("ensure_dir START execution_id={} ws_id={}", execution_id, ws_id));
+            trace_log(&format!(
+                "ensure_dir START execution_id={} ws_id={}",
+                execution_id, ws_id
+            ));
             let ensure_req = crate::workspaces::WorkspaceEnsureRequest {
                 api_base: req.api_base.clone(),
                 auth_token: req.auth_token.clone(),
                 workspace_id: ws_id.clone(),
                 plan_id: cli_req.workflow_run_id.clone(),
                 task_id: cli_req.task_id.clone(),
+                workspace_mode: cli_req.workspace_mode.clone(),
+                source_cwd: if cli_req.cwd.is_empty() {
+                    None
+                } else {
+                    Some(cli_req.cwd.clone())
+                },
             };
             let ensured = crate::workspaces::workspace_ensure_dir(ensure_req).await?;
-            trace_log(&format!("ensure_dir DONE execution_id={} path={}", execution_id, ensured.workspace_path));
+            trace_log(&format!(
+                "ensure_dir DONE execution_id={} path={}",
+                execution_id, ensured.workspace_path
+            ));
             cli_req.cwd = ensured.workspace_path.clone();
             cli_req.workspace_path = Some(ensured.workspace_path);
         }
@@ -381,15 +405,12 @@ pub async fn consume_external_cli_bundle(
     // ステップ 2: レジストリ駆動ランナー経由で実行。
     trace_log(&format!("run_adapter START execution_id={}", execution_id));
     let cancel = Arc::new(AtomicBool::new(false));
-    let result = run_external_cli_with_adapter(
-        &registry,
-        Some(&approval_gate),
-        app,
-        cli_req,
-        cancel,
-    )
-    .await;
-    trace_log(&format!("run_adapter DONE execution_id={} status={:?} exit={:?}", execution_id, result.status, result.exit_code));
+    let result =
+        run_external_cli_with_adapter(&registry, Some(&approval_gate), app, cli_req, cancel).await;
+    trace_log(&format!(
+        "run_adapter DONE execution_id={} status={:?} exit={:?}",
+        execution_id, result.status, result.exit_code
+    ));
 
     // ステップ 3: 完了を POST（ベストエフォート）。
     let api_base = req.api_base.clone();
@@ -410,7 +431,10 @@ pub async fn consume_external_cli_bundle(
     if let Err(e) = post_outcome {
         eprintln!("[external_cli_runtime] post_completion error: {e}");
     }
-    trace_log(&format!("END execution_id={} posted={}", execution_id, completion_posted));
+    trace_log(&format!(
+        "END execution_id={} posted={}",
+        execution_id, completion_posted
+    ));
 
     Ok(ConsumeExternalCliResponse {
         execution_id,

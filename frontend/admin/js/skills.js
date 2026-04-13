@@ -11,11 +11,24 @@ let wfCurrentPage = 1;
 const wfItemsPerPage = 10;
 let wfTotalItems = 0;
 
-const AGENT_PROFILE_OPTIONS = ['explore', 'plan', 'implement', 'verification'];
+const AGENT_PROFILE_OPTIONS = [
+    'explore',
+    'plan',
+    'implement',
+    'verification',
+    'design_builder',
+];
+const AGENT_PROFILE_LABELS = {
+    explore: 'Explore',
+    plan: 'Plan',
+    implement: 'Implement',
+    verification: 'Verification',
+    design_builder: 'Design Builder',
+};
 
 function renderAgentProfileOptions(selected) {
     const none = `<option value="" ${!selected || selected === 'default' ? 'selected' : ''}>未指定</option>`;
-    return none + AGENT_PROFILE_OPTIONS.map(v => `<option value="${v}" ${selected === v ? 'selected' : ''}>${v}</option>`).join('');
+    return none + AGENT_PROFILE_OPTIONS.map(v => `<option value="${v}" ${selected === v ? 'selected' : ''}>${AGENT_PROFILE_LABELS[v] || v}</option>`).join('');
 }
 
 function validateParallelGroupProfiles(groups) {
@@ -181,7 +194,7 @@ async function showCreateModal() {
                         <select id="swal-default-agent-profile" ${WF_SWAL.sel}>
                             ${renderAgentProfileOptions('default')}
                         </select>
-                        <small ${WF_SWAL.hint}>Explore=調査 / Plan=設計 / Implement=実装 / Verification=検証（API/CLIどちらでも有効）</small>
+                        <small ${WF_SWAL.hint}>Explore/Plan/Implement/Verification に加えて、design-to-code を一括で担う Design Builder を選べます（API/CLIどちらでも有効）</small>
                     </div>
 
                     <div data-runtime-api-section>
@@ -772,19 +785,16 @@ async function manageWorkflowsForSkill(skillId) {
         didOpen: async () => {
             const container = document.getElementById('wf-membership-container');
             try {
-                const resp = await apiRequest('/api/admin/workflows?skip=0&limit=1000');
+                const resp = await apiRequest('/api/admin/workflows?skip=0&limit=200');
                 allWorkflows = resp.items || [];
 
-                // それぞれのWorkflowの詳細を取得して、このスキルが含まれているか判定
-                const details = [];
-                for (const wf of allWorkflows) {
-                    try {
-                        const d = await apiRequest(`/api/admin/workflows/${wf.id}`);
-                        details.push(d);
-                    } catch (e) {
-                        console.error('Failed to load workflow detail', wf.id, e);
-                    }
-                }
+                // 各Workflowの詳細を並列取得（N+1回避: Promise.allSettled で一括）
+                const detailResults = await Promise.allSettled(
+                    allWorkflows.map(wf => apiRequest(`/api/admin/workflows/${wf.id}`))
+                );
+                const details = detailResults
+                    .filter(r => r.status === 'fulfilled')
+                    .map(r => r.value);
 
                 workflowsForPrompt = details;
 
@@ -1124,7 +1134,7 @@ async function showCreateWorkflowFromSkills() {
             }
 
             try {
-                const resp = await apiRequest('/api/admin/skills?skip=0&limit=1000');
+                const resp = await apiRequest('/api/admin/skills?skip=0&limit=200');
                 const allSkills = resp.items || [];
                 _wfCreateUsableSkills = allSkills.filter((p) => p.is_active !== false && !p.deleted_at);
             } catch (e) {
@@ -1896,7 +1906,7 @@ async function openWorkflowDetail(id) {
 
         // 利用可能スキル取得
         try {
-            _availableSkills = await apiRequest('/api/admin/skills?skip=0&limit=1000');
+            _availableSkills = await apiRequest('/api/admin/skills?skip=0&limit=200');
             if (_availableSkills.items) _availableSkills = _availableSkills.items;
         } catch (e) { _availableSkills = []; }
 
