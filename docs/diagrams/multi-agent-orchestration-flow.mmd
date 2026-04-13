@@ -1,0 +1,122 @@
+flowchart TD
+    START([Workflow Start<br/>POST /api/execute/workflow]) --> INIT[WorkflowExecution 生成<br/>CoordinatorPlan 生成<br/>最初の Execution 生成]
+
+    INIT --> GRP_LOOP{次のグループ<br/>を処理}
+
+    %% ── Group Processing ──
+    GRP_LOOP --> COND{condition_expression<br/>評価}
+    COND -->|不一致| SKIP[グループをスキップ]
+    SKIP --> GRP_LOOP
+    COND -->|一致| EXEC_TYPE{execution_type?}
+
+    EXEC_TYPE -->|serial| SERIAL[ステップを1つずつ実行]
+    EXEC_TYPE -->|parallel| PARALLEL[全ステップを同時実行]
+
+    %% ── Step Execution ──
+    SERIAL --> STEP
+    PARALLEL --> STEP
+
+    subgraph STEP_EXEC [" ステップ実行"]
+        STEP[Agent Profile 解決<br/>explore / plan / implement /<br/>verification / default]
+        STEP --> PROFILE_AUG[プロンプト構成<br/>+ _nexmagi_* メタデータ注入<br/>+ Blackboard サマリー<br/>+ Handoff コンテキスト]
+        PROFILE_AUG --> APPROVAL{Plan Approval<br/>必要?}
+        APPROVAL -->|yes| WAIT_APPROVE[pending_approval<br/>ユーザー承認待ち]
+        WAIT_APPROVE -->|granted| KIND
+        WAIT_APPROVE -->|rejected| STEP_FAIL[ステップ失敗]
+        APPROVAL -->|no| KIND
+        KIND{execution_kind?}
+        KIND -->|http_provider| HTTP[LLM Provider 呼び出し<br/>OpenAI / Anthropic / Gemini]
+        KIND -->|external_cli| CLI[CLI 実行<br/>Claude Code / Codex / Generic]
+        CLI --> CLI_APPROVE{shell 承認<br/>ゲート}
+        CLI_APPROVE -->|approve| CLI_EXEC[サブプロセス起動<br/>stdout/stderr キャプチャ<br/>ファイル差分記録]
+        CLI_APPROVE -->|reject| STEP_FAIL
+        HTTP --> COMPLETE[completion_service<br/>結果保存]
+        CLI_EXEC --> COMPLETE
+    end
+
+    %% ── Quality Gate ──
+    COMPLETE --> QG{Quality Gate<br/>有効?}
+    QG -->|disabled| BB_WRITE
+    QG -->|enabled| QG_CHECK[品質チェック<br/>regex / JSON Schema / LLM]
+    QG_CHECK -->|PASS| BB_WRITE
+    QG_CHECK -->|FAIL| QG_ACTION{QG action?}
+
+    %% ── Quality Gate 不合格パス ──
+    QG_ACTION -->|revise| REFLECT{reflection_loop<br/>< max?}
+    REFLECT -->|yes| REFLECT_EXEC[critique 付きで<br/>同じステップを再実行]
+    REFLECT_EXEC --> STEP
+    REFLECT -->|no: 上限超過| WF_FAIL_QG([Workflow ERROR<br/>Reflection 上限超過で停止])
+    QG_ACTION -->|stop| WF_FAIL_QG2([Workflow ERROR<br/>Quality Gate が停止を要求])
+    QG_ACTION -->|manual_review| MR_QG([manual_review_required<br/>人間の判断待ち])
+
+    %% ── Blackboard ──
+    BB_WRITE[Blackboard 更新<br/>output_key に出力を書き込み<br/>Handoff Summary 生成]
+
+    BB_WRITE --> GRP_DONE{グループ内<br/>全ステップ完了?}
+    GRP_DONE -->|no| SERIAL
+    STEP_FAIL --> GRP_ERR{on_error?}
+    GRP_ERR -->|retry| SERIAL
+    GRP_ERR -->|skip| GRP_DONE
+    GRP_ERR -->|stop| WF_FAIL
+
+    %% ── Post-Group: Judge / Supervisor ──
+    GRP_DONE -->|yes| POST_GROUP{後処理}
+
+    POST_GROUP -->|並列 + judge_prompt| JUDGE[Judge 実行<br/>並列出力を比較<br/>最良結果を選択 / 合意形成]
+    JUDGE --> JUDGE_DEC{Judge 判定}
+    JUDGE_DEC -->|通常| JUDGE_BB[Blackboard に判定書き込み<br/>judge_group_N]
+    JUDGE_BB --> GRP_LOOP
+    JUDGE_DEC -->|stop| WF_FAIL_J([Workflow ERROR<br/>Judge が停止を要求])
+    JUDGE_DEC -->|manual_review| MR_J([manual_review_required<br/>人間の判断待ち])
+
+    POST_GROUP -->|supervisor_mode 有効| SV[Supervisor 実行<br/>グループ全出力を評価]
+    SV --> SV_DEC{Supervisor 判定}
+    SV_DEC -->|approve| GRP_LOOP
+    SV_DEC -->|revise| SV_REVISE[指定ステップを cancelled にして再実行<br/>critique を Blackboard に記録]
+    SV_REVISE --> SERIAL
+    SV_DEC -->|repeat_group| SV_RESET[グループ内全 Execution を cancelled<br/>グループ全体を再実行]
+    SV_RESET --> EXEC_TYPE
+    SV_DEC -->|stop| WF_FAIL_SV([Workflow ERROR<br/>Supervisor が停止を要求])
+    SV_DEC -->|manual_review| MR_SV([manual_review_required<br/>人間の判断待ち])
+
+    POST_GROUP -->|なし| GRP_LOOP
+
+    %% ── All Groups Done → Leader ──
+    GRP_LOOP -->|全グループ完了| LEADER
+
+    subgraph LEADER_EXEC [" Parent Skill : 統合リーダー"]
+        LEADER[全ステップの出力<br/>+ Blackboard<br/>+ Global Input を受け取る]
+        LEADER --> SYNTH[最終統合結果を生成<br/>synthesis_log: leader_complete]
+    end
+
+    SYNTH --> VERDICT{Verification<br/>Verdict?}
+    VERDICT -->|PASS| SUCCESS([Workflow 完了<br/>final_verdict: PASS])
+    VERDICT -->|FAIL| DONE_FAIL([Workflow 完了<br/>final_verdict: FAIL<br/>※ QG なしの場合のみ到達])
+    VERDICT -->|PARTIAL| DONE_PARTIAL([Workflow 完了<br/>final_verdict: PARTIAL<br/>※ QG なしの場合のみ到達])
+    VERDICT -->|なし| SUCCESS2([Workflow 完了])
+
+    WF_FAIL([Workflow 失敗<br/>on_error: stop])
+
+    %% ── Styling ──
+    classDef explore fill:#4A90D9,color:#fff,stroke:#2E6BA8
+    classDef plan fill:#F5A623,color:#fff,stroke:#C4841A
+    classDef implement fill:#7ED321,color:#fff,stroke:#5CA318
+    classDef verify fill:#E91E8C,color:#fff,stroke:#B8176F
+    classDef leader fill:#9B59B6,color:#fff,stroke:#7D3F98
+    classDef gate fill:#E74C3C,color:#fff,stroke:#C0392B
+    classDef sv fill:#1ABC9C,color:#fff,stroke:#16A085
+    classDef judge fill:#F39C12,color:#fff,stroke:#D4860E
+    classDef success fill:#27AE60,color:#fff,stroke:#1E8449
+    classDef fail fill:#E74C3C,color:#fff,stroke:#C0392B
+    classDef warn fill:#E67E22,color:#fff,stroke:#D35400
+    classDef manual fill:#8E44AD,color:#fff,stroke:#6C3483
+
+    class STEP explore
+    class QG_CHECK,REFLECT_EXEC gate
+    class SV,SV_DEC sv
+    class JUDGE,JUDGE_DEC judge
+    class LEADER,SYNTH leader
+    class SUCCESS,SUCCESS2 success
+    class WF_FAIL,WF_FAIL_QG,WF_FAIL_QG2,WF_FAIL_J,WF_FAIL_SV,STEP_FAIL fail
+    class DONE_FAIL,DONE_PARTIAL warn
+    class MR_QG,MR_J,MR_SV manual

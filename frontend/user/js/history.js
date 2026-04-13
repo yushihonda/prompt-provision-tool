@@ -4,56 +4,56 @@ let groupedRows = []; // { type: 'skill' | 'workflow', ... }
 let currentPage = 1;
 const itemsPerPage = 10;
 let totalItems = 0;
+let cachedExecutions = [];
+
+function buildGroupedHistoryRows(allExecs) {
+    const wfGroups = {};
+    const skillRows = [];
+
+    for (const exec of allExecs) {
+        if (exec.workflow_execution_id) {
+            const weId = exec.workflow_execution_id;
+            if (!wfGroups[weId]) {
+                wfGroups[weId] = {
+                    type: 'workflow',
+                    workflowExecutionId: weId,
+                    workflowName: exec.workflow_name || 'ワークフロー',
+                    executions: [],
+                };
+            }
+            wfGroups[weId].executions.push(exec);
+        } else {
+            skillRows.push({ type: 'skill', execution: exec });
+        }
+    }
+
+    const wfRows = Object.values(wfGroups).map(g => {
+        g.executions.sort((a, b) => (a.skill_order || 0) - (b.skill_order || 0));
+        g.executedAt = g.executions.reduce((earliest, e) => {
+            if (!e.executed_at) return earliest;
+            return !earliest || e.executed_at < earliest ? e.executed_at : earliest;
+        }, null);
+        return g;
+    });
+
+    const merged = [...skillRows, ...wfRows];
+    merged.sort((a, b) => {
+        const tA = a.type === 'skill' ? a.execution.executed_at : a.executedAt;
+        const tB = b.type === 'skill' ? b.execution.executed_at : b.executedAt;
+        if (!tA) return 1;
+        if (!tB) return -1;
+        return tB > tA ? 1 : tB < tA ? -1 : 0;
+    });
+
+    return merged;
+}
 
 async function loadHistory(page = 1) {
     try {
-        // ワークフロー実行をまとめるため、多めに取得してグルーピング
-        const response = await apiRequest(`/api/user/executions?skip=0&limit=500`);
-        const allExecs = response.items || response;
-
-        // ワークフロー実行IDでグルーピング / スキル単体はそのまま
-        const wfGroups = {};
-        const skillRows = [];
-
-        for (const exec of allExecs) {
-            if (exec.workflow_execution_id) {
-                const weId = exec.workflow_execution_id;
-                if (!wfGroups[weId]) {
-                    wfGroups[weId] = {
-                        type: 'workflow',
-                        workflowExecutionId: weId,
-                        workflowName: exec.workflow_name || 'ワークフロー',
-                        executions: [],
-                    };
-                }
-                wfGroups[weId].executions.push(exec);
-            } else {
-                skillRows.push({ type: 'skill', execution: exec });
-            }
-        }
-
-        // ワークフローグループ内をステップ順でソート、代表日時を算出
-        const wfRows = Object.values(wfGroups).map(g => {
-            g.executions.sort((a, b) => (a.skill_order || 0) - (b.skill_order || 0));
-            g.executedAt = g.executions.reduce((earliest, e) => {
-                if (!e.executed_at) return earliest;
-                return !earliest || e.executed_at < earliest ? e.executed_at : earliest;
-            }, null);
-            return g;
-        });
-
-        // スキル行とワークフロー行を統合して日時降順ソート
-        const merged = [...skillRows, ...wfRows];
-        merged.sort((a, b) => {
-            const tA = a.type === 'skill' ? a.execution.executed_at : a.executedAt;
-            const tB = b.type === 'skill' ? b.execution.executed_at : b.executedAt;
-            if (!tA) return 1;
-            if (!tB) return -1;
-            return tB > tA ? 1 : tB < tA ? -1 : 0;
-        });
-
-        groupedRows = merged;
-        totalItems = merged.length;
+        const response = await apiRequest('/api/user/executions?skip=0&limit=100');
+        cachedExecutions = response.items || response || [];
+        groupedRows = buildGroupedHistoryRows(cachedExecutions);
+        totalItems = groupedRows.length;
         currentPage = page;
         renderHistory();
         renderPagination();
@@ -196,17 +196,21 @@ function renderWorkflowRow(group) {
 function getStatusColor(status) {
     if (status === 'success') return '#28a745';
     if (status === 'error') return '#dc3545';
+    if (status === 'manual_review_required') return '#d97706';
     if (status === 'cancelled') return '#ffc107';
-    if (status === 'pending' || status === 'pending_local' || status === 'processing') return '#7c3aed';
+    if (status === 'pending' || status === 'pending_local' || status === 'processing' || status === 'pending_approval') return '#7c3aed';
     return '#a0a0a0';
 }
 
 function getOverallStatus(execs) {
+    const workflowStatus = execs.find(e => e.workflow_execution_status)?.workflow_execution_status;
+    if (workflowStatus) return workflowStatus;
     // 特殊ロール（quality_gate, supervisor等）のエラーはWF全体のエラーとしない
     const normalExecs = execs.filter(e => !e.execution_role);
     if (normalExecs.some(e => e.status === 'error')) return 'error';
+    if (normalExecs.some(e => e.status === 'manual_review_required')) return 'manual_review_required';
     if (normalExecs.some(e => e.status === 'cancelled')) return 'cancelled';
-    if (normalExecs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing')) return 'processing';
+    if (normalExecs.some(e => e.status === 'pending' || e.status === 'pending_local' || e.status === 'processing' || e.status === 'pending_approval')) return 'processing';
     if (normalExecs.every(e => e.status === 'success')) return 'success';
     return 'pending';
 }
@@ -257,10 +261,17 @@ async function showDetail(id) {
 
 async function showWorkflowDetail(weId) {
     try {
-        const response = await apiRequest(`/api/user/executions?skip=0&limit=500`);
-        const execs = (response.items || response)
-            .filter(e => e.workflow_execution_id === weId)
-            .sort((a, b) => (a.skill_order || 0) - (b.skill_order || 0));
+        let execs = cachedExecutions.filter(e => e.workflow_execution_id === weId);
+        if (execs.length === 0) {
+            const response = await apiRequest('/api/user/executions?skip=0&limit=100');
+            cachedExecutions = response.items || response || [];
+            groupedRows = buildGroupedHistoryRows(cachedExecutions);
+            totalItems = groupedRows.length;
+            renderPagination();
+            execs = cachedExecutions.filter(e => e.workflow_execution_id === weId);
+        }
+
+        execs = execs.sort((a, b) => (a.skill_order || 0) - (b.skill_order || 0));
 
         if (execs.length === 0) {
             showAlert('実行データが見つかりません', 'error');
@@ -348,4 +359,3 @@ async function showWorkflowDetail(weId) {
     await checkAuth();
     loadHistory(1);
 })();
-

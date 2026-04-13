@@ -808,22 +808,36 @@ def trigger_workflow_continuation(
                 WorkflowExecution.id == execution.workflow_execution_id
             ).first()
             if wf_exec and execution.status == "success" and execution.execution_group_id:
-                from app.tasks.execution_tasks import _merge_blackboard
+                from app.tasks.execution_tasks import (
+                    _merge_blackboard,
+                    _parse_group_review_action,
+                    _set_workflow_manual_review_required,
+                )
                 group = db.query(WorkflowGroup).filter(WorkflowGroup.id == execution.execution_group_id).first()
                 bb_key = f"judge_{group.group_name or group.group_order}" if group else "judge_result"
-                parsed = execution.output_data
-                try:
-                    parsed = json.loads(execution.output_data)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+                bb_group_key = f"judge_group_{execution.execution_group_id}"
+                parsed = _parse_group_review_action(execution.output_data)
                 _merge_blackboard(db, wf_exec, bb_key, parsed)
-                db.commit()
+                _merge_blackboard(db, wf_exec, bb_group_key, parsed)
+                if parsed.get("action") == "manual_review":
+                    _set_workflow_manual_review_required(
+                        db,
+                        wf_exec,
+                        parsed.get("critique") or "Judge requested manual review",
+                        "debate_judge",
+                    )
+                elif parsed.get("action") == "stop":
+                    wf_exec.status = "error"
+                    wf_exec.error_message = parsed.get("critique") or "Judge requested stop"
+                    db.commit()
         except Exception as e:
             logger.error(f"Failed to handle judge result: {e}")
             try:
                 db.rollback()
             except Exception:
                 pass
+        if wf_exec and wf_exec.status in {"error", "manual_review_required"}:
+            return
         # ジャッジ後は通常のWF継続
         try:
             from app.tasks.execution_tasks import continue_workflow_execution
@@ -938,10 +952,17 @@ def trigger_workflow_continuation(
                                 _handle_quality_gate_result(db, wf_exec, gate_result)
                                 return
                             else:
-                                logger.warning(
-                                    f"Quality gate failed for ws={ws.id} but max_reflection_loops=0, proceeding. "
-                                    f"Critique: {verdict.get('critique', '')}"
+                                from types import SimpleNamespace
+                                from app.tasks.execution_tasks import _handle_quality_gate_result
+                                gate_result_data = json.dumps(verdict, ensure_ascii=False)
+                                gate_result = SimpleNamespace(
+                                    output_data=gate_result_data,
+                                    workflow_skill_id=ws.id,
+                                    reflection_loop=execution.reflection_loop,
+                                    skill_order=execution.skill_order,
                                 )
+                                _handle_quality_gate_result(db, wf_exec, gate_result)
+                                return
         except Exception as e:
             logger.warning(f"Quality gate check failed: {e}")
 

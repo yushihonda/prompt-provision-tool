@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.agent_profiles import extract_verdict, AGENT_PROFILE_PROMPTS
+from app.services.agent_profiles import extract_verdict, AGENT_PROFILE_PROMPTS, normalize_agent_profile
 from app.services.completion_service import _persist_workflow_metadata
 
 
@@ -43,6 +43,22 @@ class VerificationPromptTests(unittest.TestCase):
         self.assertIn("VERDICT: PASS", prompt)
         self.assertIn("VERDICT: FAIL", prompt)
         self.assertIn("VERDICT: PARTIAL", prompt)
+
+
+class DesignRolePromptTests(unittest.TestCase):
+    def test_design_builder_prompt_mentions_analysis_and_design_md(self):
+        prompt = AGENT_PROFILE_PROMPTS["design_builder"]
+        self.assertIn("Color Tokens", prompt)
+        self.assertIn("Color Palette & Roles", prompt)
+        self.assertIn("DESIGN.md", prompt)
+        self.assertIn("React + Tailwind", prompt)
+        self.assertIn("Preview Files / Payload", prompt)
+        self.assertIn("Analysis Summary", prompt)
+
+
+class NormalizeAgentProfileTests(unittest.TestCase):
+    def test_design_builder_is_accepted(self):
+        self.assertEqual(normalize_agent_profile("design_builder"), "design_builder")
 
 
 class ExtractVerdictTests(unittest.TestCase):

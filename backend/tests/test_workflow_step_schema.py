@@ -116,6 +116,19 @@ class WorkflowStepSchemaTests(unittest.TestCase):
         from_parser = parse_execution_config(None)
         self.assertEqual(from_helper.model_dump(), from_parser.model_dump())
 
+    def test_plan_required_approval_policy_is_accepted(self):
+        raw = json.dumps({
+            "execution_config": {
+                "approval": {
+                    "policy": "plan_required",
+                    "allow_writes": False,
+                    "allow_shell": False,
+                },
+            }
+        })
+        cfg = parse_execution_config(raw)
+        self.assertEqual(cfg.approval.policy, "plan_required")
+
     def test_admin_form_round_trip_shape(self):
         """The admin form sends the same shape that the parser
         produces. Lock the contract."""

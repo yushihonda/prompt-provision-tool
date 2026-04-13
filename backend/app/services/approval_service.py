@@ -109,6 +109,7 @@ def resolve_approval(
     approval_id: str,
     decision: str,
     decided_by: str = "user",
+    decision_comment: Optional[str] = None,
 ) -> Optional[ApprovalRequest]:
     """pending の承認リクエストを解決する（冪等: 解決済みならそのまま返す）。
 
@@ -160,6 +161,7 @@ def resolve_approval(
                         payload={
                             "decision": decision,
                             "decided_by": decided_by,
+                            "comment": decision_comment,
                         },
                     )
                     if decision == "granted":
@@ -181,6 +183,7 @@ def create_and_resolve_approval(
     approval_id: str,
     decision: str,
     decided_by: str = "user",
+    decision_comment: Optional[str] = None,
     session_id: Optional[str] = None,
     plan_id: Optional[str] = None,
     step_id: Optional[str] = None,
@@ -204,7 +207,13 @@ def create_and_resolve_approval(
     ).first()
     if existing:
         if existing.status == "pending":
-            return resolve_approval(db, approval_id, decision, decided_by)
+            return resolve_approval(
+                db,
+                approval_id,
+                decision,
+                decided_by,
+                decision_comment=decision_comment,
+            )
         return existing
 
     req = ApprovalRequest(
@@ -252,7 +261,11 @@ def create_and_resolve_approval(
                             db, session_id, plan_id, event_map[decision],
                             step_id=step_id or "",
                             approval_id=approval_id,
-                            payload={"decision": decision, "decided_by": decided_by},
+                            payload={
+                                "decision": decision,
+                                "decided_by": decided_by,
+                                "comment": decision_comment,
+                            },
                         )
         except Exception:
             logger.debug("承認作成+解決時のセッションイベント発行失敗", exc_info=True)

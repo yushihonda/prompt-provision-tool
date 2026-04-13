@@ -126,6 +126,7 @@ PROFILE_TO_ROLE = {
     "plan": ROLE_WRITER,
     "implement": ROLE_WRITER,
     "verification": ROLE_REVIEWER,
+    "design_builder": ROLE_WRITER,
     "default": ROLE_WRITER,
 }
 

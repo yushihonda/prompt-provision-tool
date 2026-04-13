@@ -18,6 +18,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 const WORKSPACES_DIRNAME: &str = ".nexmagi";
@@ -30,6 +31,10 @@ pub struct WorkspaceEnsureRequest {
     pub workspace_id: String,
     pub plan_id: String,
     pub task_id: String,
+    #[serde(default)]
+    pub workspace_mode: Option<String>,
+    #[serde(default)]
+    pub source_cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,11 +84,90 @@ fn sanitize_segment(s: &str) -> String {
 fn workspace_dir_for(plan_id: &str, task_id: &str, workspace_id: &str) -> Result<PathBuf, String> {
     let root = workspaces_root()?;
     let plan_dir = sanitize_segment(plan_id);
-    let leaf = format!("{}-{}", sanitize_segment(task_id), sanitize_segment(workspace_id));
+    let leaf = format!(
+        "{}-{}",
+        sanitize_segment(task_id),
+        sanitize_segment(workspace_id)
+    );
     if plan_dir.is_empty() || leaf == "-" {
         return Err("invalid workspace id components".into());
     }
     Ok(root.join(plan_dir).join(leaf))
+}
+
+fn resolve_git_toplevel(path: &Path) -> Result<PathBuf, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .map_err(|e| format!("git_rev_parse_failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git_rev_parse_nonzero:{}", stderr.trim()));
+    }
+    let stdout =
+        String::from_utf8(output.stdout).map_err(|e| format!("git_rev_parse_utf8_failed: {e}"))?;
+    let top = stdout.trim();
+    if top.is_empty() {
+        return Err("git_rev_parse_empty".into());
+    }
+    Ok(PathBuf::from(top))
+}
+
+fn create_git_worktree(base_repo: &Path, target_dir: &Path) -> Result<(), String> {
+    if let Some(parent) = target_dir.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir_parent_failed: {e}"))?;
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(base_repo)
+        .arg("worktree")
+        .arg("add")
+        .arg("--detach")
+        .arg(target_dir)
+        .output()
+        .map_err(|e| format!("git_worktree_add_failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "git_worktree_add_nonzero:{}:{}",
+            stdout.trim(),
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_workspace_dir(
+    workspace_mode: Option<&str>,
+    source_cwd: Option<&str>,
+    plan_id: &str,
+    task_id: &str,
+    workspace_id: &str,
+) -> Result<(PathBuf, bool), String> {
+    let dir = workspace_dir_for(plan_id, task_id, workspace_id)?;
+    let created = !dir.exists();
+    if !created {
+        return Ok((dir, false));
+    }
+
+    match workspace_mode {
+        Some("worktree") => {
+            let source = source_cwd
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| "worktree_source_cwd_missing".to_string())?;
+            let base_repo = resolve_git_toplevel(Path::new(source))?;
+            create_git_worktree(&base_repo, &dir)?;
+        }
+        _ => {
+            fs::create_dir_all(&dir).map_err(|e| format!("mkdir_failed: {e}"))?;
+        }
+    }
+
+    Ok((dir, true))
 }
 
 fn assert_inside_root(path: &Path) -> Result<(), String> {
@@ -164,12 +248,13 @@ pub async fn workspace_ensure_dir(
     req: WorkspaceEnsureRequest,
 ) -> Result<WorkspaceEnsureResponse, String> {
     let res = tokio::task::spawn_blocking(move || -> Result<WorkspaceEnsureResponse, String> {
-        let dir = workspace_dir_for(&req.plan_id, &req.task_id, &req.workspace_id)?;
-        let created = !dir.exists();
-        if created {
-            fs::create_dir_all(&dir)
-                .map_err(|e| format!("mkdir_failed: {e}"))?;
-        }
+        let (dir, created) = ensure_workspace_dir(
+            req.workspace_mode.as_deref(),
+            req.source_cwd.as_deref(),
+            &req.plan_id,
+            &req.task_id,
+            &req.workspace_id,
+        )?;
         let dir_str = dir.to_string_lossy().into_owned();
         post_workspace_path(&req.api_base, &req.auth_token, &req.workspace_id, &dir_str)?;
         Ok(WorkspaceEnsureResponse {
@@ -233,8 +318,32 @@ pub async fn workspace_cleanup(
                                 if matches && leaf_path.is_dir() {
                                     // 安全性: 対象がワークスペースルート配下であることを再確認する。
                                     assert_inside_root(&leaf_path)?;
-                                    fs::remove_dir_all(&leaf_path)
-                                        .map_err(|e| format!("rm_failed: {e}"))?;
+                                    let is_git_worktree = leaf_path.join(".git").is_file();
+                                    if is_git_worktree {
+                                        let output = Command::new("git")
+                                            .arg("-C")
+                                            .arg(&leaf_path)
+                                            .arg("worktree")
+                                            .arg("remove")
+                                            .arg("--force")
+                                            .arg(&leaf_path)
+                                            .output()
+                                            .map_err(|e| {
+                                                format!("git_worktree_remove_failed: {e}")
+                                            })?;
+                                        if !output.status.success() {
+                                            let stderr = String::from_utf8_lossy(&output.stderr);
+                                            let stdout = String::from_utf8_lossy(&output.stdout);
+                                            return Err(format!(
+                                                "git_worktree_remove_nonzero:{}:{}",
+                                                stdout.trim(),
+                                                stderr.trim()
+                                            ));
+                                        }
+                                    } else {
+                                        fs::remove_dir_all(&leaf_path)
+                                            .map_err(|e| format!("rm_failed: {e}"))?;
+                                    }
                                     fs_removed = true;
                                 }
                             }
@@ -277,11 +386,44 @@ pub struct ReadWorkspaceFileResponse {
 
 const READ_FILE_MAX_BYTES: usize = 5 * 1024 * 1024;
 const READ_FILE_ALLOWED_EXTENSIONS: &[&str] = &[
-    "html", "htm", "css", "js", "mjs", "cjs", "ts", "tsx", "jsx",
-    "json", "yaml", "yml", "toml", "md", "txt", "py", "rb", "rs",
-    "go", "java", "kt", "swift", "c", "cc", "cpp", "h", "hpp", "sh",
-    "bash", "zsh", "sql", "xml", "csv", "ini", "conf", "env",
-    "gitignore", "dockerfile",
+    "html",
+    "htm",
+    "css",
+    "js",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "jsx",
+    "json",
+    "yaml",
+    "yml",
+    "toml",
+    "md",
+    "txt",
+    "py",
+    "rb",
+    "rs",
+    "go",
+    "java",
+    "kt",
+    "swift",
+    "c",
+    "cc",
+    "cpp",
+    "h",
+    "hpp",
+    "sh",
+    "bash",
+    "zsh",
+    "sql",
+    "xml",
+    "csv",
+    "ini",
+    "conf",
+    "env",
+    "gitignore",
+    "dockerfile",
 ];
 
 fn locate_workspace_dir(workspace_id: &str) -> Result<PathBuf, String> {
@@ -293,8 +435,7 @@ fn locate_workspace_dir(workspace_id: &str) -> Result<PathBuf, String> {
         return Err("workspaces root does not exist".into());
     }
     let suffix = format!("-{}", workspace_id);
-    let plan_dirs = fs::read_dir(&root)
-        .map_err(|e| format!("read_workspaces_root_failed: {e}"))?;
+    let plan_dirs = fs::read_dir(&root).map_err(|e| format!("read_workspaces_root_failed: {e}"))?;
     for plan_entry in plan_dirs.flatten() {
         let plan_path = plan_entry.path();
         if !plan_path.is_dir() {
@@ -377,8 +518,7 @@ pub async fn read_workspace_file(
         }
 
         // 4. サイズ上限付きでファイルを読み取る
-        let meta = fs::metadata(&canon_target)
-            .map_err(|e| format!("stat_failed: {e}"))?;
+        let meta = fs::metadata(&canon_target).map_err(|e| format!("stat_failed: {e}"))?;
         if !meta.is_file() {
             return Err("not_a_regular_file".into());
         }
@@ -388,8 +528,7 @@ pub async fn read_workspace_file(
 
         let mut buf = vec![0u8; take];
         use std::io::Read;
-        let mut f = fs::File::open(&canon_target)
-            .map_err(|e| format!("open_failed: {e}"))?;
+        let mut f = fs::File::open(&canon_target).map_err(|e| format!("open_failed: {e}"))?;
         f.read_exact(&mut buf)
             .map_err(|e| format!("read_failed: {e}"))?;
 
@@ -422,9 +561,7 @@ pub struct ActiveWorkspaceEntry {
 }
 
 #[tauri::command]
-pub async fn workspace_list_active(
-    plan_id: String,
-) -> Result<Vec<ActiveWorkspaceEntry>, String> {
+pub async fn workspace_list_active(plan_id: String) -> Result<Vec<ActiveWorkspaceEntry>, String> {
     tokio::task::spawn_blocking(move || -> Result<Vec<ActiveWorkspaceEntry>, String> {
         let root = workspaces_root()?;
         let plan_dir = root.join(sanitize_segment(&plan_id));
@@ -493,6 +630,25 @@ mod tests {
     fn workspace_dir_rejects_all_empty() {
         let r = workspace_dir_for("", "", "");
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn ensure_workspace_dir_temp_dir_creates_directory() {
+        let plan_id = format!("plan-{}", std::process::id());
+        let task_id = "task-temp";
+        let workspace_id = "ws-temp";
+        let (dir, created) =
+            ensure_workspace_dir(None, None, &plan_id, task_id, workspace_id).unwrap();
+        assert!(created);
+        assert!(dir.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ensure_workspace_dir_worktree_requires_source() {
+        let err =
+            ensure_workspace_dir(Some("worktree"), None, "plan-a", "task-a", "ws-a").unwrap_err();
+        assert!(err.contains("worktree_source_cwd_missing"));
     }
 
     #[test]

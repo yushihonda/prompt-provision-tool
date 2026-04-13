@@ -402,7 +402,7 @@ function statusBadgeHtml(isActive) {
 
 /** 実行ステータス色付き span を返す */
 function executionStatusHtml(status) {
-    const colors = { success: '#28a745', error: '#dc3545', cancelled: '#ffc107', pending: '#7c3aed', processing: '#7c3aed', pending_local: '#7c3aed' };
+    const colors = { success: '#28a745', error: '#dc3545', manual_review_required: '#d97706', cancelled: '#ffc107', pending: '#7c3aed', processing: '#7c3aed', pending_local: '#7c3aed', pending_approval: '#7c3aed' };
     const color = colors[status] || 'var(--content-text-muted)';
     return `<span style="color:${color}">${escapeHtmlAdmin(status)}</span>`;
 }
@@ -444,4 +444,3 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
-

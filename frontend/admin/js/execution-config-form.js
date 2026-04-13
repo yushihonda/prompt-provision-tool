@@ -66,11 +66,13 @@
         { value: 'none', label: 'なし' },
         { value: 'temp_dir', label: 'temp_dir (使い捨てワークスペース)' },
         { value: 'shared', label: 'shared (共有)' },
+        { value: 'worktree', label: 'worktree (git worktree 分離)' },
     ];
 
     const APPROVAL_OPTIONS = [
         { value: 'read_only', label: 'read_only (読み取りのみ)' },
         { value: 'ask_before_shell', label: 'ask_before_shell (確認モーダルは未実装)' },
+        { value: 'plan_required', label: 'plan_required (実行前に計画承認)' },
         { value: 'allow_shell', label: 'allow_shell (シェル許可)' },
         { value: 'allow_write', label: 'allow_write (ファイル書込み許可)' },
     ];

@@ -1,3 +1,4 @@
+mod background_skills;
 mod external_cli;
 mod external_cli_adapters;
 mod external_cli_approval;
@@ -41,10 +42,12 @@ const DESKTOP_AUTH_SESSION_ACCOUNT: &str = "auth-session";
 /// Keychain round-trip can fail on some macOS builds (e.g. unsigned internal packages).
 /// Mirror session JSON here with user-only permissions so login survives navigation.
 const AUTH_SESSION_FILE_NAME: &str = "auth_session.json";
+const MAX_BACKGROUND_TOP_LEVEL_TASKS: usize = 3;
 
 #[derive(Default)]
 struct DesktopState {
     sidecar: Mutex<SidecarRuntime>,
+    background_skills: Mutex<background_skills::BackgroundSkillManager>,
     orchestration: Mutex<orchestration::OrchestrationManager>,
 }
 
@@ -2695,6 +2698,39 @@ async fn run_local_workflow_execution(
 }
 
 #[tauri::command]
+async fn enqueue_background_skill_execution(
+    app: AppHandle,
+    input: background_skills::EnqueueBackgroundSkillInput,
+) -> Result<background_skills::BackgroundSkillStatus, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<DesktopState>();
+        let active_total = {
+            let bg_mgr = state.background_skills.lock();
+            let orch_mgr = state.orchestration.lock();
+            bg_mgr.active_task_count() + orch_mgr.active_run_count()
+        };
+        if active_total >= MAX_BACKGROUND_TOP_LEVEL_TASKS {
+            return Err(format!("バックグラウンド実行は合計{}件までです", MAX_BACKGROUND_TOP_LEVEL_TASKS));
+        }
+        let mut mgr = state.background_skills.lock();
+        mgr.enqueue(&handle, input).map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("task join error: {}", err))?
+}
+
+#[tauri::command]
+async fn get_background_skill_execution_status(
+    app: AppHandle,
+    task_id: u64,
+) -> Result<Option<background_skills::BackgroundSkillStatus>, String> {
+    let state = app.state::<DesktopState>();
+    let mgr = state.background_skills.lock();
+    Ok(mgr.get_status(task_id))
+}
+
+#[tauri::command]
 async fn check_for_app_update(app: AppHandle) -> Result<AppUpdateStatus, String> {
     let endpoints = embedded_updater_endpoints().map_err(|err| err.to_string())?;
     let endpoint_strings = endpoints.iter().map(|value| value.to_string()).collect::<Vec<_>>();
@@ -2765,6 +2801,14 @@ async fn start_orchestrated_workflow(
     let app_clone = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_clone.state::<DesktopState>();
+        let active_total = {
+            let bg_mgr = state.background_skills.lock();
+            let orch_mgr = state.orchestration.lock();
+            bg_mgr.active_task_count() + orch_mgr.active_run_count()
+        };
+        if active_total >= MAX_BACKGROUND_TOP_LEVEL_TASKS {
+            return Err(format!("バックグラウンド実行は合計{}件までです", MAX_BACKGROUND_TOP_LEVEL_TASKS));
+        }
         let mut mgr = state.orchestration.lock();
         mgr.start_workflow(&app_clone, input).map_err(|e| e.to_string())
     })
@@ -2815,9 +2859,17 @@ fn main() {
                     let h = tick_handle.clone();
                     let _ = tauri::async_runtime::spawn_blocking(move || {
                         if let Some(state) = h.try_state::<DesktopState>() {
-                            let mut mgr = state.orchestration.lock();
-                            if mgr.has_active_runs() {
-                                mgr.tick(&h);
+                            {
+                                let mut mgr = state.background_skills.lock();
+                                if mgr.has_active_tasks() {
+                                    mgr.tick(&h);
+                                }
+                            }
+                            {
+                                let mut mgr = state.orchestration.lock();
+                                if mgr.has_active_runs() {
+                                    mgr.tick(&h);
+                                }
                             }
                         }
                     })
@@ -2876,6 +2928,8 @@ fn main() {
             run_demo_workflow,
             run_local_skill_execution,
             run_local_workflow_execution,
+            enqueue_background_skill_execution,
+            get_background_skill_execution_status,
             check_for_app_update,
             start_orchestrated_workflow,
             get_orchestration_status,

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 ExecutionKind = Literal["provider", "external_cli", "auto"]
 WorkspacePolicy = Literal["none", "shared", "temp_dir", "worktree"]
-ApprovalPolicy = Literal["read_only", "ask_before_shell", "allow_shell", "allow_write"]
+ApprovalPolicy = Literal["read_only", "ask_before_shell", "allow_shell", "allow_write", "plan_required"]
 
 
 class StepExecutionMeta(BaseModel):

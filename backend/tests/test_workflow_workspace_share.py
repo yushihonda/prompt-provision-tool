@@ -84,6 +84,13 @@ def _cli_step_config(workspace_policy="temp_dir", share_with_steps=None) -> Step
     )
 
 
+def _worktree_cli_step_config(share_with_steps=None) -> StepExecutionConfig:
+    return _cli_step_config(
+        workspace_policy="worktree",
+        share_with_steps=share_with_steps,
+    )
+
+
 class WorkflowWorkspaceShareTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -146,6 +153,26 @@ class WorkflowWorkspaceShareTests(unittest.TestCase):
         resolve_execution_kind(self.db, self.plan, task_b)
         self.assertEqual(task_b["workspace_id"], first_ws_id)
         self.assertEqual(task_b.get("_workspace_shared_from"), "code_step")
+
+    def test_worktree_step_reserves_worktree_workspace(self):
+        cfg = _worktree_cli_step_config()
+        task = {
+            "task_id": "code_step",
+            "role": ROLE_WRITER,
+            "cwd_hint": "/Users/me/project",
+            "_step_execution_config": cfg,
+        }
+        result = resolve_execution_kind(self.db, self.plan, task)
+        self.assertEqual(result["execution_kind"], EXECUTION_KIND_EXTERNAL_CLI)
+        self.assertIsNotNone(task.get("workspace_id"))
+        self.assertEqual(task.get("workspace_mode"), "worktree")
+        ws = find_workspace_by_task_id(self.db, self.plan.plan_id, "code_step")
+        self.assertIsNotNone(ws)
+        self.assertEqual(ws.mode, "worktree")
+        payload = result["external_cli_payload"]
+        self.assertEqual(payload["workspace_id"], task["workspace_id"])
+        self.assertEqual(payload["workspace_mode"], "worktree")
+        self.assertEqual(payload["cwd"], "/Users/me/project")
 
     def test_share_with_steps_falls_back_to_new_when_upstream_missing(self):
         cfg = _cli_step_config(share_with_steps=["nonexistent_upstream"])

@@ -42,7 +42,7 @@ function renderPagination() {
 
 async function loadAllSkills() {
     try {
-        const response = await apiRequest('/api/admin/skills?skip=0&limit=1000');
+        const response = await apiRequest('/api/admin/skills?skip=0&limit=200');
         allSkills = response.items || response;
     } catch (error) {
         console.error('Load skills error:', error);
@@ -51,7 +51,7 @@ async function loadAllSkills() {
 
 async function loadAllWorkflows() {
     try {
-        const response = await apiRequest('/api/admin/workflows?skip=0&limit=1000');
+        const response = await apiRequest('/api/admin/workflows?skip=0&limit=200');
         allWorkflows = response.items || response;
     } catch (error) {
         console.error('Load workflows error:', error);
